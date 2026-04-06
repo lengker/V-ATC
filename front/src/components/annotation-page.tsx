@@ -25,6 +25,7 @@ import {
   loadTimestampOverrides,
   saveTimestampOverride,
 } from "@/lib/local-annotation-store";
+import { PlaybackProvider, usePlayback } from "@/context/PlaybackContext";
 
 // 动态导入地图组件，禁用 SSR
 const ADSBMap = dynamic(() => import("@/components/adsb-map").then((mod) => ({ default: mod.ADSBMap })), {
@@ -54,17 +55,61 @@ export function AnnotationPage({
   recordingMeta = {},
   onSelectRecording,
 }: AnnotationPageProps) {
-  const [currentTime, setCurrentTime] = useState(0);
-  const [selectedTimestamp, setSelectedTimestamp] =
-    useState<VoiceTimestamp | null>(null);
-  const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
-  const [isEditing, setIsEditing] = useState(false);
   const [timestamps, setTimestamps] = useState<VoiceTimestamp[]>(() => {
     // 初次加载：合并本地保存的 override（无后端也能持久化）
     if (typeof window === "undefined") return audioData.timestamps;
     const overrides = loadTimestampOverrides(audioData.id);
     return applyTimestampOverrides(audioData.timestamps, overrides);
   });
+
+  const timelineMax = Math.max(
+    audioData.duration || 0,
+    ...timestamps.map((t) => t.endTime),
+    ...adsbData.map((d) => d.timestamp)
+  );
+
+  // 同步 audioData 的 timestamps 变化
+  useEffect(() => {
+    const overrides = loadTimestampOverrides(audioData.id);
+    setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
+  }, [audioData.timestamps]);
+
+  return (
+    <PlaybackProvider timelineMax={timelineMax || 60}>
+      <AnnotationPageInner
+        audioData={audioData}
+        adsbData={adsbData}
+        recordings={recordings}
+        recordingMeta={recordingMeta}
+        onSelectRecording={onSelectRecording}
+        timestamps={timestamps}
+        setTimestamps={setTimestamps}
+        timelineMax={timelineMax || 60}
+      />
+    </PlaybackProvider>
+  );
+}
+
+type AnnotationPageInnerProps = AnnotationPageProps & {
+  timestamps: VoiceTimestamp[];
+  setTimestamps: React.Dispatch<React.SetStateAction<VoiceTimestamp[]>>;
+  timelineMax: number;
+};
+
+function AnnotationPageInner({
+  audioData,
+  adsbData,
+  recordings = [audioData],
+  recordingMeta = {},
+  onSelectRecording,
+  timestamps,
+  setTimestamps,
+  timelineMax,
+}: AnnotationPageInnerProps) {
+  const { currentTime, setCurrentTime } = usePlayback();
+  const [selectedTimestamp, setSelectedTimestamp] = useState<VoiceTimestamp | null>(null);
+  const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
+  const [isEditing, setIsEditing] = useState(false);
   const { toast } = useToast();
   const [layerToggles, setLayerToggles] = useState<LayerTogglesState>({
     runways: true,
@@ -85,18 +130,6 @@ export function AnnotationPage({
   const settingsSectionRef = useRef<HTMLDivElement>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
 
-  const timelineMax = Math.max(
-    audioData.duration || 0,
-    ...timestamps.map((t) => t.endTime),
-    ...adsbData.map((d) => d.timestamp)
-  );
-
-  // 同步 audioData 的 timestamps 变化
-  useEffect(() => {
-    const overrides = loadTimestampOverrides(audioData.id);
-    setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
-  }, [audioData.timestamps]);
-
   // 从音频数据中提取所有唯一的飞机 ICAO24
   const aircraftList = Array.from(
     new Set(adsbData.map((d) => d.icao24))
@@ -109,9 +142,9 @@ export function AnnotationPage({
   // 处理时间戳点击
   const handleTimestampClick = useCallback((timestamp: VoiceTimestamp) => {
     setSelectedTimestamp(timestamp);
-    setCurrentTime(timestamp.startTime);
+    setCurrentTime(timestamp.startTime, "ui");
     setIsEditing(false);
-  }, []);
+  }, [setCurrentTime]);
 
   // 处理时间戳编辑
   const handleTimestampEdit = useCallback((timestamp: VoiceTimestamp) => {
@@ -183,8 +216,8 @@ export function AnnotationPage({
 
   // 处理音频时间更新
   const handleTimeUpdate = useCallback((time: number) => {
-    setCurrentTime(time);
-  }, []);
+    setCurrentTime(time, "waveform");
+  }, [setCurrentTime]);
 
   // 处理飞机选择
   const handleAircraftSelect = useCallback((icao24: string) => {
@@ -321,7 +354,7 @@ export function AnnotationPage({
                         {selectedTimestamp.text}
                       </p>
                       <p className="text-sm">
-                        点击"编辑"按钮修改此时间戳
+                        点击“编辑”按钮修改此时间戳
                       </p>
                     </div>
                   ) : (
@@ -345,7 +378,7 @@ export function AnnotationPage({
           <div ref={settingsSectionRef}>
             <LayerToggles value={layerToggles} onChange={setLayerToggles} />
           </div>
-          <TimeRover value={currentTime} max={timelineMax || 60} onChange={setCurrentTime} />
+          <TimeRover value={currentTime} max={timelineMax || 60} onChange={(t) => setCurrentTime(t, "ui")} />
           <InstrumentPanel
             currentTime={currentTime}
             selectedAircraft={selectedAircraft}

@@ -46,7 +46,17 @@ export function ADSBMap({
 
   // 归一化坐标到 [0,1]，然后映射到 SVG
   const { filteredPoints, currentPoints, bounds } = useMemo(() => {
-    if (adsbData.length === 0) {
+    const sane = adsbData.filter(
+      (p) =>
+        Number.isFinite(p.latitude) &&
+        Number.isFinite(p.longitude) &&
+        // 纬度[-90,90] 经度[-180,180]
+        Math.abs(p.latitude) <= 90 &&
+        Math.abs(p.longitude) <= 180 &&
+        Number.isFinite(p.timestamp)
+    );
+
+    if (sane.length === 0) {
       return {
         filteredPoints: [] as ADSBData[],
         currentPoints: [] as ADSBData[],
@@ -54,9 +64,9 @@ export function ADSBMap({
       };
     }
 
-    const { minLat, maxLat, minLon, maxLon } = deriveBoundsFromData({ adsb: adsbData, statics: staticLayers });
+    const { minLat, maxLat, minLon, maxLon } = deriveBoundsFromData({ adsb: sane, statics: staticLayers });
 
-    const filtered = adsbData.filter((p) => {
+    const filtered = sane.filter((p) => {
       const timeOk = p.timestamp <= currentTime;
       const targetOk = !visibleAircraftSet || visibleAircraftSet.size === 0 || visibleAircraftSet.has(p.icao24);
       return timeOk && targetOk;
@@ -118,6 +128,10 @@ export function ADSBMap({
 
   // 鼠标按下 - 开始拖拽
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    // 点击飞机点位/信息时，不开启拖拽，避免影响点选
+    if (e.target instanceof Element && e.target.closest("[data-aircraft]")) {
+      return;
+    }
     isDraggingRef.current = true;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
   };
@@ -375,6 +389,7 @@ export function ADSBMap({
               return (
                 <g
                   key={p.icao24}
+                  data-aircraft={p.icao24}
                   onClick={() => onAircraftSelect?.(p.icao24)}
                   onMouseEnter={() => setHoveredAircraft(p)}
                   onMouseLeave={() => setHoveredAircraft(null)}

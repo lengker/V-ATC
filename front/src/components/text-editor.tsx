@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { VoiceTimestamp } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -9,6 +9,9 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Save, X, Play, ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { z } from "zod";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 
 const SPEAKER_PRESETS = ["Pilot", "ATC", "Dispatcher", "other"];
 const SPEAKER_COLORS: Record<string, string> = {
@@ -24,29 +27,85 @@ interface TextEditorProps {
   onPlay?: (startTime: number, endTime: number) => void;
 }
 
+const formSchema = z
+  .object({
+    text: z.string().trim().min(1, "请输入文本内容"),
+    startTime: z
+      .string()
+      .trim()
+      .refine((v) => Number.isFinite(Number(v)) && Number(v) >= 0, "开始时间必须是非负数字"),
+    endTime: z
+      .string()
+      .trim()
+      .refine((v) => Number.isFinite(Number(v)) && Number(v) >= 0, "结束时间必须是非负数字"),
+    speaker: z.string().trim().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const s = Number(data.startTime);
+    const e = Number(data.endTime);
+    if (Number.isFinite(s) && Number.isFinite(e) && e <= s) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endTime"],
+        message: "结束时间必须大于开始时间",
+      });
+    }
+  });
+
+type FormValues = z.infer<typeof formSchema>;
+
 export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorProps) {
-  const [text, setText] = useState(timestamp?.text || "");
-  const [startTime, setStartTime] = useState(
-    timestamp?.startTime.toString() || "0"
-  );
-  const [endTime, setEndTime] = useState(
-    timestamp?.endTime.toString() || "0"
-  );
-  const [speaker, setSpeaker] = useState(timestamp?.speaker || "");
   const [speakerDropdownOpen, setSpeakerDropdownOpen] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const handleSave = () => {
+  const defaultValues = useMemo<FormValues>(
+    () => ({
+      text: timestamp?.text ?? "",
+      startTime: (timestamp?.startTime ?? 0).toString(),
+      endTime: (timestamp?.endTime ?? 0).toString(),
+      speaker: timestamp?.speaker ?? "",
+    }),
+    [timestamp]
+  );
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    watch,
+    formState: { errors, isValid, isSubmitting },
+  } = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
+    mode: "onChange",
+    reValidateMode: "onChange",
+    defaultValues,
+  });
+
+  useEffect(() => {
+    reset(defaultValues);
+    setSpeakerDropdownOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultValues]);
+
+  const text = watch("text");
+  const startTime = watch("startTime");
+  const endTime = watch("endTime");
+  const speaker = watch("speaker") ?? "";
+
+  const { ref: textFieldRef, ...textField } = register("text", {
+    onChange: () => setTimeout(adjustTextareaHeight, 0),
+  });
+
+  const onSubmit = (values: FormValues) => {
     if (!timestamp) return;
-
     const updated: VoiceTimestamp = {
       ...timestamp,
-      text,
-      startTime: parseFloat(startTime),
-      endTime: parseFloat(endTime),
-      speaker: speaker || undefined,
+      text: values.text,
+      startTime: Number(values.startTime),
+      endTime: Number(values.endTime),
+      speaker: values.speaker?.trim() ? values.speaker.trim() : undefined,
     };
-
     onSave?.(updated);
   };
 
@@ -59,14 +118,14 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
     const current = parseFloat(currentTime) || 0;
     const newTime = Math.max(0, current + delta).toFixed(2);
     if (isStartTime) {
-      setStartTime(newTime);
+      setValue("startTime", newTime, { shouldValidate: true, shouldDirty: true });
     } else {
-      setEndTime(newTime);
+      setValue("endTime", newTime, { shouldValidate: true, shouldDirty: true });
     }
   };
 
   // 自动调整 Textarea 高度
-  const adjustTextareaHeight = () => {
+  function adjustTextareaHeight() {
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
       textareaRef.current.style.height = Math.max(
@@ -74,7 +133,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
         textareaRef.current.scrollHeight
       ) + "px";
     }
-  };
+  }
 
   // 字数统计
   const charCount = text.length;
@@ -87,14 +146,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
       // Ctrl/Cmd + Enter 保存
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
-        const updated: VoiceTimestamp = {
-          ...timestamp,
-          text,
-          startTime: parseFloat(startTime),
-          endTime: parseFloat(endTime),
-          speaker: speaker || undefined,
-        };
-        onSave?.(updated);
+        void handleSubmit(onSubmit)();
       }
       // Esc 取消
       if (e.key === "Escape") {
@@ -105,7 +157,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [timestamp, onSave, onCancel]);
+  }, [timestamp, onCancel, handleSubmit]);
 
   // 初始化调整高度
   useEffect(() => {
@@ -140,17 +192,19 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
           </div>
           <div className="relative">
             <Textarea
-              ref={textareaRef}
               id="text"
-              value={text}
-              onChange={(e) => {
-                setText(e.target.value);
-                setTimeout(adjustTextareaHeight, 0);
+              {...textField}
+              ref={(el) => {
+                textFieldRef(el);
+                textareaRef.current = el;
               }}
               onInput={adjustTextareaHeight}
               placeholder="输入标注文本... (Ctrl+Enter 保存, Esc 取消)"
               className="resize-none min-h-[80px]"
             />
+            {errors.text?.message ? (
+              <div className="text-xs text-destructive mt-1">{errors.text.message}</div>
+            ) : null}
             <div className="absolute bottom-2 right-2 text-xs text-muted-foreground pointer-events-none">
               {text.length > 0 && "💾 Ctrl+Enter"}
             </div>
@@ -167,8 +221,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
                 <Input
                   id="startTime"
                   type="number"
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
+                  {...register("startTime")}
                   step="0.01"
                   className="flex-1"
                 />
@@ -194,6 +247,9 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
                 </Button>
               </div>
             </div>
+            {errors.startTime?.message ? (
+              <div className="text-xs text-destructive">{errors.startTime.message}</div>
+            ) : null}
             <div className="flex gap-1">
               <Button
                 variant="secondary"
@@ -222,8 +278,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
                 <Input
                   id="endTime"
                   type="number"
-                  value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
+                  {...register("endTime")}
                   step="0.01"
                   className="flex-1"
                 />
@@ -249,6 +304,9 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
                 </Button>
               </div>
             </div>
+            {errors.endTime?.message ? (
+              <div className="text-xs text-destructive">{errors.endTime.message}</div>
+            ) : null}
             <div className="flex gap-1">
               <Button
                 variant="secondary"
@@ -317,7 +375,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
                   <button
                     key={preset}
                     onClick={() => {
-                      setSpeaker(preset);
+                      setValue("speaker", preset, { shouldDirty: true });
                       setSpeakerDropdownOpen(false);
                     }}
                     className="w-full px-3 py-2 text-left hover:bg-accent border-b last:border-b-0 flex items-center gap-2 text-sm"
@@ -338,7 +396,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
                     type="text"
                     placeholder="输入自定义说话人..."
                     value={speaker}
-                    onChange={(e) => setSpeaker(e.target.value)}
+                    onChange={(e) => setValue("speaker", e.target.value, { shouldDirty: true })}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         setSpeakerDropdownOpen(false);
@@ -366,7 +424,7 @@ export function TextEditor({ timestamp, onSave, onCancel, onPlay }: TextEditorPr
             <X className="h-4 w-4 mr-2" />
             取消 (ESC)
           </Button>
-          <Button onClick={handleSave}>
+          <Button onClick={handleSubmit(onSubmit)} disabled={!isValid || isSubmitting}>
             <Save className="h-4 w-4 mr-2" />
             保存 (Ctrl+Enter)
           </Button>

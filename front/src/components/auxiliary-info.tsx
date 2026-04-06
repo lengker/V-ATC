@@ -214,20 +214,23 @@ export function AuxiliaryInfo({
                 <section className="space-y-2">
                   <div className="text-xs font-semibold text-muted-foreground">航司简字 ↔ 呼号</div>
                   <div className="space-y-2">
-                    {filtered.airlines.map((x) => (
-                      <div key={x.icao} className="rounded-xl border border-border/60 bg-background/20 p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-sm font-medium truncate">{x.name}</div>
-                          <div className="text-xs text-muted-foreground tabular-nums">
-                            {(x.iata ? `${x.iata} / ` : "") + x.icao}
+                    {filtered.airlines.map((x) => {
+                      const note = (x as { note?: string }).note;
+                      return (
+                        <div key={x.icao} className="rounded-xl border border-border/60 bg-background/20 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-medium truncate">{x.name}</div>
+                            <div className="text-xs text-muted-foreground tabular-nums">
+                              {(x.iata ? `${x.iata} / ` : "") + x.icao}
+                            </div>
                           </div>
+                          <div className="text-xs mt-1">
+                            Callsign: <span className="text-primary font-semibold">{x.callsign}</span>
+                          </div>
+                          {note ? <div className="text-xs text-muted-foreground mt-1">{note}</div> : null}
                         </div>
-                        <div className="text-xs mt-1">
-                          Callsign: <span className="text-primary font-semibold">{x.callsign}</span>
-                        </div>
-                        {x.note ? <div className="text-xs text-muted-foreground mt-1">{x.note}</div> : null}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </section>
               </div>
