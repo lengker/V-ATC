@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { AudioWaveform } from "@/components/audio-waveform";
+import { AudioWaveform, type AudioWaveformHandle } from "@/components/audio-waveform";
 import { TimestampList } from "@/components/timestamp-list";
 import { TextEditor } from "@/components/text-editor";
 import { AuxiliaryInfo } from "@/components/auxiliary-info";
@@ -78,6 +78,7 @@ export function AnnotationPage({
     "map" | "transcripts" | "radio" | "audio" | "settings"
   >("transcripts");
   const mapSectionRef = useRef<HTMLDivElement>(null);
+  const audioWaveformRef = useRef<AudioWaveformHandle>(null);
   const transcriptSectionRef = useRef<HTMLDivElement>(null);
   const radioSectionRef = useRef<HTMLDivElement>(null);
   const audioSectionRef = useRef<HTMLDivElement>(null);
@@ -262,6 +263,7 @@ export function AnnotationPage({
           <div ref={audioSectionRef}>
             <Card className="p-4 rounded-3xl border-border/70 efb-panel efb-glow">
               <AudioWaveform
+                ref={audioWaveformRef}
                 audioUrl={audioData.url}
                 timestamps={timestamps}
                 currentTime={currentTime}
@@ -300,11 +302,16 @@ export function AnnotationPage({
 
           <div className="h-[320px]">
             {isEditing && selectedTimestamp ? (
-              <TextEditor
-                timestamp={selectedTimestamp}
-                onSave={handleSaveTimestamp}
-                onCancel={handleCancelEdit}
-              />
+              <div className="relative">
+                <TextEditor
+                  timestamp={selectedTimestamp}
+                  onSave={handleSaveTimestamp}
+                  onCancel={handleCancelEdit}
+                  onPlay={(startTime, endTime) => {
+                    audioWaveformRef.current?.playSegment(startTime, endTime);
+                  }}
+                />
+              </div>
             ) : (
               <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
                 <div className="h-full flex items-center justify-center text-muted-foreground">
