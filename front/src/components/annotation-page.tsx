@@ -156,6 +156,22 @@ function AnnotationPageInner({
   const handleSaveTimestamp = useCallback(
     async (updatedTimestamp: VoiceTimestamp) => {
       try {
+        // Mock 模式（未接入后端音频/接口）：直接本地保存，避免请求 localhost:8000 报错刷屏
+        if (!audioData.url) {
+          const updatedTimestamps = timestamps.map((ts) =>
+            ts.id === updatedTimestamp.id ? updatedTimestamp : ts
+          );
+          setTimestamps(updatedTimestamps);
+          saveTimestampOverride(audioData.id, updatedTimestamp);
+          toast({
+            title: "已本地保存",
+            description: "当前为 mock 模式（未接后端），已保存到浏览器本地（待后续同步）",
+          });
+          setIsEditing(false);
+          setSelectedTimestamp(null);
+          return;
+        }
+
         const response = await audioAPI.updateTimestamp(
           audioData.id,
           updatedTimestamp
@@ -205,7 +221,7 @@ function AnnotationPageInner({
         setSelectedTimestamp(null);
       }
     },
-    [timestamps, audioData.id, toast]
+    [audioData.id, audioData.url, timestamps, toast]
   );
 
   // 取消编辑

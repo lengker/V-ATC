@@ -5,9 +5,9 @@ import { AudioData, ADSBData } from "@/types";
 
 export const demoAudio: AudioData = {
   id: "demo-audio-001",
-  // 使用通常允许跨域访问的演示音频，减少本地开发时的 CORS 报错
-  url: "https://interactive-examples.mdn.mozilla.net/media/cc0-audio/t-rex-roar.mp3",
-  duration: 60,
+  // 暂未接后端音频：留空会触发前端生成 mock WAV（见 AudioWaveform）
+  url: "",
+  duration: 47,
   metadata: {
     icao: "VHHH",
     date: "2025-01-01",
@@ -59,8 +59,8 @@ export const demoAudio: AudioData = {
 
 export const demoAudio2: AudioData = {
   id: "demo-audio-002",
-  url: "https://interactive-examples.mdn.mozilla.net/media/cc0-audio/t-rex-roar.mp3",
-  duration: 75,
+  url: "",
+  duration: 40,
   metadata: {
     icao: "VHHH",
     date: "2025-01-02",

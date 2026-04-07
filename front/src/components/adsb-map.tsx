@@ -2,7 +2,7 @@
 
 // 纯前端 SVG 交互地图 - 支持缩放、拖拽、实时航迹、悬停信息弹窗、多视图
 
-import { useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ADSBData } from "@/types";
 import { formatTime } from "@/lib/utils";
 import type { VhhhStaticLayers } from "@/mock/vhhh-static";
@@ -37,12 +37,42 @@ export function ADSBMap({
   onAircraftSelect,
 }: ADSBMapProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [viewBox, setViewBox] = useState({ x: 0, y: 0, w: 100, h: 100 });
   const [viewMode, setViewMode] = useState<"terrain" | "satellite">("terrain");
   const [hoveredAircraft, setHoveredAircraft] = useState<ADSBData | null>(null);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
+
+  const clampViewBox = (vb: { x: number; y: number; w: number; h: number }) => {
+    const minW = 100 / 5; // 最大 5x
+    const maxW = 100; // 最小 1x
+    const w = Math.max(minW, Math.min(maxW, vb.w));
+    const h = Math.max(minW, Math.min(maxW, vb.h));
+    const x = Math.max(0, Math.min(100 - w, vb.x));
+    const y = Math.max(0, Math.min(100 - h, vb.y));
+    return { x, y, w, h };
+  };
+
+  const zoomFactor = useMemo(() => Number((100 / viewBox.w).toFixed(2)), [viewBox.w]);
+
+  const zoomAt = (clientX: number, clientY: number, factor: number) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const nx = (clientX - rect.left) / rect.width;
+    const ny = (clientY - rect.top) / rect.height;
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return;
+
+    setViewBox((prev) => {
+      const nextW = prev.w / factor;
+      const nextH = prev.h / factor;
+      const focusX = prev.x + nx * prev.w;
+      const focusY = prev.y + ny * prev.h;
+      const nextX = focusX - nx * nextW;
+      const nextY = focusY - ny * nextH;
+      return clampViewBox({ x: nextX, y: nextY, w: nextW, h: nextH });
+    });
+  };
 
   // 归一化坐标到 [0,1]，然后映射到 SVG
   const { filteredPoints, currentPoints, bounds } = useMemo(() => {
@@ -119,13 +149,6 @@ export function ADSBMap({
     trails: toggles?.trails ?? true,
   };
 
-  // 应用缩放和平移变换
-  const getTransform = () => {
-    const centerX = 50;
-    const centerY = 50;
-    return `translate(${pan.x}, ${pan.y}) scale(${zoom}) translate(${centerX * (1 - zoom)}, ${centerY * (1 - zoom)})`;
-  };
-
   // 鼠标按下 - 开始拖拽
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
     // 点击飞机点位/信息时，不开启拖拽，避免影响点选
@@ -140,13 +163,17 @@ export function ADSBMap({
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (!isDraggingRef.current) return;
 
-    const dx = (e.clientX - dragStartRef.current.x) / zoom;
-    const dy = (e.clientY - dragStartRef.current.y) / zoom;
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
 
-    setPan((prev) => ({
-      x: prev.x + dx,
-      y: prev.y + dy,
-    }));
+    const dxPx = e.clientX - dragStartRef.current.x;
+    const dyPx = e.clientY - dragStartRef.current.y;
+    const dx = (dxPx / rect.width) * viewBox.w;
+    const dy = (dyPx / rect.height) * viewBox.h;
+
+    setViewBox((prev) => clampViewBox({ ...prev, x: prev.x - dx, y: prev.y - dy }));
 
     dragStartRef.current = { x: e.clientX, y: e.clientY };
   };
@@ -159,19 +186,44 @@ export function ADSBMap({
   // 鼠标滚轮 - 缩放
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.8 : 1.2;
-    setZoom((prev) => Math.max(1, Math.min(prev * delta, 5)));
+    e.stopPropagation();
+    const factor = e.deltaY > 0 ? 1 / 1.2 : 1.2;
+    zoomAt(e.clientX, e.clientY, factor);
   };
+
+  // 用非 passive 的原生 wheel 监听，确保滚轮不会带动页面滚动
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handler = (ev: WheelEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const factor = ev.deltaY > 0 ? 1 / 1.2 : 1.2;
+      zoomAt(ev.clientX, ev.clientY, factor);
+    };
+    svg.addEventListener("wheel", handler, { passive: false });
+    return () => svg.removeEventListener("wheel", handler as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 重置视图
   const handleResetView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setViewBox({ x: 0, y: 0, w: 100, h: 100 });
   };
 
   // 缩放按钮处理
-  const handleZoomIn = () => setZoom((prev) => Math.min(prev + 0.5, 5));
-  const handleZoomOut = () => setZoom((prev) => Math.max(prev - 0.5, 1));
+  const handleZoomIn = () => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1.2);
+  };
+  const handleZoomOut = () => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, 1 / 1.2);
+  };
 
   return (
     <div className="w-full h-full rounded-lg border bg-muted/20 flex flex-col">
@@ -240,7 +292,7 @@ export function ADSBMap({
         {/* SVG 地图 */}
         <svg
           ref={svgRef}
-          viewBox="0 0 100 100"
+          viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
           className="w-full h-full cursor-grab active:cursor-grabbing"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
@@ -275,7 +327,7 @@ export function ADSBMap({
           </defs>
 
           {/* 背景层 */}
-          <g transform={getTransform()}>
+          <g>
             <rect width="100" height="100" fill={viewMode === "satellite" ? "#1a1a2e" : "#0f172a"} />
             <rect width="100" height="100" fill="url(#grid)" opacity={viewMode === "satellite" ? 0.3 : 0.5} />
 
@@ -484,7 +536,7 @@ export function ADSBMap({
 
         {/* 缩放指示 */}
         <div className="absolute top-4 left-4 bg-black/40 backdrop-blur-sm rounded px-2 py-1 text-xs text-muted-foreground">
-          {zoom.toFixed(1)}x
+          {zoomFactor.toFixed(1)}x
         </div>
       </div>
     </div>
