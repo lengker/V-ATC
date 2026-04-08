@@ -79,8 +79,20 @@ export function AnnotationPage({
     ...adsbData.map((d) => d.timestamp)
   );
 
-  // 同步 audioData 的 timestamps 变化
+  // 同步 audioData 的 timestamps 变化（优先使用本地 full 列表，再合并 overrides）
   useEffect(() => {
+    try {
+      const fullRaw = localStorage.getItem(`alpha.timestamps.full.${audioData.id}`);
+      if (fullRaw) {
+        const full = JSON.parse(fullRaw) as VoiceTimestamp[];
+        if (Array.isArray(full) && full.length > 0) {
+          setTimestamps(full);
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
     const overrides = loadTimestampOverrides(audioData.id);
     setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
   }, [audioData.timestamps]);
@@ -140,30 +152,6 @@ function AnnotationPageInner({
   const audioSectionRef = useRef<HTMLDivElement>(null);
   const settingsSectionRef = useRef<HTMLDivElement>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
-
-  const timelineMax = Math.max(
-    audioData.duration || 0,
-    ...timestamps.map((t) => t.endTime),
-    ...adsbData.map((d) => d.timestamp)
-  );
-
-  // 同步 audioData 的 timestamps 变化
-  useEffect(() => {
-    try {
-      const fullRaw = localStorage.getItem(`alpha.timestamps.full.${audioData.id}`);
-      if (fullRaw) {
-        const full = JSON.parse(fullRaw) as VoiceTimestamp[];
-        if (Array.isArray(full) && full.length > 0) {
-          setTimestamps(full);
-          return;
-        }
-      }
-    } catch {
-      // ignore
-    }
-    const overrides = loadTimestampOverrides(audioData.id);
-    setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
-  }, [audioData.timestamps]);
 
   const handleSetTimestamps = useCallback(
     (next: VoiceTimestamp[]) => {
@@ -446,10 +434,13 @@ function AnnotationPageInner({
               </div>
             ) : (
               <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
-                <div className="h-full flex items-center justify-center text-muted-foreground">
+                <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-3 text-sm">
+                  <p className="text-center px-1">
+                    多段精细编辑已集成在左侧「语音剪辑」面板：支持多选、批量修改、拆分/合并、拖拽裁剪、删除。
+                  </p>
                   {selectedTimestamp ? (
                     <div className="text-center">
-                      <p className="font-medium mb-2">
+                      <p className="font-medium mb-2 text-foreground">
                         {selectedTimestamp.text}
                       </p>
                       <p className="text-sm">
@@ -459,13 +450,9 @@ function AnnotationPageInner({
                   ) : (
                     <p>选择一个时间戳进行编辑</p>
                   )}
-            <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
-              <div className="h-full flex items-center justify-center text-muted-foreground">
-                <div className="text-center text-sm">
-                  多段精细编辑已集成在左侧「语音剪辑」面板：支持多选、批量修改、拆分/合并、拖拽裁剪、删除。
                 </div>
-              </div>
-            </Card>
+              </Card>
+            )}
           </div>
         </div>
 
