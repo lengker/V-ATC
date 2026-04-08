@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
-import { AudioWaveform } from "@/components/audio-waveform";
+import { AudioWaveform, type AudioWaveformHandle } from "@/components/audio-waveform";
 import { TimestampList } from "@/components/timestamp-list";
 import { TextEditor } from "@/components/text-editor";
 import { TranscriptTimelineEditor } from "@/components/transcript-timeline-editor";
@@ -27,6 +27,7 @@ import {
   loadTimestampOverrides,
   saveTimestampOverride,
 } from "@/lib/local-annotation-store";
+import { PlaybackProvider, usePlayback } from "@/context/PlaybackContext";
 
 // 动态导入地图组件，禁用 SSR
 const ADSBMap = dynamic(() => import("@/components/adsb-map").then((mod) => ({ default: mod.ADSBMap })), {
@@ -56,11 +57,6 @@ export function AnnotationPage({
   recordingMeta = {},
   onSelectRecording,
 }: AnnotationPageProps) {
-  const [currentTime, setCurrentTime] = useState(0);
-  const [selectedTimestamp, setSelectedTimestamp] =
-    useState<VoiceTimestamp | null>(null);
-  const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
-  const [isEditing, setIsEditing] = useState(false);
   const [timestamps, setTimestamps] = useState<VoiceTimestamp[]>(() => {
     // 初次加载：合并本地保存的 override（无后端也能持久化）
     if (typeof window === "undefined") return audioData.timestamps;
@@ -76,6 +72,55 @@ export function AnnotationPage({
     const overrides = loadTimestampOverrides(audioData.id);
     return applyTimestampOverrides(audioData.timestamps, overrides);
   });
+
+  const timelineMax = Math.max(
+    audioData.duration || 0,
+    ...timestamps.map((t) => t.endTime),
+    ...adsbData.map((d) => d.timestamp)
+  );
+
+  // 同步 audioData 的 timestamps 变化
+  useEffect(() => {
+    const overrides = loadTimestampOverrides(audioData.id);
+    setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
+  }, [audioData.timestamps]);
+
+  return (
+    <PlaybackProvider timelineMax={timelineMax || 60}>
+      <AnnotationPageInner
+        audioData={audioData}
+        adsbData={adsbData}
+        recordings={recordings}
+        recordingMeta={recordingMeta}
+        onSelectRecording={onSelectRecording}
+        timestamps={timestamps}
+        setTimestamps={setTimestamps}
+        timelineMax={timelineMax || 60}
+      />
+    </PlaybackProvider>
+  );
+}
+
+type AnnotationPageInnerProps = AnnotationPageProps & {
+  timestamps: VoiceTimestamp[];
+  setTimestamps: React.Dispatch<React.SetStateAction<VoiceTimestamp[]>>;
+  timelineMax: number;
+};
+
+function AnnotationPageInner({
+  audioData,
+  adsbData,
+  recordings = [audioData],
+  recordingMeta = {},
+  onSelectRecording,
+  timestamps,
+  setTimestamps,
+  timelineMax,
+}: AnnotationPageInnerProps) {
+  const { currentTime, setCurrentTime } = usePlayback();
+  const [selectedTimestamp, setSelectedTimestamp] = useState<VoiceTimestamp | null>(null);
+  const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
+  const [isEditing, setIsEditing] = useState(false);
   const { toast } = useToast();
   const [layerToggles, setLayerToggles] = useState<LayerTogglesState>({
     runways: true,
@@ -89,6 +134,7 @@ export function AnnotationPage({
     "map" | "transcripts" | "radio" | "audio" | "settings"
   >("transcripts");
   const mapSectionRef = useRef<HTMLDivElement>(null);
+  const audioWaveformRef = useRef<AudioWaveformHandle>(null);
   const transcriptSectionRef = useRef<HTMLDivElement>(null);
   const radioSectionRef = useRef<HTMLDivElement>(null);
   const audioSectionRef = useRef<HTMLDivElement>(null);
@@ -146,9 +192,9 @@ export function AnnotationPage({
   // 处理时间戳点击
   const handleTimestampClick = useCallback((timestamp: VoiceTimestamp) => {
     setSelectedTimestamp(timestamp);
-    setCurrentTime(timestamp.startTime);
+    setCurrentTime(timestamp.startTime, "ui");
     setIsEditing(false);
-  }, []);
+  }, [setCurrentTime]);
 
   // 处理时间戳编辑
   const handleTimestampEdit = useCallback((timestamp: VoiceTimestamp) => {
@@ -160,6 +206,22 @@ export function AnnotationPage({
   const handleSaveTimestamp = useCallback(
     async (updatedTimestamp: VoiceTimestamp) => {
       try {
+        // Mock 模式（未接入后端音频/接口）：直接本地保存，避免请求 localhost:8000 报错刷屏
+        if (!audioData.url) {
+          const updatedTimestamps = timestamps.map((ts) =>
+            ts.id === updatedTimestamp.id ? updatedTimestamp : ts
+          );
+          setTimestamps(updatedTimestamps);
+          saveTimestampOverride(audioData.id, updatedTimestamp);
+          toast({
+            title: "已本地保存",
+            description: "当前为 mock 模式（未接后端），已保存到浏览器本地（待后续同步）",
+          });
+          setIsEditing(false);
+          setSelectedTimestamp(null);
+          return;
+        }
+
         const response = await audioAPI.updateTimestamp(
           audioData.id,
           updatedTimestamp
@@ -224,7 +286,7 @@ export function AnnotationPage({
         setSelectedTimestamp(null);
       }
     },
-    [timestamps, audioData.id, toast]
+    [audioData.id, audioData.url, timestamps, toast]
   );
 
   // 取消编辑
@@ -247,8 +309,8 @@ export function AnnotationPage({
 
   // 处理音频时间更新
   const handleTimeUpdate = useCallback((time: number) => {
-    setCurrentTime(time);
-  }, []);
+    setCurrentTime(time, "waveform");
+  }, [setCurrentTime]);
 
   // 处理飞机选择
   const handleAircraftSelect = useCallback((icao24: string) => {
@@ -327,6 +389,7 @@ export function AnnotationPage({
           <div ref={audioSectionRef}>
             <Card className="p-4 rounded-3xl border-border/70 efb-panel efb-glow">
               <AudioWaveform
+                ref={audioWaveformRef}
                 audioUrl={audioData.url}
                 timestamps={timestamps}
                 currentTime={currentTime}
@@ -370,6 +433,32 @@ export function AnnotationPage({
           </div>
 
           <div className="h-[320px]">
+            {isEditing && selectedTimestamp ? (
+              <div className="relative">
+                <TextEditor
+                  timestamp={selectedTimestamp}
+                  onSave={handleSaveTimestamp}
+                  onCancel={handleCancelEdit}
+                  onPlay={(startTime, endTime) => {
+                    audioWaveformRef.current?.playSegment(startTime, endTime);
+                  }}
+                />
+              </div>
+            ) : (
+              <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
+                <div className="h-full flex items-center justify-center text-muted-foreground">
+                  {selectedTimestamp ? (
+                    <div className="text-center">
+                      <p className="font-medium mb-2">
+                        {selectedTimestamp.text}
+                      </p>
+                      <p className="text-sm">
+                        点击“编辑”按钮修改此时间戳
+                      </p>
+                    </div>
+                  ) : (
+                    <p>选择一个时间戳进行编辑</p>
+                  )}
             <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
               <div className="h-full flex items-center justify-center text-muted-foreground">
                 <div className="text-center text-sm">
@@ -403,7 +492,7 @@ export function AnnotationPage({
           <div ref={settingsSectionRef}>
             <LayerToggles value={layerToggles} onChange={setLayerToggles} />
           </div>
-          <TimeRover value={currentTime} max={timelineMax || 60} onChange={setCurrentTime} />
+          <TimeRover value={currentTime} max={timelineMax || 60} onChange={(t) => setCurrentTime(t, "ui")} />
           <InstrumentPanel
             currentTime={currentTime}
             selectedAircraft={selectedAircraft}

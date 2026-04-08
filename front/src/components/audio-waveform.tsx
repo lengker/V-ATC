@@ -1,12 +1,35 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  memo,
+  useDeferredValue,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import WaveSurfer from "wavesurfer.js";
-import { Play, Pause, Volume2, VolumeX } from "lucide-react";
+import { Play, Pause, Volume2, VolumeX, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { formatTime } from "@/lib/utils";
+import { createMockWavBlob } from "@/lib/mock-audio";
 import { VoiceTimestamp } from "@/types";
+import { usePlaybackOptional } from "@/context/PlaybackContext";
+
+export type AudioWaveformHandle = {
+  seekTo: (time: number) => void;
+  playSegment: (startTime: number, endTime: number) => void;
+  getDuration: () => number;
+};
 
 interface AudioWaveformProps {
   audioUrl: string;
@@ -16,23 +39,273 @@ interface AudioWaveformProps {
   onTimestampClick?: (timestamp: VoiceTimestamp) => void;
 }
 
-export function AudioWaveform({
-  audioUrl,
-  timestamps = [],
-  currentTime = 0,
-  onTimeUpdate,
+// 时间戳叠加层子组件 - 使用Canvas实现高性能渲染 + VAD 边界拖拽
+interface TimestampOverlayProps {
+  timestamps: VoiceTimestamp[];
+  duration: number;
+  currentTime: number;
+  selectedTimestampId?: string;
+  onTimestampClick: (timestamp: VoiceTimestamp) => void;
+  onTimestampBoundaryDrag?: (timestamp: VoiceTimestamp, startTime: number, endTime: number) => void;
+}
+
+const TimestampOverlay = memo(function TimestampOverlay({
+  timestamps,
+  duration,
+  currentTime,
+  selectedTimestampId,
   onTimestampClick,
-}: AudioWaveformProps) {
+  onTimestampBoundaryDrag,
+}: TimestampOverlayProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const deferredTimestamps = useDeferredValue(timestamps);
+  const dragStateRef = useRef<{ timestamp: VoiceTimestamp; edge: "start" | "end"; startX: number } | null>(null);
+
+  // 绘制 Canvas 上的 VAD 区间
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || duration === 0) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const container = containerRef.current;
+    if (!container) return;
+
+    const width = container.offsetWidth;
+    const height = container.offsetHeight;
+
+    canvas.width = width;
+    canvas.height = height;
+
+    // 清除画布（保持透明，避免遮挡底下的 WaveSurfer 波形）
+    ctx.clearRect(0, 0, width, height);
+
+    // 绘制时间戳标记 - 改进样式
+    deferredTimestamps.forEach((timestamp) => {
+      const startPercent = (timestamp.startTime / duration) * 100;
+      const endPercent = (timestamp.endTime / duration) * 100;
+      const startX = (startPercent / 100) * width;
+      const endX = (endPercent / 100) * width;
+      const barWidth = Math.max(2, endX - startX);
+
+      const isActive = currentTime >= timestamp.startTime && currentTime <= timestamp.endTime;
+      const isSelected = timestamp.id === selectedTimestampId;
+
+      // 绘制 VAD 区间背景 - 更明显的颜色
+      if (isActive) {
+        ctx.fillStyle = "hsl(var(--primary) / 0.25)";
+      } else if (isSelected) {
+        ctx.fillStyle = "hsl(var(--primary) / 0.15)";
+      } else {
+        ctx.fillStyle = "hsl(var(--accent) / 0.08)";
+      }
+      ctx.fillRect(startX, 0, barWidth, height);
+
+      // 绘制左边框
+      ctx.strokeStyle = isActive
+        ? "hsl(var(--primary))"
+        : isSelected
+          ? "hsl(var(--primary) / 0.8)"
+          : "hsl(var(--accent) / 0.4)";
+      ctx.lineWidth = isActive ? 3 : isSelected ? 2 : 1;
+      ctx.beginPath();
+      ctx.moveTo(startX, 0);
+      ctx.lineTo(startX, height);
+      ctx.stroke();
+
+      // 绘制右边框
+      ctx.beginPath();
+      ctx.moveTo(endX, 0);
+      ctx.lineTo(endX, height);
+      ctx.stroke();
+
+      // 绘制上下边框 - 标明 VAD 区间
+      ctx.strokeStyle = isActive
+        ? "hsl(var(--primary) / 0.5)"
+        : "hsl(var(--accent) / 0.2)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(startX, 2);
+      ctx.lineTo(endX, 2);
+      ctx.moveTo(startX, height - 2);
+      ctx.lineTo(endX, height - 2);
+      ctx.stroke();
+
+      // 如果说话人信息，在边框上绘制标签
+      if (timestamp.speaker && barWidth > 40) {
+        const speakerText = timestamp.speaker.substring(0, 3);
+        ctx.fillStyle = isActive ? "hsl(var(--primary))" : "hsl(var(--accent))";
+        ctx.font = "11px sans-serif";
+        ctx.fillText(speakerText, startX + 3, 14);
+      }
+    });
+  }, [deferredTimestamps, duration, currentTime, selectedTimestampId]);
+
+  // 处理 Canvas 上的拖拽（VAD 边界调整）
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+
+    // 查找点击的时间戳，特别是边界
+    for (const timestamp of deferredTimestamps) {
+      const startX = (timestamp.startTime / duration) * rect.width;
+      const endX = (timestamp.endTime / duration) * rect.width;
+
+      // 检测点击是否在边界附近 (±5px)
+      if (Math.abs(clickX - startX) < 8) {
+        if (onTimestampBoundaryDrag) {
+          dragStateRef.current = { timestamp, edge: "start", startX: e.clientX };
+          canvas.style.cursor = "ew-resize";
+        }
+        return;
+      }
+      if (Math.abs(clickX - endX) < 8) {
+        if (onTimestampBoundaryDrag) {
+          dragStateRef.current = { timestamp, edge: "end", startX: e.clientX };
+          canvas.style.cursor = "ew-resize";
+        }
+        return;
+      }
+
+      // 检测点击是否在时间戳区域内
+      const clickTime = (clickX / rect.width) * duration;
+      if (clickTime >= timestamp.startTime && clickTime <= timestamp.endTime) {
+        onTimestampClick(timestamp);
+        return;
+      }
+    }
+  };
+
+  // 处理鼠标移动 - 显示拖拽光标
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+
+    if (dragStateRef.current && onTimestampBoundaryDrag) {
+      // 正在拖拽
+      const dx = e.clientX - dragStateRef.current.startX;
+      const timeOffset = (dx / rect.width) * duration;
+      const { timestamp, edge } = dragStateRef.current;
+
+      if (edge === "start") {
+        const newStartTime = Math.max(0, timestamp.startTime + timeOffset);
+        if (newStartTime < timestamp.endTime) {
+          onTimestampBoundaryDrag(timestamp, newStartTime, timestamp.endTime);
+        }
+      } else {
+        const newEndTime = Math.min(duration, timestamp.endTime + timeOffset);
+        if (newEndTime > timestamp.startTime) {
+          onTimestampBoundaryDrag(timestamp, timestamp.startTime, newEndTime);
+        }
+      }
+    } else {
+      // 悬停检测 - 显示可拖拽光标
+      let showResizeCursor = false;
+      for (const timestamp of deferredTimestamps) {
+        const startX = (timestamp.startTime / duration) * rect.width;
+        const endX = (timestamp.endTime / duration) * rect.width;
+
+        if (Math.abs(clickX - startX) < 8 || Math.abs(clickX - endX) < 8) {
+          showResizeCursor = true;
+          break;
+        }
+      }
+      canvas.style.cursor = showResizeCursor ? "ew-resize" : "pointer";
+    }
+  };
+
+  const handleCanvasMouseUp = () => {
+    dragStateRef.current = null;
+    const canvas = canvasRef.current;
+    if (canvas) canvas.style.cursor = "pointer";
+  };
+
+  return (
+    <div ref={containerRef} className="absolute inset-0">
+      <canvas
+        ref={canvasRef}
+        onMouseDown={handleCanvasMouseDown}
+        onMouseMove={handleCanvasMouseMove}
+        onMouseUp={handleCanvasMouseUp}
+        onMouseLeave={handleCanvasMouseUp}
+        className="absolute inset-0"
+        title="点击选择时间戳，拖拽边界调整时间"
+      />
+    </div>
+  );
+})
+
+export const AudioWaveform = memo(
+  forwardRef<AudioWaveformHandle, AudioWaveformProps>(function AudioWaveform(
+    {
+      audioUrl,
+      timestamps = [],
+      currentTime = 0,
+      onTimeUpdate,
+      onTimestampClick,
+    },
+    ref
+  ) {
   const waveformRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const seekingUntilRef = useRef<number>(0);
+  const segmentEndRef = useRef<number | null>(null);
+  const playback = usePlaybackOptional();
+  const setPlaybackCurrentTime = playback?.setCurrentTime;
+  const setPlaybackAudioDuration = playback?.setAudioDuration;
+  const timelineMaxFromCtx = playback?.timelineMax ?? 0;
+  const rafRef = useRef<number | null>(null);
+  const lastEmitRef = useRef<number>(-1);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [volume, setVolume] = useState(() => {
+    // 从 localStorage 恢复音量设置
+    if (typeof window === "undefined") return 1;
+    const saved = localStorage.getItem("audio-waveform-volume");
+    return saved ? parseFloat(saved) : 1;
+  });
   const [duration, setDuration] = useState(0);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [bufferedPercent, setBufferedPercent] = useState(0);
+  const effectiveCurrentTime = playback?.currentTime ?? currentTime;
+  const deferredCurrentTime = useDeferredValue(effectiveCurrentTime);
 
+  const expectedDuration = useDeferredValue(
+    timestamps.length > 0 ? Math.max(...timestamps.map((t) => t.endTime)) : 0
+  );
+
+  const getLiveDuration = useCallback(() => {
+    const ws = wavesurferRef.current;
+    const wsDuration = ws ? ws.getDuration() : 0;
+    const d = Number.isFinite(wsDuration) && wsDuration > 0 ? wsDuration : 0;
+    return Math.max(d, duration, expectedDuration, 0);
+  }, [duration, expectedDuration]);
+
+  const emitTimeUpdate = useCallback(
+    (time: number) => {
+      setPlaybackCurrentTime?.(time, "waveform");
+      onTimeUpdate?.(time);
+    },
+    [onTimeUpdate, setPlaybackCurrentTime]
+  );
+
+  // 初始化 WaveSurfer
   useEffect(() => {
     if (!waveformRef.current) return;
 
+    setIsLoading(true);
     const wavesurfer = WaveSurfer.create({
       container: waveformRef.current,
       waveColor: "hsl(var(--primary))",
@@ -40,18 +313,16 @@ export function AudioWaveform({
       cursorColor: "hsl(var(--foreground))",
       barWidth: 2,
       barRadius: 3,
-      responsive: true,
       height: 100,
       normalize: true,
-      backend: "WebAudio",
     });
 
-    // 添加错误处理
+    // 错误处理
     wavesurfer.on("error", (error) => {
       if (error instanceof Error && error.name === "AbortError") return;
       console.error("WaveSurfer error:", error);
       setAudioError("音频加载失败，请检查网络连接或音频 URL");
-      // 如果加载失败，使用 timestamps 的最大时间作为时长
+      setIsLoading(false);
       if (timestamps.length > 0) {
         const maxTime = Math.max(...timestamps.map((ts) => ts.endTime));
         setDuration(maxTime || 60);
@@ -60,31 +331,83 @@ export function AudioWaveform({
       }
     });
 
+    // 音频准备完毕
     wavesurfer.on("ready", () => {
-      setDuration(wavesurfer.getDuration());
+      const d = wavesurfer.getDuration();
+      const next = Math.max(d, expectedDuration, 0);
+      setDuration(next);
+      setPlaybackAudioDuration?.(next);
+      setIsLoading(false);
+      setAudioError(null);
     });
 
+    // 播放/暂停事件
     wavesurfer.on("play", () => setIsPlaying(true));
     wavesurfer.on("pause", () => setIsPlaying(false));
     wavesurfer.on("finish", () => setIsPlaying(false));
 
-    wavesurfer.on("timeupdate", (time) => {
-      onTimeUpdate?.(time);
+    // 时间更新事件
+    const handleTimeUpdate = (time: number) => {
+      // 某些音频源会先返回错误/过小 duration；播放中如果时间超过 duration，动态抬高 UI 的 duration
+      if (time > duration) {
+        setDuration((prev) => Math.max(prev, time, expectedDuration));
+      }
+      if (segmentEndRef.current != null && time >= segmentEndRef.current) {
+        try {
+          wavesurfer.pause();
+        } catch {
+          // ignore
+        }
+        segmentEndRef.current = null;
+      }
+      emitTimeUpdate(time);
+    };
+
+    wavesurfer.on("timeupdate", handleTimeUpdate);
+    // 某些 backend 下播放过程主要通过 audioprocess 更稳定地推送时间
+    wavesurfer.on("audioprocess", handleTimeUpdate);
+    wavesurfer.on("ready", () => {
+      try {
+        // 尝试获取缓冲信息
+        const audio = wavesurfer.getMediaElement();
+        if (audio instanceof HTMLAudioElement && audio.buffered.length > 0) {
+          const bufferedEnd = audio.buffered.end(audio.buffered.length - 1);
+          setBufferedPercent((bufferedEnd / wavesurfer.getDuration()) * 100);
+        }
+      } catch (e) {
+        // 某些浏览器不支持缓冲信息
+      }
     });
 
-    wavesurfer.on("seek", (progress) => {
-      const time = progress * wavesurfer.getDuration();
-      onTimeUpdate?.(time);
-    });
-
-    // 加载音频；不同版本的 load 返回值不同（void / Promise），统一兼容处理
+    // 尝试加载音频（若 url 为空，则生成 mock WAV）
     try {
-      const maybePromise = wavesurfer.load(audioUrl) as unknown;
-      if (maybePromise && typeof (maybePromise as Promise<unknown>).catch === "function") {
-        (maybePromise as Promise<unknown>).catch((error) => {
-          if (error instanceof Error && error.name === "AbortError") return;
-          console.error("Error loading audio:", error);
-        });
+      const rawUrl = audioUrl?.trim() ?? "";
+      const shouldUseMockAudio = rawUrl.length === 0;
+
+      if (shouldUseMockAudio) {
+        const mockDurationSec = Math.max(timelineMaxFromCtx, expectedDuration, 1);
+        const blob = createMockWavBlob({ durationSec: mockDurationSec });
+        const maybePromise = wavesurfer.loadBlob(blob) as unknown;
+        if (
+          maybePromise &&
+          typeof (maybePromise as Promise<unknown>).catch === "function"
+        ) {
+          (maybePromise as Promise<unknown>).catch((error) => {
+            if (error instanceof Error && error.name === "AbortError") return;
+            console.error("Error loading mock audio blob:", error);
+          });
+        }
+      } else {
+        const maybePromise = wavesurfer.load(rawUrl) as unknown;
+        if (
+          maybePromise &&
+          typeof (maybePromise as Promise<unknown>).catch === "function"
+        ) {
+          (maybePromise as Promise<unknown>).catch((error) => {
+            if (error instanceof Error && error.name === "AbortError") return;
+            console.error("Error loading audio:", error);
+          });
+        }
       }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
@@ -95,41 +418,214 @@ export function AudioWaveform({
       } else {
         setDuration(60);
       }
+      setIsLoading(false);
     }
 
     wavesurferRef.current = wavesurfer;
 
+    // 清理函数
     return () => {
       try {
-        // 先停止播放，再销毁
         if (wavesurferRef.current) {
           wavesurferRef.current.pause();
-          wavesurferRef.current.unAll(); // 移除所有事件监听器
+          wavesurferRef.current.unAll();
           wavesurferRef.current.destroy();
         }
       } catch (error) {
         console.warn("WaveSurfer cleanup error:", error);
       }
-      wavesurferRef.current = null;
-    };
-  }, [audioUrl, onTimeUpdate, timestamps]);
 
+      wavesurferRef.current = null;
+      if (seekTimeoutRef.current) {
+        clearTimeout(seekTimeoutRef.current);
+      }
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [audioUrl, emitTimeUpdate, expectedDuration, setPlaybackAudioDuration, timelineMaxFromCtx, timestamps]);
+
+  // 播放时用 rAF 轮询 currentTime，确保进度条/时间稳定前进
   useEffect(() => {
-    if (wavesurferRef.current && currentTime !== undefined) {
-      const currentProgress = wavesurferRef.current.getCurrentTime();
-      if (duration > 0 && Math.abs(currentProgress - currentTime) > 0.1) {
-        wavesurferRef.current.seekTo(currentTime / duration);
+    if (!isPlaying) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      lastEmitRef.current = -1;
+      return;
+    }
+
+    const tick = () => {
+      const ws = wavesurferRef.current;
+      if (ws) {
+        try {
+          const t = ws.getCurrentTime();
+          // 降低抖动：只有明显变化才推送
+          if (Math.abs(t - lastEmitRef.current) >= 0.05) {
+            lastEmitRef.current = t;
+            emitTimeUpdate(t);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      lastEmitRef.current = -1;
+    };
+  }, [isPlaying, emitTimeUpdate]);
+
+  // 外部时间变化时，同步 wavesurfer 播放头（解决 TimeRover/列表点击后波形不同步）
+  useEffect(() => {
+    const ws = wavesurferRef.current;
+    if (!ws || audioError) return;
+    if (Date.now() < seekingUntilRef.current) return;
+
+    const liveDuration = getLiveDuration();
+    if (liveDuration <= 0) return;
+    const next = Math.max(0, Math.min(deferredCurrentTime, liveDuration));
+    try {
+      const wsTime = ws.getCurrentTime();
+      if (Math.abs(wsTime - next) < 0.15) return;
+      ws.seekTo(Math.max(0, Math.min(1, next / liveDuration)));
+    } catch (e) {
+      console.warn("Failed to sync external time:", e);
+    }
+  }, [deferredCurrentTime, audioError, getLiveDuration]);
+
+  // 同步倍速播放
+  useEffect(() => {
+    if (wavesurferRef.current) {
+      try {
+        const audio = wavesurferRef.current.getMediaElement();
+        if (audio instanceof HTMLAudioElement) {
+          audio.playbackRate = playbackRate;
+        }
+      } catch (e) {
+        console.warn("Failed to set playback rate:", e);
       }
     }
-  }, [currentTime, duration]);
+  }, [playbackRate]);
 
+  // 同步波形缩放
+  useEffect(() => {
+    if (wavesurferRef.current) {
+      try {
+        // Avoid "No audio loaded" before ready/decode
+        if (wavesurferRef.current.getDuration() <= 0) return;
+        wavesurferRef.current.zoom(Math.round(zoom));
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("No audio loaded")) return;
+        console.warn("Failed to set zoom:", e);
+      }
+    }
+  }, [zoom]);
+
+  // 同步音量并持久化
   useEffect(() => {
     if (wavesurferRef.current) {
       wavesurferRef.current.setVolume(volume);
+      localStorage.setItem("audio-waveform-volume", volume.toString());
     }
   }, [volume]);
 
-  const togglePlayPause = () => {
+  // 键盘快捷键处理
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!wavesurferRef.current) return;
+      
+      // 避免在输入框中触发快捷键
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+
+      switch (e.code) {
+        case "Space":
+          e.preventDefault();
+          wavesurferRef.current.playPause();
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          const nextTime = Math.min(
+            wavesurferRef.current.getCurrentTime() + 5,
+            duration
+          );
+          wavesurferRef.current.seekTo(nextTime / duration);
+          seekingUntilRef.current = Date.now() + 150;
+          setPlaybackCurrentTime?.(nextTime, "ui");
+          onTimeUpdate?.(nextTime);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          const prevTime = Math.max(
+            wavesurferRef.current.getCurrentTime() - 5,
+            0
+          );
+          wavesurferRef.current.seekTo(prevTime / duration);
+          seekingUntilRef.current = Date.now() + 150;
+          setPlaybackCurrentTime?.(prevTime, "ui");
+          onTimeUpdate?.(prevTime);
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          setVolume((prev) => Math.min(prev + 0.1, 1));
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          setVolume((prev) => Math.max(prev - 0.1, 0));
+          break;
+        case "KeyM":
+          e.preventDefault();
+          setVolume((prev) => (prev === 0 ? 1 : 0));
+          break;
+        case "Equal":
+        case "NumpadAdd":
+          e.preventDefault();
+          setZoom((prev) => Math.min(prev + 0.5, 5));
+          break;
+        case "Minus":
+        case "NumpadSubtract":
+          e.preventDefault();
+          setZoom((prev) => Math.max(prev - 0.5, 1));
+          break;
+        case "Digit0":
+          // Ctrl+0 重置缩放
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setZoom(1);
+          }
+          break;
+      }
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      // Ctrl + 滚轮缩放
+      if ((e.ctrlKey || e.metaKey) && waveformRef.current?.contains(e.target as Node)) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.3 : 0.3;
+        setZoom((prev) => Math.max(1, Math.min(prev + delta, 5)));
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("wheel", handleWheel);
+    };
+  }, [duration, onTimeUpdate, setPlaybackCurrentTime]);
+
+  // 事件处理优化 - 使用 useCallback
+  const togglePlayPause = useCallback(() => {
+    // 不要被 isLoading 挡住：有些音频 ready 事件会延迟/缺失，但 play 仍可触发
     if (wavesurferRef.current && !audioError) {
       try {
         wavesurferRef.current.playPause();
@@ -138,54 +634,172 @@ export function AudioWaveform({
         setAudioError("播放失败");
       }
     }
-  };
+  }, [audioError]);
 
-  const handleTimestampClick = (timestamp: VoiceTimestamp) => {
-    if (wavesurferRef.current && duration > 0 && !audioError) {
-      try {
-        wavesurferRef.current.seekTo(timestamp.startTime / duration);
+  const handleTimestampClick = useCallback(
+    (timestamp: VoiceTimestamp) => {
+      if (wavesurferRef.current && duration > 0 && !audioError) {
+        try {
+          const liveDuration = getLiveDuration();
+          if (liveDuration > 0) {
+            wavesurferRef.current.seekTo(Math.max(0, Math.min(1, timestamp.startTime / liveDuration)));
+          }
+          seekingUntilRef.current = Date.now() + 150;
+          setPlaybackCurrentTime?.(timestamp.startTime, "ui");
+          onTimeUpdate?.(timestamp.startTime);
+          onTimestampClick?.(timestamp);
+        } catch (error) {
+          console.error("Seek error:", error);
+        }
+      } else {
+        // 即使音频加载失败，也允许点击时间戳来更新 UI
         onTimestampClick?.(timestamp);
-      } catch (error) {
-        console.error("Seek error:", error);
       }
-    } else {
-      // 即使音频加载失败，也允许点击时间戳来更新 UI
-      onTimestampClick?.(timestamp);
-    }
-  };
+    },
+    [duration, audioError, onTimeUpdate, onTimestampClick, setPlaybackCurrentTime, getLiveDuration]
+  );
+
+  const handleSeek = useCallback(
+    (value: number) => {
+      if (wavesurferRef.current && duration > 0 && !audioError) {
+        try {
+          const liveDuration = getLiveDuration();
+          if (liveDuration > 0) {
+            wavesurferRef.current.seekTo(Math.max(0, Math.min(1, value / liveDuration)));
+          }
+          seekingUntilRef.current = Date.now() + 150;
+          setPlaybackCurrentTime?.(value, "ui");
+          // 使用防抖避免过频繁更新
+          if (seekTimeoutRef.current) {
+            clearTimeout(seekTimeoutRef.current);
+          }
+          seekTimeoutRef.current = setTimeout(() => {
+            onTimeUpdate?.(value);
+          }, 50);
+        } catch (error) {
+          console.error("Seek error:", error);
+        }
+      } else {
+        setPlaybackCurrentTime?.(value, "ui");
+        onTimeUpdate?.(value);
+      }
+    },
+    [duration, audioError, onTimeUpdate, setPlaybackCurrentTime, getLiveDuration]
+  );
+
+  const handleVolumeChange = useCallback((value: number) => {
+    setVolume(value);
+  }, []);
+
+  // 处理 VAD 边界拖拽 - 更新时间戳
+  const handleTimestampBoundaryDrag = useCallback(
+    (timestamp: VoiceTimestamp, startTime: number, endTime: number) => {
+      // 直接更新本地状态，实时显示调整
+      const updatedTimestamp = {
+        ...timestamp,
+        startTime,
+        endTime,
+      };
+      onTimestampClick?.(updatedTimestamp);
+    },
+    [onTimestampClick]
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      seekTo: (time: number) => {
+        const ws = wavesurferRef.current;
+        if (!ws || duration <= 0 || audioError) {
+          setPlaybackCurrentTime?.(time, "ui");
+          onTimeUpdate?.(time);
+          return;
+        }
+        const liveDuration = getLiveDuration();
+        const next = Math.max(0, Math.min(time, liveDuration));
+        try {
+          seekingUntilRef.current = Date.now() + 150;
+          ws.seekTo(liveDuration > 0 ? Math.max(0, Math.min(1, next / liveDuration)) : 0);
+          setPlaybackCurrentTime?.(next, "ui");
+          onTimeUpdate?.(next);
+        } catch (e) {
+          console.warn("imperative seek failed:", e);
+        }
+      },
+      playSegment: (startTime: number, endTime: number) => {
+        const ws = wavesurferRef.current;
+        if (!ws || duration <= 0 || audioError) {
+          setPlaybackCurrentTime?.(startTime, "ui");
+          onTimeUpdate?.(startTime);
+          return;
+        }
+        const liveDuration = getLiveDuration();
+        const s = Math.max(0, Math.min(startTime, liveDuration));
+        const e = Math.max(s, Math.min(endTime, liveDuration));
+        segmentEndRef.current = e;
+        try {
+          seekingUntilRef.current = Date.now() + 150;
+          ws.seekTo(liveDuration > 0 ? Math.max(0, Math.min(1, s / liveDuration)) : 0);
+          setPlaybackCurrentTime?.(s, "ui");
+          onTimeUpdate?.(s);
+          ws.play();
+        } catch (err) {
+          console.warn("playSegment failed:", err);
+          segmentEndRef.current = null;
+        }
+      },
+      getDuration: () => getLiveDuration(),
+    }),
+    [audioError, duration, onTimeUpdate, setPlaybackCurrentTime, getLiveDuration]
+  );
 
   return (
-    <div className="space-y-4">
+    <div ref={containerRef} className="space-y-4">
       {audioError && (
         <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-md text-sm text-destructive">
           {audioError}
           <div className="text-xs text-muted-foreground mt-1">
-            界面仍可正常使用，但无法播放音频
+            界面仍可正常使用，但无法播放音频。快捷键：空格(播放/暂停)、左右箭头(快进/快退)、上下箭头(音量)
           </div>
         </div>
       )}
-      <div className="relative">
-        <div ref={waveformRef} className="w-full" />
-        {/* 时间戳标记 */}
-        {timestamps.map((timestamp) => (
+
+      {isLoading && (
+        <div className="p-2 bg-blue-50 border border-blue-200 rounded-md text-sm text-blue-700 flex items-center gap-2">
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+          加载音频中...
+        </div>
+      )}
+
+      <div className="relative bg-background rounded-lg overflow-hidden border border-border/50">
+        {/* 波形容器 */}
+        <div ref={waveformRef} className="w-full" style={{ height: "100px" }} />
+        
+        {/* Canvas 时间戳叠加层 - 替代 DOM 方式提高性能 */}
+        <TimestampOverlay
+          timestamps={timestamps}
+          duration={duration}
+          currentTime={deferredCurrentTime}
+          onTimestampClick={handleTimestampClick}
+          onTimestampBoundaryDrag={handleTimestampBoundaryDrag}
+        />
+
+        {/* 缓冲进度条 */}
+        {bufferedPercent > 0 && (
           <div
-            key={timestamp.id}
-            className="absolute top-0 h-full cursor-pointer border-l-2 border-accent hover:bg-accent/20 transition-colors"
-            style={{
-              left: `${duration > 0 ? (timestamp.startTime / duration) * 100 : 0}%`,
-              width: `${duration > 0 ? ((timestamp.endTime - timestamp.startTime) / duration) * 100 : 0}%`,
-            }}
-            onClick={() => handleTimestampClick(timestamp)}
-            title={`${formatTime(timestamp.startTime)} - ${formatTime(timestamp.endTime)}`}
+            className="absolute bottom-0 left-0 h-0.5 bg-primary/30 pointer-events-none"
+            style={{ width: `${bufferedPercent}%` }}
           />
-        ))}
+        )}
       </div>
 
-      <div className="flex items-center gap-4">
+      {/* 播放控制栏 */}
+      <div className="flex items-center gap-2">
         <Button
           variant="outline"
           size="icon"
           onClick={togglePlayPause}
+          title="快捷键: 空格"
         >
           {isPlaying ? (
             <Pause className="h-4 w-4" />
@@ -194,27 +808,59 @@ export function AudioWaveform({
           )}
         </Button>
 
+        {/* 快进/快退按钮 */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            if (wavesurferRef.current && duration > 0) {
+              const newTime = Math.max(deferredCurrentTime - 5, 0);
+              const liveDuration = getLiveDuration();
+              if (liveDuration > 0) {
+                wavesurferRef.current.seekTo(Math.max(0, Math.min(1, newTime / liveDuration)));
+              }
+              seekingUntilRef.current = Date.now() + 150;
+              setPlaybackCurrentTime?.(newTime, "ui");
+              onTimeUpdate?.(newTime);
+            }
+          }}
+          title="快退 5 秒 (快捷键: ←)"
+        >
+          <ChevronLeft className="h-4 w-4 mr-1" />
+          5s
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            if (wavesurferRef.current && duration > 0) {
+              const newTime = Math.min(deferredCurrentTime + 5, duration);
+              const liveDuration = getLiveDuration();
+              if (liveDuration > 0) {
+                wavesurferRef.current.seekTo(Math.max(0, Math.min(1, newTime / liveDuration)));
+              }
+              seekingUntilRef.current = Date.now() + 150;
+              setPlaybackCurrentTime?.(newTime, "ui");
+              onTimeUpdate?.(newTime);
+            }
+          }}
+          title="快进 5 秒 (快捷键: →)"
+        >
+          5s
+          <ChevronRight className="h-4 w-4 ml-1" />
+        </Button>
+
+        {/* 进度条、时间显示 */}
         <div className="flex-1 flex items-center gap-2">
           <span className="text-sm text-muted-foreground min-w-[50px]">
-            {formatTime(currentTime)}
+            {formatTime(deferredCurrentTime)}
           </span>
           <Slider
-            value={[currentTime]}
+            value={[deferredCurrentTime]}
             max={duration}
             step={0.1}
-            onValueChange={([value]) => {
-              if (wavesurferRef.current && duration > 0 && !audioError) {
-                try {
-                  wavesurferRef.current.seekTo(value / duration);
-                  onTimeUpdate?.(value);
-                } catch (error) {
-                  console.error("Seek error:", error);
-                }
-              } else {
-                // 即使音频加载失败，也允许拖动进度条来更新 UI
-                onTimeUpdate?.(value);
-              }
-            }}
+            onValueChange={([value]) => handleSeek(value)}
             className="flex-1"
           />
           <span className="text-sm text-muted-foreground min-w-[50px]">
@@ -222,6 +868,50 @@ export function AudioWaveform({
           </span>
         </div>
 
+        {/* 倍速播放下拉菜单 */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" title="倍速播放">
+              {playbackRate.toFixed(1)}x
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
+              <DropdownMenuItem
+                key={rate}
+                onClick={() => setPlaybackRate(rate)}
+                className={playbackRate === rate ? "bg-accent" : ""}
+              >
+                {rate.toFixed(2)}x
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* 波形缩放按钮 */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setZoom((prev) => Math.max(1, prev - 0.5))}
+          title="缩小波形 (快捷键: -)"
+        >
+          <ZoomOut className="h-4 w-4" />
+        </Button>
+
+        <span className="text-xs text-muted-foreground min-w-[35px] text-center">
+          {Math.round(zoom * 100)}%
+        </span>
+
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setZoom((prev) => Math.min(prev + 0.5, 5))}
+          title="放大波形 (快捷键: +)"
+        >
+          <ZoomIn className="h-4 w-4" />
+        </Button>
+
+        {/* 音量控制 */}
         <div className="flex items-center gap-2">
           {volume === 0 ? (
             <VolumeX className="h-4 w-4" />
@@ -232,11 +922,22 @@ export function AudioWaveform({
             value={[volume]}
             max={1}
             step={0.01}
-            onValueChange={([value]) => setVolume(value)}
+            onValueChange={([value]) => handleVolumeChange(value)}
             className="w-24"
+            title="调节音量 (快捷键: ↑↓, M 静音)"
           />
+          <span className="text-xs text-muted-foreground min-w-[35px] text-right">
+            {Math.round(volume * 100)}%
+          </span>
         </div>
+      </div>
+
+      {/* 快捷键提示 */}
+      <div className="text-xs text-muted-foreground space-y-1">
+        <div>播放控制: Space(播放/暂停) • ←→(快进/快退 5s) • ↑↓(音量调节) • M(静音)</div>
+        <div>参数控制: +/-(缩放波形) • Ctrl+0(重置缩放) • Ctrl+滚轮(缩放) • 拖拽 VAD 边界调整时间</div>
       </div>
     </div>
   );
-}
+  })
+);

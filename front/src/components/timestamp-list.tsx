@@ -1,10 +1,14 @@
 "use client";
 
+import { useDeferredValue, useMemo, useState } from "react";
 import { VoiceTimestamp } from "@/types";
 import { formatTime } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { usePlaybackOptional } from "@/context/PlaybackContext";
 
 interface TimestampListProps {
   timestamps: VoiceTimestamp[];
@@ -21,13 +25,31 @@ export function TimestampList({
   onTimestampClick,
   onTimestampEdit,
 }: TimestampListProps) {
-  const sortedTimestamps = [...timestamps].sort(
-    (a, b) => a.startTime - b.startTime
+  const playback = usePlaybackOptional();
+  const effectiveCurrentTime = playback?.currentTime ?? currentTime;
+
+  const [q, setQ] = useState("");
+  const debouncedQuery = useDebouncedValue(q, 250);
+  const query = debouncedQuery.trim().toLowerCase();
+
+  const sortedTimestamps = useMemo(
+    () => [...timestamps].sort((a, b) => a.startTime - b.startTime),
+    [timestamps]
   );
+
+  const filteredTimestamps = useMemo(() => {
+    if (!query) return sortedTimestamps;
+    return sortedTimestamps.filter((t) => {
+      const hay = `${t.text} ${t.speaker ?? ""} ${formatTime(t.startTime)} ${formatTime(t.endTime)}`.toLowerCase();
+      return hay.includes(query);
+    });
+  }, [query, sortedTimestamps]);
+
+  const deferredTimestamps = useDeferredValue(filteredTimestamps);
 
   const isActive = (timestamp: VoiceTimestamp) => {
     return (
-      currentTime >= timestamp.startTime && currentTime <= timestamp.endTime
+      effectiveCurrentTime >= timestamp.startTime && effectiveCurrentTime <= timestamp.endTime
     );
   };
 
@@ -37,9 +59,20 @@ export function TimestampList({
         <CardTitle>语音时间戳</CardTitle>
       </CardHeader>
       <CardContent>
+        <div className="mb-3 space-y-2">
+          <Input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索：文本 / 说话人 / 时间…"
+            className="h-9 bg-background/40 border-border/60"
+          />
+          <div className="text-xs text-muted-foreground">
+            显示 {deferredTimestamps.length} / {sortedTimestamps.length}
+          </div>
+        </div>
         <ScrollArea className="h-[600px]">
           <div className="space-y-2">
-            {sortedTimestamps.map((timestamp) => {
+            {deferredTimestamps.map((timestamp) => {
               const active = isActive(timestamp);
               const selected = timestamp.id === selectedTimestampId;
 
@@ -52,7 +85,10 @@ export function TimestampList({
                     selected && "ring-2 ring-primary",
                     !active && !selected && "hover:bg-accent"
                   )}
-                  onClick={() => onTimestampClick?.(timestamp)}
+                  onClick={() => {
+                    playback?.setCurrentTime(timestamp.startTime, "ui");
+                    onTimestampClick?.(timestamp);
+                  }}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1">
