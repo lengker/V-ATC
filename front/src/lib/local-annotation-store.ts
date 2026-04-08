@@ -1,6 +1,7 @@
 import type { VoiceTimestamp } from "@/types";
 
 const keyFor = (audioId: string) => `alpha.timestamps.override.${audioId}`;
+const fullKeyFor = (audioId: string) => `alpha.timestamps.full.${audioId}`;
 
 export function loadTimestampOverrides(audioId: string): Record<string, VoiceTimestamp> {
   try {
@@ -22,9 +23,37 @@ export function saveTimestampOverride(audioId: string, ts: VoiceTimestamp) {
   }
 }
 
+export function loadFullTimestamps(audioId: string): VoiceTimestamp[] | null {
+  try {
+    const raw = localStorage.getItem(fullKeyFor(audioId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as VoiceTimestamp[];
+    if (!Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveFullTimestamps(audioId: string, timestamps: VoiceTimestamp[]) {
+  try {
+    localStorage.setItem(fullKeyFor(audioId), JSON.stringify(timestamps));
+  } catch {
+    // ignore
+  }
+}
+
 export function clearTimestampOverrides(audioId: string) {
   try {
     localStorage.removeItem(keyFor(audioId));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearFullTimestamps(audioId: string) {
+  try {
+    localStorage.removeItem(fullKeyFor(audioId));
   } catch {
     // ignore
   }
@@ -47,3 +76,9 @@ export function applyTimestampOverrides(
   return base.map((t) => overrides[t.id] ?? t);
 }
 
+export function loadTimestampsWithLocalEdits(audioId: string, base: VoiceTimestamp[]) {
+  const full = loadFullTimestamps(audioId);
+  if (full && full.length > 0) return full;
+  const overrides = loadTimestampOverrides(audioId);
+  return applyTimestampOverrides(base, overrides);
+}
