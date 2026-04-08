@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { AudioWaveform } from "@/components/audio-waveform";
 import { TimestampList } from "@/components/timestamp-list";
 import { TextEditor } from "@/components/text-editor";
+import { TranscriptTimelineEditor } from "@/components/transcript-timeline-editor";
 import { AuxiliaryInfo } from "@/components/auxiliary-info";
 import { EfbTopbar } from "@/components/efb-topbar";
 import { EfbBottomNav } from "@/components/efb-bottom-nav";
@@ -13,6 +14,7 @@ import { LayerToggles, type LayerTogglesState } from "@/components/layer-toggles
 import { TimeRover } from "@/components/time-rover";
 import { TargetsPanel } from "@/components/targets-panel";
 import { RecordingsPanel } from "@/components/recordings-panel";
+import { QianwenAgentWidget } from "@/components/qianwen-agent-widget";
 import { AudioData, ADSBData, VoiceTimestamp } from "@/types";
 import type { RecordingMeta } from "@/mock/demo-data";
 import { audioAPI } from "@/lib/api";
@@ -62,6 +64,15 @@ export function AnnotationPage({
   const [timestamps, setTimestamps] = useState<VoiceTimestamp[]>(() => {
     // 初次加载：合并本地保存的 override（无后端也能持久化）
     if (typeof window === "undefined") return audioData.timestamps;
+    try {
+      const fullRaw = localStorage.getItem(`alpha.timestamps.full.${audioData.id}`);
+      if (fullRaw) {
+        const full = JSON.parse(fullRaw) as VoiceTimestamp[];
+        if (Array.isArray(full) && full.length > 0) return full;
+      }
+    } catch {
+      // ignore
+    }
     const overrides = loadTimestampOverrides(audioData.id);
     return applyTimestampOverrides(audioData.timestamps, overrides);
   });
@@ -92,9 +103,36 @@ export function AnnotationPage({
 
   // 同步 audioData 的 timestamps 变化
   useEffect(() => {
+    try {
+      const fullRaw = localStorage.getItem(`alpha.timestamps.full.${audioData.id}`);
+      if (fullRaw) {
+        const full = JSON.parse(fullRaw) as VoiceTimestamp[];
+        if (Array.isArray(full) && full.length > 0) {
+          setTimestamps(full);
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
     const overrides = loadTimestampOverrides(audioData.id);
     setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
   }, [audioData.timestamps]);
+
+  const handleSetTimestamps = useCallback(
+    (next: VoiceTimestamp[]) => {
+      setTimestamps(next);
+      // 支持拆分/合并/删除/新增段落：用 full list 持久化，刷新不丢
+      if (typeof window !== "undefined") {
+        try {
+          localStorage.setItem(`alpha.timestamps.full.${audioData.id}`, JSON.stringify(next));
+        } catch {
+          // ignore
+        }
+      }
+    },
+    [audioData.id]
+  );
 
   // 从音频数据中提取所有唯一的飞机 ICAO24
   const aircraftList = Array.from(
@@ -135,6 +173,11 @@ export function AnnotationPage({
           );
           setTimestamps(updatedTimestamps);
           saveTimestampOverride(audioData.id, updatedTimestamp);
+          try {
+            localStorage.setItem(`alpha.timestamps.full.${audioData.id}`, JSON.stringify(updatedTimestamps));
+          } catch {
+            // ignore
+          }
 
           toast({
             title: "成功",
@@ -149,6 +192,11 @@ export function AnnotationPage({
           );
           setTimestamps(updatedTimestamps);
           saveTimestampOverride(audioData.id, updatedTimestamp);
+          try {
+            localStorage.setItem(`alpha.timestamps.full.${audioData.id}`, JSON.stringify(updatedTimestamps));
+          } catch {
+            // ignore
+          }
           toast({
             title: "已本地保存",
             description: "后端未就绪/保存失败，已先保存到浏览器本地（待后续同步）",
@@ -163,6 +211,11 @@ export function AnnotationPage({
         );
         setTimestamps(updatedTimestamps);
         saveTimestampOverride(audioData.id, updatedTimestamp);
+        try {
+          localStorage.setItem(`alpha.timestamps.full.${audioData.id}`, JSON.stringify(updatedTimestamps));
+        } catch {
+          // ignore
+        }
         toast({
           title: "已本地保存",
           description: "网络/后端异常，已先保存到浏览器本地（待后续同步）",
@@ -179,6 +232,18 @@ export function AnnotationPage({
     setIsEditing(false);
     setSelectedTimestamp(null);
   }, []);
+
+  // 把智能体 suggestedText 直接应用到当前选中的时间戳，并走原有保存逻辑
+  const handleApplyAiSuggestedText = useCallback(
+    (text: string) => {
+      if (!selectedTimestamp) return;
+      handleSaveTimestamp({
+        ...selectedTimestamp,
+        text,
+      });
+    },
+    [handleSaveTimestamp, selectedTimestamp]
+  );
 
   // 处理音频时间更新
   const handleTimeUpdate = useCallback((time: number) => {
@@ -272,12 +337,18 @@ export function AnnotationPage({
           </div>
 
           <div ref={transcriptSectionRef}>
-            <TimestampList
-              timestamps={timestamps}
+            <TranscriptTimelineEditor
+              value={timestamps}
               currentTime={currentTime}
-              selectedTimestampId={selectedTimestamp?.id}
-              onTimestampClick={handleTimestampClick}
-              onTimestampEdit={handleTimestampEdit}
+              timelineMax={timelineMax || 60}
+              onSeek={(t) => setCurrentTime(t)}
+              onChange={(next) => {
+                handleSetTimestamps(next);
+                // 同步右侧智能体上下文：优先选中“当前播放指针所在段”
+                const active =
+                  next.find((x) => currentTime >= x.startTime && currentTime <= x.endTime) ?? null;
+                setSelectedTimestamp(active);
+              }}
             />
           </div>
         </div>
@@ -299,42 +370,36 @@ export function AnnotationPage({
           </div>
 
           <div className="h-[320px]">
-            {isEditing && selectedTimestamp ? (
-              <TextEditor
-                timestamp={selectedTimestamp}
-                onSave={handleSaveTimestamp}
-                onCancel={handleCancelEdit}
-              />
-            ) : (
-              <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
-                <div className="h-full flex items-center justify-center text-muted-foreground">
-                  {selectedTimestamp ? (
-                    <div className="text-center">
-                      <p className="font-medium mb-2">
-                        {selectedTimestamp.text}
-                      </p>
-                      <p className="text-sm">
-                        点击"编辑"按钮修改此时间戳
-                      </p>
-                    </div>
-                  ) : (
-                    <p>选择一个时间戳进行编辑</p>
-                  )}
+            <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
+              <div className="h-full flex items-center justify-center text-muted-foreground">
+                <div className="text-center text-sm">
+                  多段精细编辑已集成在左侧「语音剪辑」面板：支持多选、批量修改、拆分/合并、拖拽裁剪、删除。
                 </div>
-              </Card>
-            )}
+              </div>
+            </Card>
           </div>
         </div>
 
         {/* 右侧：仪表 + 辅助信息 */}
         <div className="col-span-12 lg:col-span-3 flex flex-col gap-3">
-          <TargetsPanel
-            adsbData={adsbData}
-            visibleSet={visibleAircraftSet}
-            onVisibleSetChange={setVisibleAircraftSet}
-            selectedAircraft={selectedAircraft}
-            onSelectAircraft={handleAircraftSelect}
-          />
+          <div className="relative">
+            <TargetsPanel
+              adsbData={adsbData}
+              visibleSet={visibleAircraftSet}
+              onVisibleSetChange={setVisibleAircraftSet}
+              selectedAircraft={selectedAircraft}
+              onSelectAircraft={handleAircraftSelect}
+            />
+            <div className="absolute top-3 right-3 z-20">
+              <QianwenAgentWidget
+                audioId={audioData.id}
+                currentTime={currentTime}
+                selectedAircraft={selectedAircraft}
+                selectedTimestamp={selectedTimestamp}
+                onApplySuggestedText={handleApplyAiSuggestedText}
+              />
+            </div>
+          </div>
           <div ref={settingsSectionRef}>
             <LayerToggles value={layerToggles} onChange={setLayerToggles} />
           </div>
