@@ -9,6 +9,10 @@ export type LayerTogglesState = {
   waypoints: boolean;
   landmarks: boolean;
   trails: boolean;
+  /** 计划/绕飞航路折线 */
+  routes: boolean;
+  /** 障碍或受限区多边形 */
+  obstacles: boolean;
 };
 
 export function LayerToggles({
@@ -45,6 +49,14 @@ export function LayerToggles({
         <label className="flex items-center gap-2 cursor-pointer select-none col-span-2">
           <Checkbox checked={value.trails} onCheckedChange={(v) => set("trails", Boolean(v))} />
           <span className="text-sm">ADSB Trails</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <Checkbox checked={value.routes} onCheckedChange={(v) => set("routes", Boolean(v))} />
+          <span className="text-sm">Routes / 绕飞</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <Checkbox checked={value.obstacles} onCheckedChange={(v) => set("obstacles", Boolean(v))} />
+          <span className="text-sm">障碍区</span>
         </label>
       </div>
     </div>

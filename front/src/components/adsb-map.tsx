@@ -21,6 +21,10 @@ interface ADSBMapProps {
     waypoints?: boolean;
     landmarks?: boolean;
     trails?: boolean;
+    /** 计划航路 / 绕飞航路 */
+    routes?: boolean;
+    /** 天气等障碍多边形 */
+    obstacles?: boolean;
   };
   currentTime?: number;
   selectedAircraft?: string;
@@ -87,10 +91,14 @@ export function ADSBMap({
     );
 
     if (sane.length === 0) {
+      const { minLat, maxLat, minLon, maxLon } = deriveBoundsFromData({
+        adsb: [],
+        statics: staticLayers,
+      });
       return {
         filteredPoints: [] as ADSBData[],
         currentPoints: [] as ADSBData[],
-        bounds: { minLat: 0, maxLat: 1, minLon: 0, maxLon: 1 },
+        bounds: { minLat, maxLat, minLon, maxLon },
       };
     }
 
@@ -128,6 +136,21 @@ export function ADSBMap({
     return { x, y };
   };
 
+  const linePathD = (points: Array<{ lat: number; lon: number }>) => {
+    if (points.length === 0) return "";
+    return points
+      .map(({ lat, lon }, idx) => {
+        const { x, y } = project(lat, lon);
+        return `${idx === 0 ? "M" : "L"} ${x} ${y}`;
+      })
+      .join(" ");
+  };
+
+  const closedPolygonD = (points: Array<{ lat: number; lon: number }>) => {
+    if (points.length === 0) return "";
+    return `${linePathD(points)} Z`;
+  };
+
   // 构造每架飞机的折线
   const trails = useMemo(() => {
     const byAircraft: Record<string, ADSBData[]> = {};
@@ -147,7 +170,15 @@ export function ADSBMap({
     waypoints: toggles?.waypoints ?? true,
     landmarks: toggles?.landmarks ?? true,
     trails: toggles?.trails ?? true,
+    routes: toggles?.routes ?? true,
+    obstacles: toggles?.obstacles ?? true,
   };
+
+  const routeLinesSorted = useMemo(() => {
+    const list = staticLayers?.routeLines ?? [];
+    const order: Record<string, number> = { planned: 0, detour: 1, missed: 2 };
+    return [...list].sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
+  }, [staticLayers?.routeLines]);
 
   // 鼠标按下 - 开始拖拽
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -231,8 +262,11 @@ export function ADSBMap({
       <div className="px-3 py-2 border-b flex items-center justify-between text-xs">
         <div className="flex items-center gap-3">
           <span className="font-semibold text-foreground">🗺️ ADSB 实时航迹地图</span>
+          <span className="text-muted-foreground hidden sm:inline">
+            航路 · 障碍区 · 绕飞
+          </span>
           <span className="text-muted-foreground">
-            当前时间: {formatTime(currentTime || 0)}
+            t={formatTime(currentTime || 0)}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -375,6 +409,125 @@ export function ADSBMap({
                 );
               })}
 
+            {/* 障碍 / 受限区（示意多边形） */}
+            {show.obstacles &&
+              (staticLayers?.obstacleZones ?? []).map((z) => {
+                const fill =
+                  z.kind === "weather"
+                    ? "rgba(249, 115, 22, 0.2)"
+                    : z.kind === "nfz"
+                      ? "rgba(239, 68, 68, 0.18)"
+                      : "rgba(120, 113, 108, 0.2)";
+                const stroke =
+                  z.kind === "weather"
+                    ? "rgba(251, 146, 60, 0.75)"
+                    : z.kind === "nfz"
+                      ? "rgba(248, 113, 113, 0.85)"
+                      : "rgba(168, 162, 158, 0.7)";
+                const d = closedPolygonD(z.polygon);
+                const cLat = z.polygon.reduce((s, p) => s + p.lat, 0) / z.polygon.length;
+                const cLon = z.polygon.reduce((s, p) => s + p.lon, 0) / z.polygon.length;
+                const { x: lx, y: ly } = project(cLat, cLon);
+                return (
+                  <g key={z.id}>
+                    <path d={d} fill={fill} stroke={stroke} strokeWidth={0.35} strokeDasharray="1 0.6" />
+                    <text
+                      x={lx}
+                      y={ly}
+                      fontSize="2"
+                      fill="rgba(254, 215, 170, 0.95)"
+                      textAnchor="middle"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {z.name}
+                    </text>
+                  </g>
+                );
+              })}
+
+            {/* 计划航路 / 绕飞航路 */}
+            {show.routes &&
+              routeLinesSorted.map((route) => {
+                const d = linePathD(route.points);
+                if (!d) return null;
+                const isDetour = route.kind === "detour";
+                const isMissed = route.kind === "missed";
+                const stroke = isDetour
+                  ? "rgba(232, 121, 249, 0.95)"
+                  : isMissed
+                    ? "rgba(251, 191, 36, 0.9)"
+                    : "rgba(34, 211, 238, 0.88)";
+                const strokeW = isDetour ? 1.35 : isMissed ? 1.1 : 0.95;
+                const dash = isDetour ? "1.8 1.1" : isMissed ? "2 1.2" : "2.2 1.4";
+                const p0 = route.points[0];
+                const pLast = route.points[route.points.length - 1];
+                const { x: tx, y: ty } = project(p0.lat, p0.lon);
+                const { x: ex, y: ey } = project(pLast.lat, pLast.lon);
+                // 计划线与绕飞线终点常重合，绕飞标记略偏移以免完全叠盖
+                const nudgeX = isDetour ? 0.65 : 0;
+                const nudgeY = isDetour ? -0.45 : 0;
+                const mx = ex + nudgeX;
+                const my = ey + nudgeY;
+                const endCaption =
+                  route.endLabel ??
+                  `${pLast.lat.toFixed(3)}°, ${pLast.lon.toFixed(3)}°`;
+                return (
+                  <g key={route.id}>
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={strokeW}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeDasharray={dash}
+                      opacity={0.92}
+                    />
+                    <text
+                      x={tx + 1.2}
+                      y={ty - 1}
+                      fontSize="2"
+                      fill={stroke}
+                      fontWeight="600"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {route.name}
+                      {isDetour ? " · 绕飞" : ""}
+                    </text>
+                    {/* 终点：菱形标记 + 终点名 / 坐标 */}
+                    <g style={{ pointerEvents: "none" }}>
+                      <path
+                        d={`M ${mx} ${my - 1.4} L ${mx + 1.1} ${my} L ${mx} ${my + 1.4} L ${mx - 1.1} ${my} Z`}
+                        fill={stroke}
+                        stroke="rgba(255,255,255,0.85)"
+                        strokeWidth={0.15}
+                        opacity={0.95}
+                      />
+                      <text
+                        x={mx}
+                        y={my - 2.2}
+                        fontSize="1.85"
+                        fill="rgba(248, 250, 252, 0.95)"
+                        fontWeight="700"
+                        textAnchor="middle"
+                      >
+                        终点
+                      </text>
+                      <text
+                        x={mx}
+                        y={my + 3.2}
+                        fontSize="1.75"
+                        fill={stroke}
+                        fontWeight="600"
+                        textAnchor="middle"
+                      >
+                        {endCaption}
+                      </text>
+                    </g>
+                  </g>
+                );
+              })}
+
             {/* 航迹线 - 带流动动画 */}
             {show.trails &&
               trails.map(({ icao24, pts }) => {
@@ -483,9 +636,9 @@ export function ADSBMap({
           </g>
         </svg>
 
-        {/* 飞机信息弹窗 - 悬停显示 */}
+        {/* 飞机信息弹窗 - 悬停显示（右下角，避免与左下角图例重叠） */}
         {hoveredAircraft && (
-          <Card className="absolute bottom-4 left-4 p-3 bg-black/85 border-primary/40 text-white text-xs max-w-sm z-20 backdrop-blur-sm shadow-lg">
+          <Card className="absolute bottom-4 right-4 p-3 bg-black/90 border-primary/40 text-white text-xs max-w-[min(18rem,calc(100%-2rem))] z-30 backdrop-blur-md shadow-xl ring-1 ring-white/10">
             <div className="space-y-1.5">
               <div className="flex items-center gap-2 font-bold text-sm border-b border-primary/30 pb-1.5">
                 <Plane className="h-4 w-4 text-cyan-400" />
@@ -516,20 +669,32 @@ export function ADSBMap({
           </Card>
         )}
 
-        {/* 图例 - 超小透明版 */}
-        <div className="absolute bottom-3 left-4 bg-black/30 backdrop-blur-sm rounded px-2 py-1.5 text-xs text-muted-foreground/70 z-20 border border-border/20">
+        {/* 图例：固定左下，z 低于飞机悬停卡 */}
+        <div className="absolute bottom-3 left-4 bg-black/40 backdrop-blur-sm rounded px-2 py-1.5 text-[10px] text-muted-foreground/85 z-10 border border-border/30 max-w-[10.5rem] pointer-events-none">
           <div className="space-y-0.5">
             <div className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-0.5 bg-cyan-400/90 rounded" style={{ borderStyle: "dashed" }} />
+              <span>计划航路</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-0.5 bg-fuchsia-400/90 rounded" />
+              <span>绕飞航路</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-block w-2 h-2 rounded-sm bg-orange-400/50 border border-orange-300/60" />
+              <span>障碍区</span>
+            </div>
+            <div className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 bg-blue-500 rounded-full" />
-              <span className="text-[10px]">航迹</span>
+              <span>ADSB 航迹</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 bg-amber-500 rounded-full" />
-              <span className="text-[10px]">地标</span>
+              <span>地标</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-              <span className="text-[10px]">航路点</span>
+              <span>航路点</span>
             </div>
           </div>
         </div>

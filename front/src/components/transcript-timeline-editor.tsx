@@ -8,7 +8,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Minus, Plus, Scissors, Trash2, Combine, Pencil, Check } from "lucide-react";
+import {
+  Minus,
+  Plus,
+  Scissors,
+  Trash2,
+  Combine,
+  Pencil,
+  Check,
+  Clapperboard,
+  Sparkles,
+} from "lucide-react";
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
@@ -53,6 +63,11 @@ export function TranscriptTimelineEditor({
   const sorted = useMemo(() => {
     return [...value].sort((a, b) => a.startTime - b.startTime);
   }, [value]);
+
+  const totalSpan = useMemo(() => {
+    if (sorted.length === 0) return 0;
+    return Math.max(...sorted.map((t) => t.endTime)) - Math.min(...sorted.map((t) => t.startTime));
+  }, [sorted]);
 
   const selectedList = useMemo(() => {
     const set = selectedIds;
@@ -291,11 +306,30 @@ export function TranscriptTimelineEditor({
   const currentPct = timelineMax > 0 ? clamp(currentTime / timelineMax, 0, 1) : 0;
 
   return (
-    <Card className={cn("rounded-3xl border-border/70 efb-panel efb-glow", className)}>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle>剪辑</CardTitle>
-          <div className="flex items-center gap-2">
+    <Card className={cn("rounded-3xl border-border/70 efb-panel efb-glow overflow-hidden", className)}>
+      <CardHeader className="space-y-3 border-b border-border/40 bg-gradient-to-br from-background/40 to-transparent pb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary ring-1 ring-primary/20">
+              <Clapperboard className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <CardTitle className="text-base font-semibold tracking-tight">语音剪辑</CardTitle>
+              <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span className="inline-flex items-center gap-1 rounded-full bg-background/50 px-2 py-0.5 ring-1 ring-border/50">
+                  <Sparkles className="h-3 w-3 text-primary" />
+                  {sorted.length} 段
+                </span>
+                <span>总时长约 {formatTime(Math.max(timelineMax, totalSpan))}</span>
+                {active ? (
+                  <span className="text-primary">当前段 #{sorted.findIndex((x) => x.id === active.id) + 1}</span>
+                ) : (
+                  <span>指针未落在任一段内</span>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               variant={editMode ? "default" : "outline"}
               size="sm"
@@ -350,7 +384,7 @@ export function TranscriptTimelineEditor({
         {/* mini timeline */}
         <div
           ref={timelineRef}
-          className="mt-3 relative h-10 rounded-xl border border-border/60 bg-background/20 overflow-hidden"
+          className="relative h-11 rounded-2xl border border-border/50 bg-gradient-to-b from-background/30 to-muted/10 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.05)] overflow-hidden"
           onPointerDown={(e) => {
             // 浏览/定位：点击时间轴任意位置跳转播放指针（像剪辑软件）
             // 编辑模式下也保留这个能力（不影响拖拽句柄）
@@ -421,7 +455,7 @@ export function TranscriptTimelineEditor({
           })}
           {/* playhead */}
           <div
-            className="absolute top-0 bottom-0 w-[2px] bg-primary/80 cursor-ew-resize"
+            className="absolute top-0 bottom-0 z-10 w-px cursor-ew-resize bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.85)]"
             style={{ left: `${currentPct * 100}%` }}
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -431,8 +465,8 @@ export function TranscriptTimelineEditor({
         </div>
       </CardHeader>
 
-      <CardContent>
-        <ScrollArea className="h-[520px] pr-2">
+      <CardContent className="pt-5">
+        <ScrollArea className="h-[min(520px,55vh)] pr-2">
           <div className="space-y-3">
             {sorted.map((t) => {
               const selected = selectedIds.has(t.id);
@@ -441,9 +475,9 @@ export function TranscriptTimelineEditor({
                 <div
                   key={t.id}
                   className={cn(
-                    "rounded-2xl border p-3 transition-colors",
-                    selected ? "border-primary bg-primary/10" : "border-border/60 bg-background/10 hover:bg-accent/30",
-                    isActive && "ring-1 ring-primary"
+                    "rounded-2xl border p-3 transition-all duration-200",
+                    selected ? "border-primary/80 bg-primary/10 shadow-[0_0_0_1px_hsl(var(--primary)/0.2)]" : "border-border/60 bg-background/10 hover:border-border hover:bg-accent/25",
+                    isActive && "ring-2 ring-primary/40"
                   )}
                   onClick={() => {
                     if (editMode) toggleSelect(t.id);
@@ -600,10 +634,23 @@ export function TranscriptTimelineEditor({
             })}
           </div>
         </ScrollArea>
-        <div className="mt-3 text-xs text-muted-foreground">
-          - **浏览态**：点击时间轴任意位置可跳转播放指针；点击段落可定位到该段开始。
-          - **编辑态**（点上方“编辑”）：支持多选、批量修改、拆分/合并、拖拽裁剪、删除。
-          - **主时间线编辑**：编辑态下可直接拖动上方条块整体移动；拖动两端裁剪；按住 **Alt** 在条块内点击可“切一刀”（截断成两段）。
+        <div className="mt-4 rounded-xl border border-border/40 bg-muted/15 p-3 text-xs leading-relaxed text-muted-foreground">
+          <p className="mb-2 font-medium text-foreground/90">操作说明</p>
+          <ul className="list-disc space-y-1.5 pl-4 marker:text-primary/80">
+            <li>
+              <strong className="font-medium text-foreground/90">浏览</strong>
+              ：点击时间轴跳转播放指针；点击段落定位到段首。
+            </li>
+            <li>
+              <strong className="font-medium text-foreground/90">编辑</strong>
+              ：点「编辑」后可多选、拆分、合并、删段，并改时间/文本。
+            </li>
+            <li>
+              <strong className="font-medium text-foreground/90">时间线</strong>
+              ：编辑态下拖动条块平移；拖两端裁剪；按住 <kbd className="rounded border border-border/60 bg-background px-1 py-px font-mono text-[10px]">Alt</kbd>{" "}
+              在条内点击可截断为两段。
+            </li>
+          </ul>
         </div>
       </CardContent>
     </Card>

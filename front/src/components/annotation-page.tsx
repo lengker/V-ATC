@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { AudioWaveform, type AudioWaveformHandle } from "@/components/audio-waveform";
 import { TimestampList } from "@/components/timestamp-list";
-import { TextEditor } from "@/components/text-editor";
 import { TranscriptTimelineEditor } from "@/components/transcript-timeline-editor";
 import { AuxiliaryInfo } from "@/components/auxiliary-info";
 import { EfbTopbar } from "@/components/efb-topbar";
@@ -132,7 +131,6 @@ function AnnotationPageInner({
   const { currentTime, setCurrentTime } = usePlayback();
   const [selectedTimestamp, setSelectedTimestamp] = useState<VoiceTimestamp | null>(null);
   const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
-  const [isEditing, setIsEditing] = useState(false);
   const { toast } = useToast();
   const [layerToggles, setLayerToggles] = useState<LayerTogglesState>({
     runways: true,
@@ -140,6 +138,8 @@ function AnnotationPageInner({
     waypoints: true,
     landmarks: true,
     trails: true,
+    routes: true,
+    obstacles: true,
   });
   const [visibleAircraftSet, setVisibleAircraftSet] = useState<Set<string>>(new Set());
   const [activeBottomTab, setActiveBottomTab] = useState<
@@ -181,14 +181,7 @@ function AnnotationPageInner({
   const handleTimestampClick = useCallback((timestamp: VoiceTimestamp) => {
     setSelectedTimestamp(timestamp);
     setCurrentTime(timestamp.startTime, "ui");
-    setIsEditing(false);
   }, [setCurrentTime]);
-
-  // 处理时间戳编辑
-  const handleTimestampEdit = useCallback((timestamp: VoiceTimestamp) => {
-    setSelectedTimestamp(timestamp);
-    setIsEditing(true);
-  }, []);
 
   // 保存时间戳编辑
   const handleSaveTimestamp = useCallback(
@@ -205,7 +198,6 @@ function AnnotationPageInner({
             title: "已本地保存",
             description: "当前为 mock 模式（未接后端），已保存到浏览器本地（待后续同步）",
           });
-          setIsEditing(false);
           setSelectedTimestamp(null);
           return;
         }
@@ -233,7 +225,6 @@ function AnnotationPageInner({
             title: "成功",
             description: "时间戳已更新",
           });
-          setIsEditing(false);
           setSelectedTimestamp(null);
         } else {
           // fallback：本地保存
@@ -251,7 +242,6 @@ function AnnotationPageInner({
             title: "已本地保存",
             description: "后端未就绪/保存失败，已先保存到浏览器本地（待后续同步）",
           });
-          setIsEditing(false);
           setSelectedTimestamp(null);
         }
       } catch (error) {
@@ -270,18 +260,11 @@ function AnnotationPageInner({
           title: "已本地保存",
           description: "网络/后端异常，已先保存到浏览器本地（待后续同步）",
         });
-        setIsEditing(false);
         setSelectedTimestamp(null);
       }
     },
     [audioData.id, audioData.url, timestamps, toast]
   );
-
-  // 取消编辑
-  const handleCancelEdit = useCallback(() => {
-    setIsEditing(false);
-    setSelectedTimestamp(null);
-  }, []);
 
   // 把智能体 suggestedText 直接应用到当前选中的时间戳，并走原有保存逻辑
   const handleApplyAiSuggestedText = useCallback(
@@ -375,8 +358,9 @@ function AnnotationPageInner({
             />
           </div>
           <div ref={audioSectionRef}>
-            <Card className="p-4 rounded-3xl border-border/70 efb-panel efb-glow">
+            <Card className="overflow-hidden rounded-3xl border-border/70 efb-panel efb-glow">
               <AudioWaveform
+                className="p-4 sm:p-5"
                 ref={audioWaveformRef}
                 audioUrl={audioData.url}
                 timestamps={timestamps}
@@ -404,55 +388,22 @@ function AnnotationPageInner({
           </div>
         </div>
 
-        {/* 中间：地图/航迹 */}
-        <div className="col-span-12 lg:col-span-5 flex flex-col gap-3">
-          <div ref={mapSectionRef}>
-            <Card className="h-[420px] p-3 rounded-3xl border-border/70 efb-panel efb-glow">
-              <ADSBMap
-                adsbData={adsbData}
-                visibleAircraftSet={visibleAircraftSet}
-                staticLayers={vhhhStatic}
-                toggles={layerToggles}
-                currentTime={currentTime}
-                selectedAircraft={selectedAircraft}
-                onAircraftSelect={handleAircraftSelect}
-              />
-            </Card>
-          </div>
-
-          <div className="h-[320px]">
-            {isEditing && selectedTimestamp ? (
-              <div className="relative">
-                <TextEditor
-                  timestamp={selectedTimestamp}
-                  onSave={handleSaveTimestamp}
-                  onCancel={handleCancelEdit}
-                  onPlay={(startTime, endTime) => {
-                    audioWaveformRef.current?.playSegment(startTime, endTime);
-                  }}
+        {/* 中间：地图/航迹（整栏用于地图可视化） */}
+        <div className="col-span-12 lg:col-span-5 flex flex-col gap-3 min-h-0">
+          <div ref={mapSectionRef} className="min-h-0 flex-1">
+            <Card className="flex h-[min(78vh,940px)] min-h-[420px] flex-col overflow-hidden p-3 rounded-3xl border-border/70 efb-panel efb-glow">
+              <div className="min-h-0 flex-1">
+                <ADSBMap
+                  adsbData={adsbData}
+                  visibleAircraftSet={visibleAircraftSet}
+                  staticLayers={vhhhStatic}
+                  toggles={layerToggles}
+                  currentTime={currentTime}
+                  selectedAircraft={selectedAircraft}
+                  onAircraftSelect={handleAircraftSelect}
                 />
               </div>
-            ) : (
-              <Card className="h-full p-4 rounded-3xl border-border/70 efb-panel efb-glow">
-                <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-3 text-sm">
-                  <p className="text-center px-1">
-                    多段精细编辑已集成在左侧「语音剪辑」面板：支持多选、批量修改、拆分/合并、拖拽裁剪、删除。
-                  </p>
-                  {selectedTimestamp ? (
-                    <div className="text-center">
-                      <p className="font-medium mb-2 text-foreground">
-                        {selectedTimestamp.text}
-                      </p>
-                      <p className="text-sm">
-                        点击“编辑”按钮修改此时间戳
-                      </p>
-                    </div>
-                  ) : (
-                    <p>选择一个时间戳进行编辑</p>
-                  )}
-                </div>
-              </Card>
-            )}
+            </Card>
           </div>
         </div>
 

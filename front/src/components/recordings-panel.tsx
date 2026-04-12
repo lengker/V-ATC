@@ -5,7 +5,7 @@ import { AudioData } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn, formatTime } from "@/lib/utils";
-import { Star } from "lucide-react";
+import { Star, Radio, Headphones, User } from "lucide-react";
 import type { RecordingMeta } from "@/mock/demo-data";
 
 export function RecordingsPanel({
@@ -80,28 +80,56 @@ export function RecordingsPanel({
     persistStarred(next);
   };
 
-  const tabBtn = (id: "Radio" | "Cabin" | "Starred" | "Mine") => (
-    <button
-      key={id}
-      onClick={() => setTab(id)}
-      className={cn(
-        "px-2 py-1 rounded-lg text-xs border transition-colors",
-        tab === id ? "bg-primary/15 border-primary/40 text-primary" : "bg-background/20 border-border/60 text-muted-foreground hover:text-foreground"
-      )}
-    >
-      {id}
-    </button>
-  );
+  const tabs: { id: "Radio" | "Cabin" | "Starred" | "Mine"; label: string; icon: typeof Radio }[] = [
+    { id: "Radio", label: "Radio", icon: Radio },
+    { id: "Cabin", label: "Cabin", icon: Headphones },
+    { id: "Starred", label: "Starred", icon: Star },
+    { id: "Mine", label: "Mine", icon: User },
+  ];
 
   return (
-    <Card className="rounded-3xl border-border/70 efb-panel efb-glow">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base">Recordings</CardTitle>
+    <Card className="rounded-3xl border-border/70 efb-panel efb-glow overflow-hidden">
+      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base font-semibold tracking-tight">录音列表</CardTitle>
+          <span className="rounded-full bg-background/50 px-2 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/50">
+            {filtered.length} 条
+          </span>
+        </div>
       </CardHeader>
-      <CardContent>
-        <div className="flex items-center gap-2 mb-3">{(["Radio", "Cabin", "Starred", "Mine"] as const).map(tabBtn)}</div>
-        <ScrollArea className="h-[180px] pr-2">
+      <CardContent className="pt-4">
+        <div
+          className="mb-3 flex flex-wrap gap-1.5 rounded-2xl border border-border/50 bg-muted/15 p-1"
+          role="tablist"
+          aria-label="录音筛选"
+        >
+          {tabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              className={cn(
+                "inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-[11px] font-medium transition-all sm:text-xs",
+                tab === id
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
+              )}
+            >
+              <Icon className="h-3.5 w-3.5 shrink-0 opacity-90" />
+              <span className="truncate">{label}</span>
+            </button>
+          ))}
+        </div>
+        <ScrollArea className="h-[200px] pr-2">
           <div className="space-y-2">
+            {filtered.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/60 bg-background/20 px-4 py-10 text-center text-sm text-muted-foreground">
+                <p>暂无录音</p>
+                <p className="mt-1 text-xs">切换上方分类或导入更多音频</p>
+              </div>
+            ) : null}
             {filtered.map((r) => (
               <div
                 key={r.id}
@@ -119,10 +147,10 @@ export function RecordingsPanel({
                   }
                 }}
                 className={cn(
-                  "w-full text-left rounded-xl border p-3 transition-colors",
+                  "w-full text-left rounded-xl border p-3 transition-all duration-200",
                   r.id === activeId
-                    ? "border-primary bg-primary/10"
-                    : "border-border/60 bg-background/20 hover:bg-accent/50"
+                    ? "border-primary/80 bg-primary/12 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
+                    : "border-border/60 bg-background/15 hover:border-border hover:bg-accent/30"
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
