@@ -7,7 +7,7 @@ import { ADSBData } from "@/types";
 import { formatTime } from "@/lib/utils";
 import type { VhhhStaticLayers } from "@/mock/vhhh-static";
 import { deriveBoundsFromData } from "@/mock/vhhh-static";
-import { Plane, ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -52,8 +52,18 @@ export function ADSBMap({
     const maxW = 100; // 最小 1x
     const w = Math.max(minW, Math.min(maxW, vb.w));
     const h = Math.max(minW, Math.min(maxW, vb.h));
-    const x = Math.max(0, Math.min(100 - w, vb.x));
-    const y = Math.max(0, Math.min(100 - h, vb.y));
+
+    // 在最小缩放附近保留少量平移缓冲，避免“拖不动”的体感
+    // 缩放越小（越接近 1x），缓冲越大；放大后自动收敛到边界内
+    const loosenRatio = Math.max(0, (w - 70) / 30); // w: 70->100 映射到 0->1
+    const panSlack = 8 * loosenRatio;
+    const minX = -panSlack;
+    const maxX = 100 - w + panSlack;
+    const minY = -panSlack;
+    const maxY = 100 - h + panSlack;
+
+    const x = Math.max(minX, Math.min(maxX, vb.x));
+    const y = Math.max(minY, Math.min(maxY, vb.y));
     return { x, y, w, h };
   };
 
@@ -180,6 +190,47 @@ export function ADSBMap({
     return [...list].sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
   }, [staticLayers?.routeLines]);
 
+  const selectedCurrentPoint = useMemo(
+    () => currentPoints.find((p) => p.icao24 === selectedAircraft),
+    [currentPoints, selectedAircraft]
+  );
+
+  const setViewBoxByPoints = (points: Array<{ x: number; y: number }>) => {
+    if (points.length === 0) return;
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const minX = Math.max(0, Math.min(...xs));
+    const maxX = Math.min(100, Math.max(...xs));
+    const minY = Math.max(0, Math.min(...ys));
+    const maxY = Math.min(100, Math.max(...ys));
+
+    // 保留一定边距，并保证至少能看到周边环境（非针尖视角）
+    const padding = 6;
+    const spanX = Math.max(18, maxX - minX);
+    const spanY = Math.max(18, maxY - minY);
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+
+    const width = spanX + padding * 2;
+    const height = spanY + padding * 2;
+
+    setViewBox(clampViewBox({ x: centerX - width / 2, y: centerY - height / 2, w: width, h: height }));
+  };
+
+  const handleFitVisible = () => {
+    const all: Array<{ x: number; y: number }> = [];
+    for (const p of filteredPoints) {
+      all.push(project(p.latitude, p.longitude));
+    }
+    setViewBoxByPoints(all);
+  };
+
+  const handleFocusSelected = () => {
+    if (!selectedCurrentPoint) return;
+    const pt = project(selectedCurrentPoint.latitude, selectedCurrentPoint.longitude);
+    setViewBoxByPoints([pt]);
+  };
+
   // 鼠标按下 - 开始拖拽
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
     // 点击飞机点位/信息时，不开启拖拽，避免影响点选
@@ -293,6 +344,27 @@ export function ADSBMap({
       <div className="flex-1 relative overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800">
         {/* 缩放控制 */}
         <div className="absolute top-4 right-4 flex flex-col gap-1 z-10 bg-black/40 backdrop-blur-sm rounded-lg p-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleFitVisible}
+            className="h-8 w-8 hover:bg-primary/30"
+            title="适配当前可见航迹"
+          >
+            <Focus className="h-4 w-4" />
+          </Button>
+          <div className="h-0.5 bg-border/30 mx-2" />
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleFocusSelected}
+            className="h-8 w-8 hover:bg-primary/30"
+            title="聚焦选中目标"
+            disabled={!selectedCurrentPoint}
+          >
+            <LocateFixed className="h-4 w-4" />
+          </Button>
+          <div className="h-0.5 bg-border/30 mx-2" />
           <Button
             variant="ghost"
             size="icon"
@@ -699,9 +771,16 @@ export function ADSBMap({
           </div>
         </div>
 
-        {/* 缩放指示 */}
-        <div className="absolute top-4 left-4 bg-black/40 backdrop-blur-sm rounded px-2 py-1 text-xs text-muted-foreground">
-          {zoomFactor.toFixed(1)}x
+        {/* 观察态 HUD */}
+        <div className="absolute top-4 left-4 bg-black/45 backdrop-blur-sm rounded px-2 py-1 text-xs text-muted-foreground border border-border/30">
+          <div className="font-mono">{zoomFactor.toFixed(1)}x</div>
+          <div>{currentPoints.length} targets</div>
+          <div>{filteredPoints.length} pts</div>
+          {selectedCurrentPoint ? (
+            <div className="text-cyan-300 max-w-[11rem] truncate">
+              SEL: {selectedCurrentPoint.callsign || selectedCurrentPoint.icao24}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
