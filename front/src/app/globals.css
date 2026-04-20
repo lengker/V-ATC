@@ -78,6 +78,17 @@
   }
 }
 
+/* Leaflet defaults (ensure it fills flex parents) */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+}
+
+.leaflet-div-icon {
+  background: transparent;
+  border: none;
+}
+
 @layer utilities {
   .efb-surface {
     background: linear-gradient(180deg, hsl(222 45% 7%) 0%, hsl(222 45% 5%) 100%);

@@ -5,8 +5,8 @@ import { ADSBData } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { VirtualList } from "@/components/ui/virtual-list";
 
 export function TargetsPanel({
   adsbData,
@@ -96,29 +96,37 @@ export function TargetsPanel({
             全不选过滤结果
           </Button>
         </div>
-        <ScrollArea className="h-[180px] pr-2">
-          <div className="space-y-2">
-            {targets.map((t) => {
-              const checked = visibleSet.has(t.icao24);
-              const active = selectedAircraft === t.icao24;
-              return (
-                <div
-                  key={t.icao24}
-                  className={`rounded-xl border p-2 ${active ? "border-primary bg-primary/10" : "border-border/60 bg-background/20"}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <Checkbox checked={checked} onCheckedChange={(v) => toggle(t.icao24, Boolean(v))} />
-                    <button className="flex-1 text-left" onClick={() => onSelectAircraft(t.icao24)}>
-                      <div className="text-sm font-medium">{t.callsign || t.icao24}</div>
-                      <div className="text-xs text-muted-foreground">{t.icao24}</div>
-                    </button>
-                    <div className="text-xs text-muted-foreground tabular-nums">{Math.round(t.altitude)}ft</div>
-                  </div>
+        <VirtualList
+          items={targets}
+          className="h-[180px] pr-2"
+          gapPx={8}
+          overscan={10}
+          estimateSizePx={56}
+          getKey={(t) => t.icao24}
+          empty={
+            <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+              暂无目标
+            </div>
+          }
+          renderItem={(t) => {
+            const checked = visibleSet.has(t.icao24);
+            const active = selectedAircraft === t.icao24;
+            return (
+              <div
+                className={`rounded-xl border p-2 ${active ? "border-primary bg-primary/10" : "border-border/60 bg-background/20"}`}
+              >
+                <div className="flex items-center gap-2">
+                  <Checkbox checked={checked} onCheckedChange={(v) => toggle(t.icao24, Boolean(v))} />
+                  <button className="flex-1 text-left" onClick={() => onSelectAircraft(t.icao24)}>
+                    <div className="text-sm font-medium">{t.callsign || t.icao24}</div>
+                    <div className="text-xs text-muted-foreground">{t.icao24}</div>
+                  </button>
+                  <div className="text-xs text-muted-foreground tabular-nums">{Math.round(t.altitude)}ft</div>
                 </div>
-              );
-            })}
-          </div>
-        </ScrollArea>
+              </div>
+            );
+          }}
+        />
       </CardContent>
     </Card>
   );
