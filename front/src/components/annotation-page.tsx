@@ -25,11 +25,12 @@ import {
   applyTimestampOverrides,
   loadTimestampOverrides,
   saveTimestampOverride,
+  saveFullTimestamps,
 } from "@/lib/local-annotation-store";
 import { PlaybackProvider, usePlayback } from "@/context/PlaybackContext";
 
 // 动态导入地图组件，禁用 SSR
-const ADSBMap = dynamic(() => import("@/components/adsb-map").then((mod) => ({ default: mod.ADSBMap })), {
+const ADSBMap = dynamic(() => import("@/components/adsb-map-leaflet").then((mod) => ({ default: mod.ADSBMap })), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex items-center justify-center bg-muted rounded-lg">
@@ -153,16 +154,113 @@ function AnnotationPageInner({
   const settingsSectionRef = useRef<HTMLDivElement>(null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
 
+  const fullSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestFullDraftRef = useRef<VoiceTimestamp[] | null>(null);
+
+  // audioId 切换/组件卸载时，清理未完成的防抖写入
+  useEffect(() => {
+    return () => {
+      if (fullSaveDebounceRef.current) {
+        clearTimeout(fullSaveDebounceRef.current);
+        fullSaveDebounceRef.current = null;
+      }
+    };
+  }, [audioData.id]);
+
+  // 全局快捷键：统一绑定在页面层，避免组件各自绑定导致冲突/重复触发
+  useEffect(() => {
+    const shouldIgnore = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (shouldIgnore(e.target)) return;
+
+      const wf = audioWaveformRef.current;
+      if (!wf) return;
+
+      // Keep behavior consistent with the old AudioWaveform-level shortcuts.
+      switch (e.code) {
+        case "Space": {
+          e.preventDefault();
+          wf.togglePlayPause();
+          return;
+        }
+        case "ArrowRight": {
+          e.preventDefault();
+          wf.skipBy(5);
+          return;
+        }
+        case "ArrowLeft": {
+          e.preventDefault();
+          wf.skipBy(-5);
+          return;
+        }
+        case "ArrowUp": {
+          e.preventDefault();
+          wf.setVolume(wf.getVolume() + 0.1);
+          return;
+        }
+        case "ArrowDown": {
+          e.preventDefault();
+          wf.setVolume(wf.getVolume() - 0.1);
+          return;
+        }
+        case "KeyM": {
+          e.preventDefault();
+          wf.toggleMute();
+          return;
+        }
+        case "Equal":
+        case "NumpadAdd": {
+          e.preventDefault();
+          wf.zoomBy(0.5);
+          return;
+        }
+        case "Minus":
+        case "NumpadSubtract": {
+          e.preventDefault();
+          wf.zoomBy(-0.5);
+          return;
+        }
+        case "Digit0": {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            wf.resetZoom();
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const handleSetTimestamps = useCallback(
     (next: VoiceTimestamp[]) => {
       setTimestamps(next);
       // 支持拆分/合并/删除/新增段落：用 full list 持久化，刷新不丢
       if (typeof window !== "undefined") {
-        try {
-          localStorage.setItem(`alpha.timestamps.full.${audioData.id}`, JSON.stringify(next));
-        } catch {
-          // ignore
+        latestFullDraftRef.current = next;
+        if (fullSaveDebounceRef.current) {
+          clearTimeout(fullSaveDebounceRef.current);
         }
+        fullSaveDebounceRef.current = setTimeout(() => {
+          const latest = latestFullDraftRef.current;
+          if (!latest) return;
+          try {
+            saveFullTimestamps(audioData.id, latest);
+          } catch {
+            // ignore
+          }
+        }, 600);
       }
     },
     [audioData.id]

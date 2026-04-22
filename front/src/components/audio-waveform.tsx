@@ -41,6 +41,15 @@ export type AudioWaveformHandle = {
   seekTo: (time: number) => void;
   playSegment: (startTime: number, endTime: number) => void;
   getDuration: () => number;
+  togglePlayPause: () => void;
+  skipBy: (deltaSeconds: number) => void;
+  getVolume: () => number;
+  setVolume: (v: number) => void;
+  toggleMute: () => void;
+  getZoom: () => number;
+  setZoom: (z: number) => void;
+  zoomBy: (delta: number) => void;
+  resetZoom: () => void;
 };
 
 interface AudioWaveformProps {
@@ -330,6 +339,7 @@ export const AudioWaveform = memo(
   const timelineMaxFromCtx = playback?.timelineMax ?? 0;
   const rafRef = useRef<number | null>(null);
   const lastEmitRef = useRef<number>(-1);
+  const lastNonZeroVolumeRef = useRef<number>(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [playbackRate, setPlaybackRate] = useState(1);
@@ -629,96 +639,21 @@ export const AudioWaveform = memo(
       wavesurferRef.current.setVolume(volume);
       localStorage.setItem("audio-waveform-volume", volume.toString());
     }
+    if (volume > 0) lastNonZeroVolumeRef.current = volume;
   }, [volume]);
 
-  // 键盘快捷键处理
+  // Ctrl + 滚轮缩放（仅当鼠标在波形区域上）
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!wavesurferRef.current) return;
-      
-      // 避免在输入框中触发快捷键
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      ) {
-        return;
-      }
-
-      switch (e.code) {
-        case "Space":
-          e.preventDefault();
-          wavesurferRef.current.playPause();
-          break;
-        case "ArrowRight":
-          e.preventDefault();
-          const nextTime = Math.min(
-            wavesurferRef.current.getCurrentTime() + 5,
-            duration
-          );
-          wavesurferRef.current.seekTo(nextTime / duration);
-          seekingUntilRef.current = Date.now() + 150;
-          setPlaybackCurrentTime?.(nextTime, "ui");
-          onTimeUpdate?.(nextTime);
-          break;
-        case "ArrowLeft":
-          e.preventDefault();
-          const prevTime = Math.max(
-            wavesurferRef.current.getCurrentTime() - 5,
-            0
-          );
-          wavesurferRef.current.seekTo(prevTime / duration);
-          seekingUntilRef.current = Date.now() + 150;
-          setPlaybackCurrentTime?.(prevTime, "ui");
-          onTimeUpdate?.(prevTime);
-          break;
-        case "ArrowUp":
-          e.preventDefault();
-          setVolume((prev) => Math.min(prev + 0.1, 1));
-          break;
-        case "ArrowDown":
-          e.preventDefault();
-          setVolume((prev) => Math.max(prev - 0.1, 0));
-          break;
-        case "KeyM":
-          e.preventDefault();
-          setVolume((prev) => (prev === 0 ? 1 : 0));
-          break;
-        case "Equal":
-        case "NumpadAdd":
-          e.preventDefault();
-          setZoom((prev) => Math.min(prev + 0.5, 5));
-          break;
-        case "Minus":
-        case "NumpadSubtract":
-          e.preventDefault();
-          setZoom((prev) => Math.max(prev - 0.5, 1));
-          break;
-        case "Digit0":
-          // Ctrl+0 重置缩放
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            setZoom(1);
-          }
-          break;
-      }
-    };
-
     const handleWheel = (e: WheelEvent) => {
-      // Ctrl + 滚轮缩放
       if ((e.ctrlKey || e.metaKey) && waveformRef.current?.contains(e.target as Node)) {
         e.preventDefault();
         const delta = e.deltaY > 0 ? -0.3 : 0.3;
         setZoom((prev) => Math.max(1, Math.min(prev + delta, 5)));
       }
     };
-
-    window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("wheel", handleWheel, { passive: false });
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("wheel", handleWheel);
-    };
-  }, [duration, onTimeUpdate, setPlaybackCurrentTime]);
+    return () => window.removeEventListener("wheel", handleWheel);
+  }, []);
 
   // 事件处理优化 - 使用 useCallback
   const togglePlayPause = useCallback(() => {
@@ -864,8 +799,58 @@ export const AudioWaveform = memo(
         }
       },
       getDuration: () => getLiveDuration(),
+      togglePlayPause: () => {
+        togglePlayPause();
+      },
+      skipBy: (deltaSeconds: number) => {
+        const ws = wavesurferRef.current;
+        const liveDuration = getLiveDuration();
+        const baseTime = ws ? ws.getCurrentTime() : deferredCurrentTime;
+        const maxT = liveDuration > 0 ? liveDuration : Math.max(duration, expectedDuration, baseTime);
+        const next = Math.max(0, Math.min(baseTime + deltaSeconds, maxT));
+        try {
+          seekingUntilRef.current = Date.now() + 150;
+          if (ws && maxT > 0 && !audioError) {
+            ws.seekTo(Math.max(0, Math.min(1, next / maxT)));
+          }
+          setPlaybackCurrentTime?.(next, "ui");
+          onTimeUpdate?.(next);
+        } catch {
+          // ignore
+        }
+      },
+      getVolume: () => volume,
+      setVolume: (v: number) => {
+        const next = Math.max(0, Math.min(1, v));
+        setVolume(next);
+      },
+      toggleMute: () => {
+        setVolume((prev) => {
+          if (prev === 0) return Math.max(0.05, Math.min(1, lastNonZeroVolumeRef.current || 1));
+          return 0;
+        });
+      },
+      getZoom: () => zoom,
+      setZoom: (z: number) => {
+        const next = Math.max(1, Math.min(5, z));
+        setZoom(next);
+      },
+      zoomBy: (delta: number) => {
+        setZoom((prev) => Math.max(1, Math.min(5, prev + delta)));
+      },
+      resetZoom: () => setZoom(1),
     }),
-    [audioError, duration, onTimeUpdate, setPlaybackCurrentTime, getLiveDuration]
+    [
+      audioError,
+      deferredCurrentTime,
+      duration,
+      getLiveDuration,
+      onTimeUpdate,
+      setPlaybackCurrentTime,
+      togglePlayPause,
+      volume,
+      zoom,
+    ]
   );
 
   return (

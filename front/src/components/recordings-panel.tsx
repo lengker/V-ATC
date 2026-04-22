@@ -3,10 +3,10 @@
 import { useMemo, useState } from "react";
 import { AudioData } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn, formatTime } from "@/lib/utils";
 import { Star, Radio, Headphones, User } from "lucide-react";
 import type { RecordingMeta } from "@/mock/demo-data";
+import { VirtualList } from "@/components/ui/virtual-list";
 
 export function RecordingsPanel({
   recordings,
@@ -122,61 +122,64 @@ export function RecordingsPanel({
             </button>
           ))}
         </div>
-        <ScrollArea className="h-[200px] pr-2">
-          <div className="space-y-2">
-            {filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/60 bg-background/20 px-4 py-10 text-center text-sm text-muted-foreground">
-                <p>暂无录音</p>
-                <p className="mt-1 text-xs">切换上方分类或导入更多音频</p>
-              </div>
-            ) : null}
-            {filtered.map((r) => (
-              <div
-                key={r.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => {
+        <VirtualList
+          items={filtered}
+          className="h-[200px] pr-2"
+          gapPx={8}
+          overscan={10}
+          estimateSizePx={84}
+          getKey={(r) => r.id}
+          empty={
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/60 bg-background/20 px-4 py-10 text-center text-sm text-muted-foreground">
+              <p>暂无录音</p>
+              <p className="mt-1 text-xs">切换上方分类或导入更多音频</p>
+            </div>
+          }
+          renderItem={(r) => (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                rememberRecent(r.id);
+                onSelect(r.id);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
                   rememberRecent(r.id);
                   onSelect(r.id);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    rememberRecent(r.id);
-                    onSelect(r.id);
-                  }
-                }}
-                className={cn(
-                  "w-full text-left rounded-xl border p-3 transition-all duration-200",
-                  r.id === activeId
-                    ? "border-primary/80 bg-primary/12 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
-                    : "border-border/60 bg-background/15 hover:border-border hover:bg-accent/30"
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-sm font-medium truncate">{r.id}</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleStar(r.id);
-                      }}
-                      className="text-muted-foreground hover:text-foreground"
-                      title="Star"
-                    >
-                      <Star className={cn("h-4 w-4", starredSet.has(r.id) ? "fill-yellow-400 text-yellow-400" : "")} />
-                    </button>
-                    <div className="text-xs text-muted-foreground">{formatTime(r.duration)}</div>
-                  </div>
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground truncate">
-                  {recordingMeta[r.id]?.channel ?? "Radio"} · {r.metadata?.icao ?? "ICAO -"} · {r.metadata?.frequency ?? "FREQ -"} · {r.metadata?.date ?? "DATE -"}
+                }
+              }}
+              className={cn(
+                "w-full text-left rounded-xl border p-3 transition-all duration-200",
+                r.id === activeId
+                  ? "border-primary/80 bg-primary/12 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
+                  : "border-border/60 bg-background/15 hover:border-border hover:bg-accent/30"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-medium truncate">{r.id}</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleStar(r.id);
+                    }}
+                    className="text-muted-foreground hover:text-foreground"
+                    title="Star"
+                  >
+                    <Star className={cn("h-4 w-4", starredSet.has(r.id) ? "fill-yellow-400 text-yellow-400" : "")} />
+                  </button>
+                  <div className="text-xs text-muted-foreground">{formatTime(r.duration)}</div>
                 </div>
               </div>
-            ))}
-          </div>
-        </ScrollArea>
+              <div className="mt-1 text-xs text-muted-foreground truncate">
+                {recordingMeta[r.id]?.channel ?? "Radio"} · {r.metadata?.icao ?? "ICAO -"} · {r.metadata?.frequency ?? "FREQ -"} · {r.metadata?.date ?? "DATE -"}
+              </div>
+            </div>
+          )}
+        />
       </CardContent>
     </Card>
   );

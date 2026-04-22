@@ -5,10 +5,10 @@ import { VoiceTimestamp } from "@/types";
 import { formatTime } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { usePlaybackOptional } from "@/context/PlaybackContext";
+import { VirtualList } from "@/components/ui/virtual-list";
 
 interface TimestampListProps {
   timestamps: VoiceTimestamp[];
@@ -70,15 +70,24 @@ export function TimestampList({
             显示 {deferredTimestamps.length} / {sortedTimestamps.length}
           </div>
         </div>
-        <ScrollArea className="h-[600px]">
-          <div className="space-y-2">
-            {deferredTimestamps.map((timestamp) => {
+          <VirtualList
+            items={deferredTimestamps}
+            className="h-[600px]"
+            gapPx={8}
+            overscan={10}
+            estimateSizePx={92}
+            getKey={(t) => t.id}
+            empty={
+              <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+                暂无结果
+              </div>
+            }
+            renderItem={(timestamp) => {
               const active = isActive(timestamp);
               const selected = timestamp.id === selectedTimestampId;
 
               return (
                 <div
-                  key={timestamp.id}
                   className={cn(
                     "p-3 rounded-lg border cursor-pointer transition-colors",
                     active && "bg-primary/10 border-primary",
@@ -93,11 +102,8 @@ export function TimestampList({
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1">
                       <div className="text-xs text-muted-foreground mb-1">
-                        {formatTime(timestamp.startTime)} -{" "}
-                        {formatTime(timestamp.endTime)}
-                        {timestamp.speaker && (
-                          <span className="ml-2">({timestamp.speaker})</span>
-                        )}
+                        {formatTime(timestamp.startTime)} - {formatTime(timestamp.endTime)}
+                        {timestamp.speaker && <span className="ml-2">({timestamp.speaker})</span>}
                       </div>
                       <div className="text-sm">{timestamp.text}</div>
                       {timestamp.confidence !== undefined && (
@@ -118,9 +124,8 @@ export function TimestampList({
                   </div>
                 </div>
               );
-            })}
-          </div>
-        </ScrollArea>
+            }}
+          />
       </CardContent>
     </Card>
   );
