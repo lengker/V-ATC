@@ -7,9 +7,9 @@
 import { AnnotationPage } from "@/components/annotation-page";
 import { demoAdsbTrack, demoRecordings, demoRecordingMeta } from "@/mock/demo-data";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 
-export default function Home() {
+function HomeContent() {
   const router = useRouter();
   const params = useSearchParams();
   const audioId = params.get("audioId") ?? demoRecordings[0].id;
@@ -27,5 +27,13 @@ export default function Home() {
       recordingMeta={demoRecordingMeta}
       onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
     />
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading page...</div>}>
+      <HomeContent />
+    </Suspense>
   );
 }

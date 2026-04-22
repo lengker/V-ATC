@@ -89,6 +89,13 @@
   border: none;
 }
 
+/* Keep Leaflet controls above map panes during zoom/pan animations. */
+.leaflet-top,
+.leaflet-bottom,
+.leaflet-control {
+  z-index: 1200 !important;
+}
+
 @layer utilities {
   .efb-surface {
     background: linear-gradient(180deg, hsl(222 45% 7%) 0%, hsl(222 45% 5%) 100%);

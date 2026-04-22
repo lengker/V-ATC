@@ -408,7 +408,7 @@ export function ADSBMap({
       </div>
 
       <div className="flex-1 relative overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800">
-        <div className="absolute top-4 right-4 flex flex-col gap-1 z-10 bg-black/40 backdrop-blur-sm rounded-lg p-1">
+        <div className="absolute top-4 right-4 flex flex-col gap-1 z-[1200] pointer-events-auto bg-black/40 backdrop-blur-sm rounded-lg p-1">
           <Button
             variant="ghost"
             size="icon"
@@ -455,7 +455,7 @@ export function ADSBMap({
           </Button>
         </div>
 
-        <div ref={mapHostRef} className="absolute inset-0" />
+        <div ref={mapHostRef} className="absolute inset-0 z-0" />
 
         {hoveredAircraft && (
           <Card className="absolute bottom-4 right-4 p-3 bg-black/90 border-primary/40 text-white text-xs max-w-[min(18rem,calc(100%-2rem))] z-30 backdrop-blur-md shadow-xl ring-1 ring-white/10">
