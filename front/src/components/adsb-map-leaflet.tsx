@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { ADSBData } from "@/types";
 import { formatTime } from "@/lib/utils";
+import { buildInterpolatedTracks } from "@/lib/adsb-interpolation";
 import type { VhhhStaticLayers } from "@/mock/vhhh-static";
 import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -52,7 +53,7 @@ function buildAircraftDivIcon(p: ADSBData, isSelected: boolean) {
   `;
 
   return L.divIcon({
-    className: "",
+    className: "adsb-aircraft-icon",
     html,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
@@ -75,7 +76,10 @@ export function ADSBMap({
   const trailsLayerRef = useRef<L.LayerGroup | null>(null);
 
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
+  const markerFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
   const trailPolylinesRef = useRef<Map<string, L.Polyline[]>>(new Map());
+
+  const suspendFollowUntilRef = useRef<number>(0);
 
   const onAircraftSelectRef = useRef(onAircraftSelect);
   onAircraftSelectRef.current = onAircraftSelect;
@@ -106,35 +110,15 @@ export function ADSBMap({
   }, [adsbData]);
 
   const { filteredPoints, currentPoints, boundsAll } = useMemo(() => {
-    const filtered = saneAdsb.filter((p) => {
-      const timeOk = p.timestamp <= currentTime;
-      const targetOk =
-        !normalizedVisibleSet || normalizedVisibleSet.size === 0 || normalizedVisibleSet.has(p.icao24.toLowerCase());
-      return timeOk && targetOk;
-    });
+    const isVisible = (icao24: string) => {
+      return (
+        !normalizedVisibleSet ||
+        normalizedVisibleSet.size === 0 ||
+        normalizedVisibleSet.has(String(icao24).toLowerCase())
+      );
+    };
 
-    const byAircraft: Record<string, ADSBData[]> = {};
-    for (const p of filtered) {
-      if (!byAircraft[p.icao24]) byAircraft[p.icao24] = [];
-      byAircraft[p.icao24].push(p);
-    }
-
-    const current: ADSBData[] = Object.values(byAircraft).map((arr) =>
-      arr.sort((a, b) => a.timestamp - b.timestamp)[arr.length - 1]
-    );
-
-    // Fallback: if time filter yields nothing, still show a point per aircraft (first point)
-    if (current.length === 0) {
-      const firstByAircraft = new Map<string, ADSBData>();
-      for (const p of saneAdsb) {
-        const targetOk =
-          !normalizedVisibleSet || normalizedVisibleSet.size === 0 || normalizedVisibleSet.has(p.icao24.toLowerCase());
-        if (!targetOk) continue;
-        const prev = firstByAircraft.get(p.icao24);
-        if (!prev || p.timestamp < prev.timestamp) firstByAircraft.set(p.icao24, p);
-      }
-      current.push(...Array.from(firstByAircraft.values()));
-    }
+    const { currentPoints, trailPoints } = buildInterpolatedTracks(saneAdsb, currentTime, isVisible);
 
     const llAll = saneAdsb
       .map((p) => [p.latitude, p.longitude] as [number, number])
@@ -143,8 +127,8 @@ export function ADSBMap({
     const boundsAll = llAll.length ? L.latLngBounds(llAll.map(([a, b]) => L.latLng(a, b))) : null;
 
     return {
-      filteredPoints: filtered,
-      currentPoints: current,
+      filteredPoints: trailPoints,
+      currentPoints,
       boundsAll,
     };
   }, [currentTime, normalizedVisibleSet, saneAdsb]);
@@ -187,6 +171,20 @@ export function ADSBMap({
     const onZoomEnd = () => setZoomLevel(map.getZoom());
     map.on("zoomend", onZoomEnd);
 
+    const suspendFollowFor = (ms: number) => {
+      suspendFollowUntilRef.current = Math.max(suspendFollowUntilRef.current, Date.now() + ms);
+    };
+
+    const onDragStart = () => suspendFollowFor(1200);
+    const onDragEnd = () => suspendFollowFor(400);
+    const onZoomStart = () => suspendFollowFor(1200);
+    const onMoveStart = () => suspendFollowFor(250);
+
+    map.on("dragstart", onDragStart);
+    map.on("dragend", onDragEnd);
+    map.on("zoomstart", onZoomStart);
+    map.on("movestart", onMoveStart);
+
     const ro = new ResizeObserver(() => map.invalidateSize());
     ro.observe(host);
 
@@ -197,6 +195,11 @@ export function ADSBMap({
     return () => {
       ro.disconnect();
       map.off("zoomend", onZoomEnd);
+
+      map.off("dragstart", onDragStart);
+      map.off("dragend", onDragEnd);
+      map.off("zoomstart", onZoomStart);
+      map.off("movestart", onMoveStart);
 
       for (const m of markersRef.current.values()) m.remove();
       markersRef.current.clear();
@@ -224,6 +227,35 @@ export function ADSBMap({
     };
   }, []);
 
+  // Smart viewport follow: keep selected aircraft inside a safe margin.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!selectedCurrentPoint) return;
+
+    // If user is interacting or we just moved the map, don't fight.
+    if (Date.now() < suspendFollowUntilRef.current) return;
+
+    const host = mapHostRef.current;
+    if (!host) return;
+
+    const rect = host.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
+
+    const MARGIN_PX = 90;
+    const latlng = L.latLng(selectedCurrentPoint.latitude, selectedCurrentPoint.longitude);
+    const p = map.latLngToContainerPoint(latlng);
+
+    const inSafeX = p.x >= MARGIN_PX && p.x <= w - MARGIN_PX;
+    const inSafeY = p.y >= MARGIN_PX && p.y <= h - MARGIN_PX;
+    if (inSafeX && inSafeY) return;
+
+    suspendFollowUntilRef.current = Date.now() + 450;
+    map.panTo(latlng, { animate: true, duration: 0.45, easeLinearity: 0.25, noMoveStart: true });
+  }, [selectedCurrentPoint, currentTime]);
+
   const fitOnceRef = useRef(false);
   useEffect(() => {
     const map = mapRef.current;
@@ -239,11 +271,43 @@ export function ADSBMap({
     const layer = markersLayerRef.current;
     if (!layer) return;
 
+    const cancelFadeOutIfAny = (icao24: string, marker: L.Marker) => {
+      const timeoutId = markerFadeTimeoutsRef.current.get(icao24);
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+        markerFadeTimeoutsRef.current.delete(icao24);
+      }
+      const el = marker.getElement();
+      if (el) {
+        el.style.transition = "opacity 300ms ease";
+        el.style.opacity = "1";
+        el.style.pointerEvents = "auto";
+      }
+    };
+
+    const fadeOutAndRemove = (icao24: string, marker: L.Marker) => {
+      if (markerFadeTimeoutsRef.current.has(icao24)) return;
+
+      const el = marker.getElement();
+      if (el) {
+        el.style.transition = "opacity 300ms ease";
+        el.style.opacity = "0";
+        el.style.pointerEvents = "none";
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        marker.remove();
+        markersRef.current.delete(icao24);
+        markerFadeTimeoutsRef.current.delete(icao24);
+      }, 320);
+
+      markerFadeTimeoutsRef.current.set(icao24, timeoutId);
+    };
+
     const nextIds = new Set(currentPoints.map((p) => p.icao24));
     for (const [icao24, marker] of markersRef.current) {
       if (!nextIds.has(icao24)) {
-        marker.remove();
-        markersRef.current.delete(icao24);
+        fadeOutAndRemove(icao24, marker);
       }
     }
 
@@ -257,6 +321,7 @@ export function ADSBMap({
 
       const existing = markersRef.current.get(p.icao24);
       if (existing) {
+        cancelFadeOutIfAny(p.icao24, existing);
         existing.setLatLng([lat, lon]);
         existing.setIcon(icon);
         existing.setZIndexOffset(isSelected ? 1000 : 0);
@@ -275,6 +340,7 @@ export function ADSBMap({
       marker.on("mouseout", () => setHoveredAircraft((prev) => (prev?.icao24 === p.icao24 ? null : prev)));
 
       marker.addTo(layer);
+      cancelFadeOutIfAny(p.icao24, marker);
       marker.setZIndexOffset(isSelected ? 1000 : 0);
       markersRef.current.set(p.icao24, marker);
     }
