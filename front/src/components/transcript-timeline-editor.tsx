@@ -453,15 +453,21 @@ export function TranscriptTimelineEditor({
               </div>
             );
           })}
-          {/* playhead */}
+          {/* playhead: 剪映风格（粗线 + 顶部抓手 + 时间标签 + 更大命中区） */}
           <div
-            className="absolute top-0 bottom-0 z-10 w-px cursor-ew-resize bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.85)]"
+            className="absolute top-0 bottom-0 z-20 w-8 -translate-x-1/2 cursor-ew-resize"
             style={{ left: `${currentPct * 100}%` }}
             onPointerDown={(e) => {
               e.stopPropagation();
               onPlayheadPointerDown(e);
             }}
-          />
+          >
+            <div className="absolute left-1/2 top-1 -translate-x-1/2 rounded-md bg-primary/95 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground shadow-[0_2px_8px_hsl(var(--primary)/0.35)]">
+              {formatTime(currentTime)}
+            </div>
+            <div className="absolute left-1/2 top-5 -translate-x-1/2 h-2.5 w-2.5 rounded-full border border-primary-foreground/60 bg-primary shadow-[0_0_10px_hsl(var(--primary)/0.5)]" />
+            <div className="absolute left-1/2 top-1 bottom-0 -translate-x-1/2 w-[2px] rounded-full bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.85)]" />
+          </div>
         </div>
       </CardHeader>
 

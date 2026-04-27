@@ -445,7 +445,7 @@ function AnnotationPageInner({
       {/* 主内容区 */}
       <div ref={contentScrollRef} className="flex-1 overflow-y-auto scroll-smooth p-3">
         <div className="grid grid-cols-12 gap-3">
-        {/* 左侧：转写列表（Stratus-like） */}
+        {/* 左侧：录音列表 + 波形 */}
         <div className="col-span-12 lg:col-span-4 flex flex-col gap-3">
           <div ref={radioSectionRef}>
             <RecordingsPanel
@@ -467,22 +467,6 @@ function AnnotationPageInner({
                 onTimestampClick={handleTimestampClick}
               />
             </Card>
-          </div>
-
-          <div ref={transcriptSectionRef}>
-            <TranscriptTimelineEditor
-              value={timestamps}
-              currentTime={currentTime}
-              timelineMax={timelineMax || 60}
-              onSeek={(t) => setCurrentTime(t)}
-              onChange={(next) => {
-                handleSetTimestamps(next);
-                // 同步右侧智能体上下文：优先选中“当前播放指针所在段”
-                const active =
-                  next.find((x) => currentTime >= x.startTime && currentTime <= x.endTime) ?? null;
-                setSelectedTimestamp(active);
-              }}
-            />
           </div>
         </div>
 
@@ -506,7 +490,7 @@ function AnnotationPageInner({
         </div>
 
         {/* 右侧：仪表 + 辅助信息 */}
-        <div className="col-span-12 lg:col-span-3 flex flex-col gap-3">
+        <div className="col-span-12 lg:col-span-3 lg:row-span-2 flex flex-col gap-3">
           <div className="relative">
             <TargetsPanel
               adsbData={adsbData}
@@ -542,6 +526,23 @@ function AnnotationPageInner({
               selectedAircraft={selectedAircraft}
             />
           </div>
+        </div>
+
+        {/* 语音剪辑：在原网格内扩宽到左+中区域，不单开整行 */}
+        <div ref={transcriptSectionRef} className="col-span-12 lg:col-span-9">
+          <TranscriptTimelineEditor
+            value={timestamps}
+            currentTime={currentTime}
+            timelineMax={timelineMax || 60}
+            onSeek={(t) => setCurrentTime(t)}
+            onChange={(next) => {
+              handleSetTimestamps(next);
+              // 同步右侧智能体上下文：优先选中“当前播放指针所在段”
+              const active =
+                next.find((x) => currentTime >= x.startTime && currentTime <= x.endTime) ?? null;
+              setSelectedTimestamp(active);
+            }}
+          />
         </div>
         </div>
       </div>
