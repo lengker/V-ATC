@@ -165,6 +165,97 @@ export type InterpolatedTracksResult = {
   trailPoints: ADSBData[];
 };
 
+export type AdsbTrackIndex = {
+  tracks: Map<string, ADSBData[]>;
+};
+
+export function buildAdsbTrackIndex(
+  points: ADSBData[],
+  isVisibleAircraft?: (icao24: string) => boolean
+): AdsbTrackIndex {
+  const tracks = new Map<string, ADSBData[]>();
+
+  for (const p of points) {
+    if (isVisibleAircraft && !isVisibleAircraft(p.icao24)) continue;
+    const arr = tracks.get(p.icao24) ?? [];
+    arr.push(p);
+    tracks.set(p.icao24, arr);
+  }
+
+  for (const arr of tracks.values()) {
+    arr.sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  return { tracks };
+}
+
+function upperBoundByTime(points: ADSBData[], timestamp: number): number {
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (points[mid].timestamp <= timestamp) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+export function queryInterpolatedTracks(
+  index: AdsbTrackIndex,
+  currentTime: number
+): InterpolatedTracksResult {
+  const currentPoints: ADSBData[] = [];
+  const trailPoints: ADSBData[] = [];
+
+  for (const [, arr] of index.tracks.entries()) {
+    if (arr.length === 0 || currentTime < arr[0].timestamp) continue;
+
+    const current = interpolateAdsbAtTime(arr, currentTime, { outside: "null" });
+    if (current) currentPoints.push(current);
+
+    const historyEnd = upperBoundByTime(arr, currentTime);
+    for (let i = 0; i < historyEnd; i++) trailPoints.push(arr[i]);
+
+    const lastHist = historyEnd > 0 ? arr[historyEnd - 1] : undefined;
+    if (current && (!lastHist || current.timestamp > lastHist.timestamp)) {
+      trailPoints.push(current);
+    }
+  }
+
+  return { currentPoints, trailPoints };
+}
+
+export function queryCurrentAdsbPoints(index: AdsbTrackIndex, currentTime: number): ADSBData[] {
+  const currentPoints: ADSBData[] = [];
+
+  for (const [, arr] of index.tracks.entries()) {
+    if (arr.length === 0 || currentTime < arr[0].timestamp) continue;
+    const current = interpolateAdsbAtTime(arr, currentTime, { outside: "null" });
+    if (current) currentPoints.push(current);
+  }
+
+  return currentPoints;
+}
+
+export function queryAdsbTrailPoints(index: AdsbTrackIndex, currentTime: number): ADSBData[] {
+  const trailPoints: ADSBData[] = [];
+
+  for (const [, arr] of index.tracks.entries()) {
+    if (arr.length === 0 || currentTime < arr[0].timestamp) continue;
+
+    const current = interpolateAdsbAtTime(arr, currentTime, { outside: "null" });
+    const historyEnd = upperBoundByTime(arr, currentTime);
+    for (let i = 0; i < historyEnd; i++) trailPoints.push(arr[i]);
+
+    const lastHist = historyEnd > 0 ? arr[historyEnd - 1] : undefined;
+    if (current && (!lastHist || current.timestamp > lastHist.timestamp)) {
+      trailPoints.push(current);
+    }
+  }
+
+  return trailPoints;
+}
+
 /**
  * Build per-aircraft current interpolated point and trail points up to `currentTime`.
  * - `points` should include multiple aircraft.
@@ -175,38 +266,5 @@ export function buildInterpolatedTracks(
   currentTime: number,
   isVisibleAircraft?: (icao24: string) => boolean
 ): InterpolatedTracksResult {
-  const byAircraft = new Map<string, ADSBData[]>();
-
-  for (const p of points) {
-    if (isVisibleAircraft && !isVisibleAircraft(p.icao24)) continue;
-    const arr = byAircraft.get(p.icao24) ?? [];
-    arr.push(p);
-    byAircraft.set(p.icao24, arr);
-  }
-
-  const currentPoints: ADSBData[] = [];
-  const trailPoints: ADSBData[] = [];
-
-  for (const [, arr] of byAircraft.entries()) {
-    arr.sort((a, b) => a.timestamp - b.timestamp);
-
-    // Before the aircraft track starts: hide completely.
-    if (arr.length === 0 || currentTime < arr[0].timestamp) continue;
-
-    const current = interpolateAdsbAtTime(arr, currentTime, { outside: "null" });
-    if (current) currentPoints.push(current);
-
-    // Discrete history (always valid), up to currentTime (or the end of track)
-    const history = arr.filter((p) => p.timestamp <= currentTime);
-
-    // if current is interpolated between two points, append it to trail
-    const lastHist = history[history.length - 1];
-    if (current && (!lastHist || current.timestamp > lastHist.timestamp)) {
-      history.push(current);
-    }
-
-    for (const p of history) trailPoints.push(p);
-  }
-
-  return { currentPoints, trailPoints };
+  return queryInterpolatedTracks(buildAdsbTrackIndex(points, isVisibleAircraft), currentTime);
 }
