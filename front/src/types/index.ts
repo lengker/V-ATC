@@ -51,4 +51,6 @@ export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   error?: string;
+  /** Optional HTTP status code for failed API calls (e.g., 404/500). */
+  status?: number;
 }
