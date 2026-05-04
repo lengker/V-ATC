@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { ADSBData } from "@/types";
 import { formatTime } from "@/lib/utils";
-import { buildInterpolatedTracks } from "@/lib/adsb-interpolation";
+import { buildAdsbTrackIndex, queryAdsbTrailPoints, queryCurrentAdsbPoints } from "@/lib/adsb-interpolation";
 import type { VhhhStaticLayers } from "@/mock/vhhh-static";
 import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,11 +26,6 @@ function clampHeading(deg: unknown) {
   const n = typeof deg === "number" ? deg : Number(deg);
   if (!Number.isFinite(n)) return 0;
   return ((n % 360) + 360) % 360;
-}
-
-function rgba(rgb: { r: number; g: number; b: number }, a: number) {
-  const aa = Math.max(0, Math.min(1, a));
-  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${aa})`;
 }
 
 function buildAircraftDivIcon(p: ADSBData, isSelected: boolean) {
@@ -77,7 +72,7 @@ export function ADSBMap({
 
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const markerFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
-  const trailPolylinesRef = useRef<Map<string, L.Polyline[]>>(new Map());
+  const trailPolylinesRef = useRef<Map<string, L.Polyline>>(new Map());
 
   const suspendFollowUntilRef = useRef<number>(0);
 
@@ -109,7 +104,15 @@ export function ADSBMap({
     );
   }, [adsbData]);
 
-  const { filteredPoints, currentPoints, boundsAll } = useMemo(() => {
+  const boundsAll = useMemo(() => {
+    const llAll = saneAdsb
+      .map((p) => [p.latitude, p.longitude] as [number, number])
+      .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+
+    return llAll.length ? L.latLngBounds(llAll.map(([a, b]) => L.latLng(a, b))) : null;
+  }, [saneAdsb]);
+
+  const trackIndex = useMemo(() => {
     const isVisible = (icao24: string) => {
       return (
         !normalizedVisibleSet ||
@@ -118,20 +121,19 @@ export function ADSBMap({
       );
     };
 
-    const { currentPoints, trailPoints } = buildInterpolatedTracks(saneAdsb, currentTime, isVisible);
+    return buildAdsbTrackIndex(saneAdsb, isVisible);
+  }, [normalizedVisibleSet, saneAdsb]);
 
-    const llAll = saneAdsb
-      .map((p) => [p.latitude, p.longitude] as [number, number])
-      .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+  const currentPoints = useMemo(
+    () => queryCurrentAdsbPoints(trackIndex, currentTime),
+    [currentTime, trackIndex]
+  );
 
-    const boundsAll = llAll.length ? L.latLngBounds(llAll.map(([a, b]) => L.latLng(a, b))) : null;
-
-    return {
-      filteredPoints: trailPoints,
-      currentPoints,
-      boundsAll,
-    };
-  }, [currentTime, normalizedVisibleSet, saneAdsb]);
+  const trailRenderTime = Math.floor((currentTime || 0) * 2) / 2;
+  const filteredPoints = useMemo(
+    () => queryAdsbTrailPoints(trackIndex, trailRenderTime),
+    [trackIndex, trailRenderTime]
+  );
 
   const selectedCurrentPoint = useMemo(
     () => currentPoints.find((p) => p.icao24 === selectedAircraft),
@@ -204,9 +206,7 @@ export function ADSBMap({
       for (const m of markersRef.current.values()) m.remove();
       markersRef.current.clear();
 
-      for (const arr of trailPolylinesRef.current.values()) {
-        for (const pl of arr) pl.remove();
-      }
+      for (const pl of trailPolylinesRef.current.values()) pl.remove();
       trailPolylinesRef.current.clear();
 
       trailsLayerRef.current?.remove();
@@ -354,9 +354,7 @@ export function ADSBMap({
 
     // Remove all if trails disabled
     if (!show.trails) {
-      for (const arr of trailPolylinesRef.current.values()) {
-        for (const pl of arr) pl.remove();
-      }
+      for (const pl of trailPolylinesRef.current.values()) pl.remove();
       trailPolylinesRef.current.clear();
       return;
     }
@@ -375,64 +373,48 @@ export function ADSBMap({
 
     for (const id of existingIds) {
       if (!nextIds.has(id)) {
-        const arr = trailPolylinesRef.current.get(id) ?? [];
-        for (const pl of arr) pl.remove();
+        trailPolylinesRef.current.get(id)?.remove();
         trailPolylinesRef.current.delete(id);
       }
     }
 
-    const MAX_SEGMENTS = 180;
-    const minAlpha = 0.12;
-    const maxAlpha = 0.85;
-
-    const blue = { r: 59, g: 130, b: 246 };
-    const red = { r: 239, g: 68, b: 68 };
+    const MAX_POINTS_PER_TRAIL = 220;
 
     for (const [icao24, pts] of byAircraft.entries()) {
       if (pts.length < 2) continue;
 
       const isSelected = icao24 === selectedAircraft;
-      const base = isSelected ? red : blue;
+      const color = isSelected ? "#ef4444" : "#3b82f6";
       const weight = isSelected ? 3 : 2;
+      const opacity = isSelected ? 0.82 : 0.55;
 
-      const step = Math.max(1, Math.ceil((pts.length - 1) / MAX_SEGMENTS));
-      const sampled: ADSBData[] = [];
-      for (let i = 0; i < pts.length; i += step) sampled.push(pts[i]);
-      if (sampled[sampled.length - 1] !== pts[pts.length - 1]) sampled.push(pts[pts.length - 1]);
-
-      const segCount = Math.max(0, sampled.length - 1);
-      const want = segCount;
-      const have = trailPolylinesRef.current.get(icao24) ?? [];
-
-      // Resize polyline list
-      if (have.length > want) {
-        for (let i = want; i < have.length; i++) have[i].remove();
-        have.length = want;
-      } else if (have.length < want) {
-        for (let i = have.length; i < want; i++) {
-          const pl = L.polyline([], { weight, lineCap: "round" });
-          pl.addTo(layer);
-          have.push(pl);
-        }
+      const step = Math.max(1, Math.ceil(pts.length / MAX_POINTS_PER_TRAIL));
+      const latlngs: L.LatLngExpression[] = [];
+      for (let i = 0; i < pts.length; i += step) {
+        latlngs.push([pts[i].latitude, pts[i].longitude]);
+      }
+      const last = pts[pts.length - 1];
+      const lastLatLng = latlngs[latlngs.length - 1] as [number, number] | undefined;
+      if (!lastLatLng || lastLatLng[0] !== last.latitude || lastLatLng[1] !== last.longitude) {
+        latlngs.push([last.latitude, last.longitude]);
       }
 
-      // Update segments
-      for (let i = 0; i < want; i++) {
-        const a = minAlpha + ((maxAlpha - minAlpha) * (i + 1)) / want;
-        const p0 = sampled[i];
-        const p1 = sampled[i + 1];
-        have[i].setLatLngs([
-          [p0.latitude, p0.longitude],
-          [p1.latitude, p1.longitude],
-        ]);
-        have[i].setStyle({
-          color: rgba(base, a),
-          opacity: 1,
+      let line = trailPolylinesRef.current.get(icao24);
+      if (!line) {
+        line = L.polyline([], {
+          color,
+          opacity,
           weight,
-        });
+          lineCap: "round",
+          lineJoin: "round",
+          interactive: false,
+          bubblingMouseEvents: false,
+        }).addTo(layer);
+        trailPolylinesRef.current.set(icao24, line);
       }
 
-      trailPolylinesRef.current.set(icao24, have);
+      line.setLatLngs(latlngs);
+      line.setStyle({ color, opacity, weight });
     }
   }, [filteredPoints, selectedAircraft, show.trails]);
 
