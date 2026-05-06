@@ -58,6 +58,8 @@ interface AudioWaveformProps {
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
   onTimestampClick?: (timestamp: VoiceTimestamp) => void;
+  /** When provided, boundary dragging will update the timestamps list in real-time. */
+  onTimestampsChange?: (next: VoiceTimestamp[]) => void;
   /** Extra classes on the root wrapper (e.g. padding from parent card). */
   className?: string;
 }
@@ -86,8 +88,35 @@ const TimestampOverlay = memo(function TimestampOverlay({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const deferredTimestamps = useDeferredValue(timestamps);
-  const dragStateRef = useRef<{ timestamp: VoiceTimestamp; edge: "start" | "end"; startX: number } | null>(null);
+  const [isDraggingEdge, setIsDraggingEdge] = useState(false);
+  const dragStateRef = useRef<
+    | {
+        id: string;
+        edge: "start" | "end";
+        startX: number;
+        baseStart: number;
+        baseEnd: number;
+      }
+    | null
+  >(null);
   const scrubRef = useRef<{ pointerId: number; startClientX: number; moved: boolean } | null>(null);
+
+  const MIN_SEGMENT_SECONDS = 0.05;
+
+  const pickNeighbors = useCallback(
+    (id: string) => {
+      const sorted = [...timestamps].sort(
+        (a, b) => a.startTime - b.startTime || a.endTime - b.endTime || a.id.localeCompare(b.id)
+      );
+      const idx = sorted.findIndex((t) => t.id === id);
+      const prev = idx > 0 ? sorted[idx - 1] : null;
+      const next = idx >= 0 && idx < sorted.length - 1 ? sorted[idx + 1] : null;
+      return { prev, next };
+    },
+    [timestamps]
+  );
+
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
   // 绘制 Canvas 上的 VAD 区间
   useEffect(() => {
@@ -109,8 +138,10 @@ const TimestampOverlay = memo(function TimestampOverlay({
     // 清除画布（保持透明，避免遮挡底下的 WaveSurfer 波形）
     ctx.clearRect(0, 0, width, height);
 
+    const list = isDraggingEdge ? timestamps : deferredTimestamps;
+
     // 绘制时间戳标记 - 改进样式
-    deferredTimestamps.forEach((timestamp) => {
+    list.forEach((timestamp) => {
       const startPercent = (timestamp.startTime / duration) * 100;
       const endPercent = (timestamp.endTime / duration) * 100;
       const startX = (startPercent / 100) * width;
@@ -168,7 +199,7 @@ const TimestampOverlay = memo(function TimestampOverlay({
         ctx.fillText(speakerText, startX + 3, 14);
       }
     });
-  }, [deferredTimestamps, duration, currentTime, selectedTimestampId]);
+  }, [deferredTimestamps, duration, currentTime, isDraggingEdge, selectedTimestampId, timestamps]);
 
   const pickTimeFromClientX = (clientX: number, rect: DOMRect) => {
     const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
@@ -183,13 +214,21 @@ const TimestampOverlay = memo(function TimestampOverlay({
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
 
-    for (const timestamp of deferredTimestamps) {
+    const list = isDraggingEdge ? timestamps : deferredTimestamps;
+    for (const timestamp of list) {
       const startX = (timestamp.startTime / duration) * rect.width;
       const endX = (timestamp.endTime / duration) * rect.width;
 
       if (Math.abs(clickX - startX) < 8) {
         if (onTimestampBoundaryDrag) {
-          dragStateRef.current = { timestamp, edge: "start", startX: e.clientX };
+          dragStateRef.current = {
+            id: timestamp.id,
+            edge: "start",
+            startX: e.clientX,
+            baseStart: timestamp.startTime,
+            baseEnd: timestamp.endTime,
+          };
+          setIsDraggingEdge(true);
           canvas.style.cursor = "ew-resize";
           canvas.setPointerCapture(e.pointerId);
         }
@@ -197,7 +236,14 @@ const TimestampOverlay = memo(function TimestampOverlay({
       }
       if (Math.abs(clickX - endX) < 8) {
         if (onTimestampBoundaryDrag) {
-          dragStateRef.current = { timestamp, edge: "end", startX: e.clientX };
+          dragStateRef.current = {
+            id: timestamp.id,
+            edge: "end",
+            startX: e.clientX,
+            baseStart: timestamp.startTime,
+            baseEnd: timestamp.endTime,
+          };
+          setIsDraggingEdge(true);
           canvas.style.cursor = "ew-resize";
           canvas.setPointerCapture(e.pointerId);
         }
@@ -224,18 +270,27 @@ const TimestampOverlay = memo(function TimestampOverlay({
     if (dragStateRef.current && onTimestampBoundaryDrag) {
       const dx = e.clientX - dragStateRef.current.startX;
       const timeOffset = (dx / rect.width) * duration;
-      const { timestamp, edge } = dragStateRef.current;
+      const { id, edge, baseStart, baseEnd } = dragStateRef.current;
+
+      const target = timestamps.find((t) => t.id === id);
+      if (!target) return;
+
+      const { prev, next } = pickNeighbors(id);
+      const prevEnd = prev?.endTime ?? 0;
+      const nextStart = next?.startTime ?? duration;
 
       if (edge === "start") {
-        const newStartTime = Math.max(0, timestamp.startTime + timeOffset);
-        if (newStartTime < timestamp.endTime) {
-          onTimestampBoundaryDrag(timestamp, newStartTime, timestamp.endTime);
-        }
+        const proposed = baseStart + timeOffset;
+        const lo = clamp(prevEnd, 0, duration);
+        const hi = clamp(baseEnd - MIN_SEGMENT_SECONDS, 0, duration);
+        const newStartTime = clamp(proposed, lo, hi);
+        onTimestampBoundaryDrag(target, newStartTime, baseEnd);
       } else {
-        const newEndTime = Math.min(duration, timestamp.endTime + timeOffset);
-        if (newEndTime > timestamp.startTime) {
-          onTimestampBoundaryDrag(timestamp, timestamp.startTime, newEndTime);
-        }
+        const proposed = baseEnd + timeOffset;
+        const lo = clamp(baseStart + MIN_SEGMENT_SECONDS, 0, duration);
+        const hi = clamp(nextStart, 0, duration);
+        const newEndTime = clamp(proposed, lo, hi);
+        onTimestampBoundaryDrag(target, baseStart, newEndTime);
       }
       return;
     }
@@ -249,7 +304,8 @@ const TimestampOverlay = memo(function TimestampOverlay({
     }
 
     let showResizeCursor = false;
-    for (const timestamp of deferredTimestamps) {
+    const list = isDraggingEdge ? timestamps : deferredTimestamps;
+    for (const timestamp of list) {
       const startX = (timestamp.startTime / duration) * rect.width;
       const endX = (timestamp.endTime / duration) * rect.width;
       if (Math.abs(x - startX) < 8 || Math.abs(x - endX) < 8) {
@@ -266,6 +322,7 @@ const TimestampOverlay = memo(function TimestampOverlay({
 
     if (dragStateRef.current) {
       dragStateRef.current = null;
+      setIsDraggingEdge(false);
       try {
         canvas.releasePointerCapture(e.pointerId);
       } catch {
@@ -287,7 +344,8 @@ const TimestampOverlay = memo(function TimestampOverlay({
       const rect = canvas.getBoundingClientRect();
       if (!moved) {
         const clickTime = pickTimeFromClientX(e.clientX, rect);
-        for (const timestamp of deferredTimestamps) {
+        const list = isDraggingEdge ? timestamps : deferredTimestamps;
+        for (const timestamp of list) {
           if (clickTime >= timestamp.startTime && clickTime <= timestamp.endTime) {
             onTimestampClick(timestamp);
             break;
@@ -323,6 +381,7 @@ export const AudioWaveform = memo(
       currentTime = 0,
       onTimeUpdate,
       onTimestampClick,
+      onTimestampsChange,
       className,
     },
     ref
@@ -744,15 +803,32 @@ export const AudioWaveform = memo(
   // 处理 VAD 边界拖拽 - 更新时间戳
   const handleTimestampBoundaryDrag = useCallback(
     (timestamp: VoiceTimestamp, startTime: number, endTime: number) => {
-      // 直接更新本地状态，实时显示调整
-      const updatedTimestamp = {
+      const liveDuration = getLiveDuration();
+      const maxTime = liveDuration > 0 ? liveDuration : duration;
+      const MIN_SEGMENT_SECONDS = 0.05;
+
+      let s = Math.max(0, Math.min(startTime, maxTime));
+      let e = Math.max(0, Math.min(endTime, maxTime));
+      if (e - s < MIN_SEGMENT_SECONDS) {
+        e = Math.min(maxTime, s + MIN_SEGMENT_SECONDS);
+        s = Math.max(0, e - MIN_SEGMENT_SECONDS);
+      }
+
+      const updatedTimestamp: VoiceTimestamp = {
         ...timestamp,
-        startTime,
-        endTime,
+        startTime: s,
+        endTime: e,
       };
+
+      if (onTimestampsChange) {
+        const next = timestamps.map((t) => (t.id === updatedTimestamp.id ? updatedTimestamp : t));
+        onTimestampsChange(next);
+      }
+
+      // 保留既有行为：拖拽过程中同步更新“选中段”
       onTimestampClick?.(updatedTimestamp);
     },
-    [onTimestampClick]
+    [duration, getLiveDuration, onTimestampClick, onTimestampsChange, timestamps]
   );
 
   useImperativeHandle(

@@ -15,15 +15,55 @@ async function fetchAPI<T>(
       },
     });
 
+    const contentType = response.headers.get("content-type") || "";
+
     if (!response.ok) {
-      throw new Error(`API error: ${response.statusText}`);
+      let bodyMessage = "";
+      if (contentType.includes("application/json")) {
+        try {
+          const maybe = (await response.json()) as any;
+          bodyMessage =
+            typeof maybe?.error === "string"
+              ? maybe.error
+              : typeof maybe?.message === "string"
+                ? maybe.message
+                : "";
+        } catch {
+          // ignore
+        }
+      } else {
+        try {
+          bodyMessage = (await response.text()).slice(0, 200);
+        } catch {
+          // ignore
+        }
+      }
+
+      const status = response.status;
+      const statusLabel = response.statusText || "Request failed";
+      const tail = bodyMessage ? `: ${bodyMessage}` : "";
+      return {
+        success: false,
+        status,
+        error: `HTTP ${status} ${statusLabel}${tail}`,
+      };
     }
 
-    const data = await response.json();
-    return data;
+    if (contentType.includes("application/json")) {
+      const data = (await response.json()) as ApiResponse<T>;
+      return data;
+    }
+
+    // Unexpected non-JSON success response
+    return {
+      success: false,
+      status: response.status,
+      error: "Invalid response type (expected JSON)",
+    };
   } catch (error) {
     return {
       success: false,
+      status: 0,
       error: error instanceof Error ? error.message : "Unknown error",
     };
   }
