@@ -388,14 +388,14 @@ export function Component() {
   const { login } = useAuth();
   const { toast } = useToast();
 
-  const [email, setEmail] = useState("anna@gmail.com");
-  const [password, setPassword] = useState("12345678");
+  const [email, setEmail] = useState("admin");
+  const [password, setPassword] = useState("admin123456");
   const [remember, setRemember] = useState(true);
   const [showPwd, setShowPwd] = useState(false);
   const [focus, setFocus] = useState<"email" | "password" | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState("");
-  const valid = useMemo(() => /\S+@\S+\.\S+/.test(email) && password.length >= 6, [email, password]);
+  const valid = useMemo(() => email.trim().length > 0 && password.length >= 6, [email, password]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -469,16 +469,16 @@ export function Component() {
           <form onSubmit={onSubmit} className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="email" className="text-3xl font-medium">
-                Email
+                Username
               </Label>
               <Input
                 id="email"
-                type="email"
+                type="text"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 onFocus={() => setFocus("email")}
                 onBlur={() => setFocus(null)}
-                placeholder="anna@gmail.com"
+                placeholder="admin"
                 className="h-14 text-2xl rounded-2xl bg-white border-zinc-200"
               />
             </div>
