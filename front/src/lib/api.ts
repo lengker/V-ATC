@@ -1,4 +1,5 @@
 import { ApiResponse, AudioData, ADSBData, VoiceTimestamp, Annotation } from "@/types";
+import { annotationsExtApi } from "@/lib/backend-api";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -15,12 +16,19 @@ async function fetchAPI<T>(
       },
     });
 
+    const text = await response.text();
+    const data = text ? JSON.parse(text) : null;
     if (!response.ok) {
-      throw new Error(`API error: ${response.statusText}`);
+      const message =
+        data?.detail?.message ||
+        data?.detail?.[0]?.msg ||
+        data?.detail ||
+        data?.message ||
+        response.statusText ||
+        `HTTP ${response.status}`;
+      throw new Error(String(message));
     }
-
-    const data = await response.json();
-    return data;
+    return { success: true, data: data as T };
   } catch (error) {
     return {
       success: false,
@@ -46,10 +54,27 @@ export const audioAPI = {
     audioId: string,
     timestamp: VoiceTimestamp
   ): Promise<ApiResponse<VoiceTimestamp>> => {
-    return fetchAPI<VoiceTimestamp>(`/api/audio/${audioId}/timestamps`, {
-      method: "PUT",
-      body: JSON.stringify(timestamp),
-    });
+    void audioId;
+    const annotationId = Number(timestamp.id);
+    if (!Number.isFinite(annotationId)) {
+      return {
+        success: false,
+        error: "当前时间戳不是后端 annotation_id，无法直接更新",
+      };
+    }
+    try {
+      await annotationsExtApi.update(annotationId, {
+        relative_start: timestamp.startTime,
+        relative_end: timestamp.endTime,
+        annotation_text: timestamp.text,
+      });
+      return { success: true, data: timestamp };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Update annotation failed",
+      };
+    }
   },
 
   // 删除时间戳
@@ -114,28 +139,53 @@ export const annotationAPI = {
   createAnnotation: async (
     annotation: Omit<Annotation, "id">
   ): Promise<ApiResponse<Annotation>> => {
-    return fetchAPI<Annotation>("/api/annotations", {
-      method: "POST",
-      body: JSON.stringify(annotation),
-    });
+    try {
+      const created = await annotationsExtApi.create({
+        audio_id: Number(annotation.audioId),
+        relative_start: annotation.timestamp,
+        relative_end: annotation.timestamp,
+        annotation_text: annotation.text,
+        is_annotated: annotation.edited ? 1 : 0,
+      });
+      const id = Array.isArray(created)
+        ? Number(created[0]?.annotation_id)
+        : Number(Array.isArray(created.annotation_id) ? created.annotation_id[0] : created.annotation_id);
+      return { success: true, data: { ...annotation, id: String(id) } as Annotation };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Create annotation failed" };
+    }
   },
 
   // 更新标注
   updateAnnotation: async (
     annotation: Annotation
   ): Promise<ApiResponse<Annotation>> => {
-    return fetchAPI<Annotation>(`/api/annotations/${annotation.id}`, {
-      method: "PUT",
-      body: JSON.stringify(annotation),
-    });
+    try {
+      const id = Number(annotation.id);
+      if (!Number.isFinite(id)) return { success: false, error: "Invalid annotation id" };
+      await annotationsExtApi.update(id, {
+        annotation_text: annotation.text,
+        relative_start: annotation.timestamp,
+        relative_end: annotation.timestamp,
+        is_annotated: annotation.edited ? 1 : 0,
+      });
+      return { success: true, data: annotation };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Update annotation failed" };
+    }
   },
 
   // 删除标注
   deleteAnnotation: async (
     annotationId: string
   ): Promise<ApiResponse<void>> => {
-    return fetchAPI<void>(`/api/annotations/${annotationId}`, {
-      method: "DELETE",
-    });
+    try {
+      const id = Number(annotationId);
+      if (!Number.isFinite(id)) return { success: false, error: "Invalid annotation id" };
+      await annotationsExtApi.deleteOne(id);
+      return { success: true, data: undefined };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Delete annotation failed" };
+    }
   },
 };

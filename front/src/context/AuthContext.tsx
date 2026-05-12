@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { getCurrentUser, loginWithBackend, normalizeUser, saveToken } from "@/lib/backend-api";
 
 export type AuthUser = {
   id: string;
@@ -19,6 +20,10 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 const LS_KEY = "alpha.auth.user";
+const OFFLINE_LOGIN = {
+  username: "offline@alpha.local",
+  password: "offline123",
+} as const;
 
 function readUserFromStorage(): AuthUser | null {
   try {
@@ -45,40 +50,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // client init
-    setUser(readUserFromStorage());
-    setLoading(false);
+    const savedUser = readUserFromStorage();
+    setUser(savedUser);
+    if (!savedUser) {
+      setLoading(false);
+      return;
+    }
+    getCurrentUser()
+      .then((res) => {
+        const next = normalizeUser(res.data);
+        setUser(next);
+        writeUserToStorage(next);
+      })
+      .catch(() => {
+        // token likely expired/invalid
+        setUser(null);
+        writeUserToStorage(null);
+        saveToken(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const login: AuthContextValue["login"] = async ({ email, password }) => {
-    // TODO: 接入后端 A-5 的 /api/auth/login（或 SSO）后替换这里
-    // 目前用本地 mock：demo 用户
-    const normalized = email.trim().toLowerCase();
-    const ok =
-      (normalized === "admin@alpha.local" && password === "admin123") ||
-      (normalized === "annotator@alpha.local" && password === "annotator123") ||
-      (normalized === "viewer@alpha.local" && password === "viewer123");
-
-    if (!ok) {
-      return { ok: false, error: "邮箱或密码错误（可用 demo 账号：admin@alpha.local / admin123）" };
+    const normalizedInput = email.trim().toLowerCase();
+    // 保底离线账号：后端不可用时也可进入系统
+    if (normalizedInput === OFFLINE_LOGIN.username && password === OFFLINE_LOGIN.password) {
+      saveToken(null);
+      const offlineUser: AuthUser = {
+        id: "offline-local-user",
+        email: OFFLINE_LOGIN.username,
+        displayName: "Offline Demo",
+        role: "admin",
+      };
+      setUser(offlineUser);
+      writeUserToStorage(offlineUser);
+      return { ok: true };
     }
 
-    const role: AuthUser["role"] =
-      normalized.startsWith("admin") ? "admin" : normalized.startsWith("viewer") ? "viewer" : "annotator";
+    try {
+      const normalized = email.trim();
+      const candidates = normalized.includes("@")
+        ? [normalized, normalized.split("@")[0]]
+        : [normalized];
 
-    const u: AuthUser = {
-      id: normalized,
-      email: normalized,
-      displayName: role === "admin" ? "Admin" : role === "viewer" ? "Viewer" : "Annotator",
-      role,
-    };
-    setUser(u);
-    writeUserToStorage(u);
-    return { ok: true };
+      let lastError = "登录失败";
+      for (const username of candidates) {
+        try {
+          const res = await loginWithBackend(username, password);
+          saveToken(res.data.token);
+          const u = normalizeUser(res.data.user_info);
+          setUser(u);
+          writeUserToStorage(u);
+          return { ok: true };
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : "登录失败";
+        }
+      }
+      return { ok: false, error: lastError };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "网络异常，请稍后重试" };
+    }
   };
 
   const logout = () => {
     setUser(null);
     writeUserToStorage(null);
+    saveToken(null);
   };
 
   const value = useMemo(() => ({ user, loading, login, logout }), [user, loading]);
