@@ -8,6 +8,7 @@ import type { VoiceTimestamp } from "@/types";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Wand2, Sparkles, CheckCircle2 } from "lucide-react";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 type AgentMode = "rewrite_annotation" | "summarize_segment" | "custom";
 
@@ -157,28 +158,29 @@ export function QianwenAgentPanel({
   }, [hasSelected, onApplySuggestedText, selectedTimestamp, suggestedText, toast]);
 
   return (
-    <Card className={cn("rounded-3xl border-border/70 efb-panel efb-glow h-full", className)}>
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="space-y-1">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-primary" />
-              千问智能体（A-4）
-            </CardTitle>
-            <div className="text-xs text-muted-foreground">{contextSummary}</div>
+    <ErrorBoundary name="千问智能体（A-4）" className={className}>
+      <Card className={cn("rounded-3xl border-border/70 efb-panel efb-glow h-full", className)}>
+        <CardHeader className="pb-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="space-y-1">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                千问智能体（A-4）
+              </CardTitle>
+              <div className="text-xs text-muted-foreground">{contextSummary}</div>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {selectedTimestamp ? (
+                <>
+                  TS: {selectedTimestamp.startTime.toFixed(1)}-{selectedTimestamp.endTime.toFixed(1)}s
+                </>
+              ) : (
+                "未选中"
+              )}
+            </div>
           </div>
-          <div className="text-xs text-muted-foreground">
-            {selectedTimestamp ? (
-              <>
-                TS: {selectedTimestamp.startTime.toFixed(1)}-{selectedTimestamp.endTime.toFixed(1)}s
-              </>
-            ) : (
-              "未选中"
-            )}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
+        </CardHeader>
+        <CardContent className="space-y-3">
         <div className="grid grid-cols-3 gap-2">
           {quickCommands.map((q) => (
             <Button
@@ -279,8 +281,9 @@ export function QianwenAgentPanel({
             提示：先在左侧点一个时间戳，智能体会基于该片段文本给出更贴近标注的 suggestedText。
           </div>
         ) : null}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </ErrorBoundary>
   );
 }
 
