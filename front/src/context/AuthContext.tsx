@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { authAPI, clearAuthTokens, getAccessToken } from "@/lib/api";
 
 export type AuthUser = {
   id: string;
@@ -19,6 +20,7 @@ type AuthContextValue = {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 const LS_KEY = "alpha.auth.user";
+const FORCE_LOGIN_EVERY_TIME = true;
 
 function readUserFromStorage(): AuthUser | null {
   try {
@@ -35,7 +37,7 @@ function writeUserToStorage(user: AuthUser | null) {
     if (!user) localStorage.removeItem(LS_KEY);
     else localStorage.setItem(LS_KEY, JSON.stringify(user));
   } catch {
-    // ignore
+    // ignore storage failures
   }
 }
 
@@ -44,39 +46,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // client init
-    setUser(readUserFromStorage());
+    if (FORCE_LOGIN_EVERY_TIME) {
+      clearAuthTokens();
+      writeUserToStorage(null);
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+    const storedUser = readUserFromStorage();
+    const token = getAccessToken();
+    if (storedUser && token) {
+      setUser(storedUser);
+    } else {
+      clearAuthTokens();
+      writeUserToStorage(null);
+      setUser(null);
+    }
     setLoading(false);
   }, []);
 
   const login: AuthContextValue["login"] = async ({ email, password }) => {
-    // TODO: 接入后端 A-5 的 /api/auth/login（或 SSO）后替换这里
-    // 目前用本地 mock：demo 用户
-    const normalized = email.trim().toLowerCase();
-    const ok =
-      (normalized === "admin@alpha.local" && password === "admin123") ||
-      (normalized === "annotator@alpha.local" && password === "annotator123") ||
-      (normalized === "viewer@alpha.local" && password === "viewer123");
-
-    if (!ok) {
-      return { ok: false, error: "邮箱或密码错误（可用 demo 账号：admin@alpha.local / admin123）" };
+    const username = email.trim();
+    const response = await authAPI.login(username, password);
+    if (!response.success || !response.data) {
+      return { ok: false, error: response.error || "Login failed" };
     }
 
+    const backendUser = response.data.user;
     const role: AuthUser["role"] =
-      normalized.startsWith("admin") ? "admin" : normalized.startsWith("viewer") ? "viewer" : "annotator";
+      backendUser.role === "admin" || backendUser.role === "annotator" ? backendUser.role : "viewer";
 
-    const u: AuthUser = {
-      id: normalized,
-      email: normalized,
-      displayName: role === "admin" ? "Admin" : role === "viewer" ? "Viewer" : "Annotator",
+    const nextUser: AuthUser = {
+      id: backendUser.user_id,
+      email: backendUser.username,
+      displayName: backendUser.display_name,
       role,
     };
-    setUser(u);
-    writeUserToStorage(u);
+
+    setUser(nextUser);
+    writeUserToStorage(nextUser);
     return { ok: true };
   };
 
   const logout = () => {
+    void authAPI.logout();
+    clearAuthTokens();
     setUser(null);
     writeUserToStorage(null);
   };
@@ -91,4 +105,3 @@ export function useAuth() {
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
 }
-

@@ -1,0 +1,13 @@
+context_json,created_at,log_id,log_level,message,source,trace_id
+"{""message_id"": ""evt_admin_test_001"", ""queue_name"": ""track:ingest""}",2026-04-22T01:35:19.975Z,bdc89640f2a24585a49f3faf94e119d9,info,track ingested: trk_admin_test_001,track-ingest-consumer,trace-admin-test-001
+"{""message_id"": ""evt_consumer_admin_1"", ""queue_name"": ""system:log""}",2026-04-22T01:00:38.835Z,04f086150d4a4de1a725c7e986ccddf1,info,consumer admin smoke,admin-api,trace-consumer-admin-1
+"{""message_id"": ""evt_admin_publish_1"", ""queue_name"": ""track:ingest""}",2026-04-22T01:00:38.284Z,2c5bef6352f446f191d9d9cecd011899,info,track ingested: trk_admin_publish_1,track-ingest-consumer,trace-admin-publish-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:57:02.378Z,07832517e2094448a27b3c46e33a48d7,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:57:02.362Z,26d7f36b59f24351b9be939d9d9a5c88,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:57:02.344Z,3f504fb0b34e4115a62bb74d30b935ff,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_admin_publish_1""}",2026-04-22T00:54:19.182Z,6f19b794c2d24365acd1154df0e1be4b,error,consumer failed for track.ingest,always-fail-track-consumer,trace-admin-publish-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:54:19.166Z,211ec246820e45c09d8d8c553328f27a,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_admin_publish_1""}",2026-04-22T00:54:19.149Z,9b981115e4e344a7869d998907ff8a0e,error,consumer failed for track.ingest,always-fail-track-consumer,trace-admin-publish-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:44:55.235Z,5fa2651faf0449ec945e9ba1f3b4bec0,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:44:55.215Z,2081e46ee1d543b99d0ad741821a8273,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
+"{""error"": ""forced smoke failure"", ""message_id"": ""evt_smoke_dead_1""}",2026-04-22T00:44:55.184Z,2a6dda0e517c47f988975fa0e6543e29,error,consumer failed for track.ingest,always-fail-track-consumer,trace-smoke-dead-1
