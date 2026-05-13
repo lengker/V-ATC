@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.tables.common import create_row, delete_row, get_row, list_rows, update_row
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _touch_last_access_at(conn: sqlite3.Connection, audio_ids: list[int], now_iso: str) -> None:

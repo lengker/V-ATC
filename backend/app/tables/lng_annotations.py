@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.tables.common import create_row, delete_row, get_row, list_rows, update_row
@@ -83,7 +83,7 @@ def delete_item(conn: sqlite3.Connection, item_id: int) -> bool:
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 CHAIN_PROTECTED_COLUMNS = frozenset({"next_id", "prev_id"})

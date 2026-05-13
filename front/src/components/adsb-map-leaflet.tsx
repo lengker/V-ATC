@@ -19,6 +19,7 @@ interface ADSBMapProps {
   onAircraftSelect?: (icao24: string) => void;
   toggles?: {
     trails?: boolean;
+    routes?: boolean;
   };
 }
 
@@ -58,7 +59,7 @@ function buildAircraftDivIcon(p: ADSBData, isSelected: boolean) {
 export function ADSBMap({
   adsbData,
   visibleAircraftSet,
-  staticLayers: _staticLayers,
+  staticLayers,
   currentTime = 0,
   selectedAircraft,
   onAircraftSelect,
@@ -69,6 +70,7 @@ export function ADSBMap({
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const trailsLayerRef = useRef<L.LayerGroup | null>(null);
+  const staticRoutesLayerRef = useRef<L.LayerGroup | null>(null);
 
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const markerFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
@@ -81,9 +83,11 @@ export function ADSBMap({
 
   const [hoveredAircraft, setHoveredAircraft] = useState<ADSBData | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(12);
+  const [mapReady, setMapReady] = useState(false);
 
   const show = {
     trails: toggles?.trails ?? true,
+    routes: toggles?.routes ?? true,
   };
 
   const normalizedVisibleSet = useMemo(() => {
@@ -169,6 +173,8 @@ export function ADSBMap({
 
     markersLayerRef.current = L.layerGroup().addTo(map);
     trailsLayerRef.current = L.layerGroup().addTo(map);
+    staticRoutesLayerRef.current = L.layerGroup().addTo(map);
+    setMapReady(true);
 
     const onZoomEnd = () => setZoomLevel(map.getZoom());
     map.on("zoomend", onZoomEnd);
@@ -196,6 +202,7 @@ export function ADSBMap({
 
     return () => {
       ro.disconnect();
+      setMapReady(false);
       map.off("zoomend", onZoomEnd);
 
       map.off("dragstart", onDragStart);
@@ -210,10 +217,12 @@ export function ADSBMap({
       trailPolylinesRef.current.clear();
 
       trailsLayerRef.current?.remove();
+      staticRoutesLayerRef.current?.remove();
       markersLayerRef.current?.remove();
       baseLayerRef.current?.remove();
 
       trailsLayerRef.current = null;
+      staticRoutesLayerRef.current = null;
       markersLayerRef.current = null;
       baseLayerRef.current = null;
 
@@ -417,6 +426,38 @@ export function ADSBMap({
       line.setStyle({ color, opacity, weight });
     }
   }, [filteredPoints, selectedAircraft, show.trails]);
+
+  useEffect(() => {
+    const layer = staticRoutesLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (!show.routes) return;
+    const lines = staticLayers?.routeLines;
+    if (!lines?.length) return;
+    for (const route of lines) {
+      const latlngs: L.LatLngExpression[] = [];
+      for (const p of route.points) {
+        if (
+          Number.isFinite(p.lat) &&
+          Number.isFinite(p.lon) &&
+          Math.abs(p.lat) <= 90 &&
+          Math.abs(p.lon) <= 180
+        ) {
+          latlngs.push([p.lat, p.lon]);
+        }
+      }
+      if (latlngs.length < 2) continue;
+      const color =
+        route.kind === "detour" ? "#eab308" : route.kind === "missed" ? "#a855f7" : "#22d3ee";
+      L.polyline(latlngs, {
+        color,
+        weight: 2,
+        opacity: 0.78,
+        dashArray: route.kind === "planned" ? undefined : "8 6",
+        interactive: false,
+      }).addTo(layer);
+    }
+  }, [staticLayers, show.routes, mapReady]);
 
   const handleZoomIn = () => mapRef.current?.zoomIn();
   const handleZoomOut = () => mapRef.current?.zoomOut();

@@ -3,6 +3,16 @@ import type { RecordingMeta } from "@/mock/demo-data";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 export const AUTH_TOKEN_KEY = "alpha.auth.token";
+
+/** 仅保留浏览器可直接请求的地址；否则 WaveSurfer 会把相对路径接到当前站点（如 localhost:3000/temp/...）导致 404 */
+export function resolveBrowserAudioUrl(raw: string | undefined | null): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s) || s.startsWith("blob:") || s.startsWith("data:")) return s;
+  const base = API_BASE_URL.replace(/\/$/, "");
+  if (s.startsWith("/")) return `${base}${s}`;
+  return "";
+}
 export type TableKey =
   | "airports"
   | "users"
@@ -41,7 +51,9 @@ function readToken(): string | null {
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const token = readToken();
   const headers = new Headers(init?.headers || {});
-  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const hasBody = init?.body != null && init.body !== "";
+  // 无 body 的 GET 不要带 application/json，否则会触发 CORS 预检（OPTIONS）
+  if (hasBody && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -201,7 +213,32 @@ type BackendTrack = {
   heading?: number;
   departure_airport_code?: string;
   arrival_airport_code?: string;
+  next_id?: number | string | null;
+  prev_id?: number | string | null;
 };
+
+/** 与录音关联的 track_id 可能只是一条链上的节点，需把 next_id/prev_id 连通分量一并拉进地图 */
+function expandLinkedTracks(allRows: BackendTrack[], seedIds: Set<number>): BackendTrack[] {
+  const byId = new Map<number, BackendTrack>();
+  for (const t of allRows) {
+    const id = Number(t.track_id);
+    if (Number.isFinite(id)) byId.set(id, t);
+  }
+  const out = new Map<number, BackendTrack>();
+  const stack = [...seedIds].filter((x) => Number.isFinite(x));
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (!Number.isFinite(id) || out.has(id)) continue;
+    const row = byId.get(id);
+    if (!row) continue;
+    out.set(id, row);
+    const nxt = row.next_id != null && row.next_id !== "" ? Number(row.next_id) : NaN;
+    const prv = row.prev_id != null && row.prev_id !== "" ? Number(row.prev_id) : NaN;
+    if (Number.isFinite(nxt)) stack.push(nxt);
+    if (Number.isFinite(prv)) stack.push(prv);
+  }
+  return [...out.values()];
+}
 
 type BackendAnnotation = {
   annotation_id: number;
@@ -347,10 +384,11 @@ export async function fetchAnnotationBundle(): Promise<{
   adsbData: ADSBData[];
   recordingMeta: Record<string, RecordingMeta>;
 }> {
+  // 与后端 GET /tables/{key}?limit= 上限（当前 le=1000）一致，避免 422
   const [audioRows, trackRows, annotationRows] = await Promise.all([
     listTableItems<BackendAudioRecord>("audio_records", 1000, 0),
-    listTableItems<BackendTrack>("tracks", 5000, 0),
-    listTableItems<BackendAnnotation>("annotations", 5000, 0),
+    listTableItems<BackendTrack>("tracks", 1000, 0),
+    listTableItems<BackendAnnotation>("annotations", 1000, 0),
   ]);
 
   const tracksById = new Map<number, BackendTrack>();
@@ -383,7 +421,7 @@ export async function fetchAnnotationBundle(): Promise<{
     const track = tracksById.get(Number(row.track_id));
     return {
       id,
-      url: row.source_url || "",
+      url: resolveBrowserAudioUrl(row.source_url),
       duration: Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000)),
       timestamps: annotationsByAudioId.get(Number(row.audio_id)) || [],
       metadata: {
@@ -394,9 +432,8 @@ export async function fetchAnnotationBundle(): Promise<{
   });
 
   const relatedTrackIds = new Set(audioRows.map((r) => Number(r.track_id)).filter((x) => Number.isFinite(x)));
-  const usableTracks = relatedTrackIds.size
-    ? trackRows.filter((t) => relatedTrackIds.has(Number(t.track_id)))
-    : trackRows;
+  const usableTracks =
+    relatedTrackIds.size > 0 ? expandLinkedTracks(trackRows, relatedTrackIds) : trackRows;
 
   const parsedTimes = usableTracks
     .map((t) => toUnixSeconds(t.timestamp))

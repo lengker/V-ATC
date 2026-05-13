@@ -14,11 +14,11 @@ import { useToast } from "@/hooks/use-toast";
 
 function Characters({
   focus,
-  emailLength,
+  accountLength,
   passwordLength,
 }: {
   focus: "email" | "password" | null;
-  emailLength: number;
+  accountLength: number;
   passwordLength: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -130,7 +130,7 @@ function Characters({
       : "scale(1) rotate(0deg) translateY(0)";
   };
   const emailPeek = focus === "email";
-  const peekLevel = Math.min(1, emailLength / 18);
+  const peekLevel = Math.min(1, accountLength / 18);
   const purpleExtraY = emailPeek ? 8 + Math.round(peekLevel * 12) : 0;
   const purpleSkew = emailPeek ? -6 - peekLevel * 6 : 0;
   const purpleScale = emailPeek ? 1.02 + peekLevel * 0.03 : 1;
@@ -385,24 +385,52 @@ export function Component() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = searchParams.get("next") || "/";
-  const { login } = useAuth();
+  const { login, register } = useAuth();
   const { toast } = useToast();
 
-  const [email, setEmail] = useState("anna@gmail.com");
-  const [password, setPassword] = useState("12345678");
+  const [mode, setMode] = useState<"login" | "register">("login");
+  /** 登录：对应文档 POST /users/login 的 username（可为邮箱或用户名） */
+  const [account, setAccount] = useState("");
+  /** 注册：文档要求 username 3～64，与邮箱分离 */
+  const [regUsername, setRegUsername] = useState("");
+  const [regEmail, setRegEmail] = useState("");
+  const [regRole, setRegRole] = useState<"viewer" | "annotator">("viewer");
+  const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(true);
   const [showPwd, setShowPwd] = useState(false);
   const [focus, setFocus] = useState<"email" | "password" | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState("");
-  const valid = useMemo(() => /\S+@\S+\.\S+/.test(email) && password.length >= 6, [email, password]);
 
-  const onSubmit = async (e: React.FormEvent) => {
+  const loginAccountOk = useMemo(() => {
+    const t = account.trim();
+    if (t.length < 3 || t.length > 64) return false;
+    if (t.includes("@")) return /\S+@\S+\.\S+/.test(t);
+    return true;
+  }, [account]);
+
+  const passwordOk = useMemo(() => password.length >= 6 && password.length <= 128, [password]);
+
+  const regUsernameOk = useMemo(() => {
+    const u = regUsername.trim();
+    return u.length >= 3 && u.length <= 64;
+  }, [regUsername]);
+
+  const regEmailOk = useMemo(() => {
+    const e = regEmail.trim();
+    if (!e) return true;
+    return /\S+@\S+\.\S+/.test(e);
+  }, [regEmail]);
+
+  const validLogin = loginAccountOk && passwordOk;
+  const validRegister = regUsernameOk && passwordOk && regEmailOk;
+
+  const onSubmitLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!valid) return;
+    if (!validLogin) return;
     setLoading(true);
     setErrorText("");
-    const res = await login({ email, password });
+    const res = await login({ email: account, password });
     if (!res.ok) {
       setErrorText(res.error);
       toast({ title: "登录失败", description: res.error, variant: "destructive" });
@@ -411,7 +439,6 @@ export function Component() {
     }
     if (!remember) {
       try {
-        // 不记住时，当前页仍可进入；刷新后需要重新登录
         sessionStorage.setItem("alpha.temp.login", "1");
       } catch {
         // ignore
@@ -419,7 +446,33 @@ export function Component() {
     }
     toast({ title: "登录成功", description: "欢迎进入系统" });
     router.replace(next);
+    setLoading(false);
   };
+
+  const onSubmitRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validRegister) return;
+    setLoading(true);
+    setErrorText("");
+    const res = await register({
+      username: regUsername.trim(),
+      password,
+      ...(regEmail.trim() ? { email: regEmail.trim() } : {}),
+      role: regRole,
+    });
+    if (!res.ok) {
+      setErrorText(res.error);
+      toast({ title: "注册失败", description: res.error, variant: "destructive" });
+      setLoading(false);
+      return;
+    }
+    toast({ title: "注册成功", description: "已自动登录" });
+    router.replace(next);
+    setLoading(false);
+  };
+
+  const heading = mode === "login" ? "欢迎回来" : "创建账号";
+  const sub = mode === "login" ? "使用文档 §7.3 对应接口登录" : "POST /users/register，禁止注册为 admin";
 
   return (
     <div className="min-h-screen grid md:grid-cols-2 bg-background">
@@ -429,11 +482,11 @@ export function Component() {
           <div className="h-9 w-9 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center">
             <Mail className="h-4 w-4" />
           </div>
-          <div className="text-3xl font-bold">YourBrand</div>
+          <div className="text-3xl font-bold">ATC 标注</div>
         </div>
 
         <div className="relative z-10">
-          <Characters focus={focus} emailLength={email.length} passwordLength={password.length} />
+          <Characters focus={focus} accountLength={account.length + regUsername.length} passwordLength={password.length} />
         </div>
 
         <div className="relative z-10 flex items-center gap-8 text-zinc-300 text-sm">
@@ -452,97 +505,202 @@ export function Component() {
       {/* Right */}
       <div className="flex items-center justify-center px-8 py-10 bg-zinc-100 dark:bg-zinc-100 text-zinc-900">
         <div className="w-full max-w-[470px]">
-          {/* Mobile characters */}
           <div className="md:hidden mb-8 rounded-2xl overflow-hidden bg-[radial-gradient(circle_at_20%_20%,rgba(99,102,241,0.2),transparent_30%),linear-gradient(135deg,#0f172a_0%,#111827_100%)] p-4">
             <div className="text-white text-sm font-semibold mb-2">Alpha ATC Labeling</div>
             <div className="h-[180px]">
-                <Characters focus={focus} emailLength={email.length} passwordLength={password.length} />
+              <Characters focus={focus} accountLength={account.length + regUsername.length} passwordLength={password.length} />
             </div>
           </div>
 
-          <div className="text-center mb-10">
-            <h1 className="text-5xl font-bold tracking-tight mb-3">Welcome back!</h1>
-            <p className="text-zinc-500 text-2xl">Please enter your details</p>
-            <p className="text-xs text-zinc-400 mt-2">UI build: v2</p>
+          <div className="text-center mb-8">
+            <h1 className="text-5xl font-bold tracking-tight mb-3">{heading}</h1>
+            <p className="text-zinc-500 text-xl">{sub}</p>
+            <p className="text-xs text-zinc-400 mt-2">后端 API_BASE：{process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000"}</p>
           </div>
 
-          <form onSubmit={onSubmit} className="space-y-6">
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-3xl font-medium">
-                Email
-              </Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onFocus={() => setFocus("email")}
-                onBlur={() => setFocus(null)}
-                placeholder="anna@gmail.com"
-                className="h-14 text-2xl rounded-2xl bg-white border-zinc-200"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="password" className="text-3xl font-medium">
-                Password
-              </Label>
-              <div className="relative">
+          {mode === "login" ? (
+            <form onSubmit={onSubmitLogin} className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="account" className="text-2xl font-medium">
+                  用户名或邮箱
+                </Label>
                 <Input
-                  id="password"
-                  type={showPwd ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onFocus={() => setFocus("password")}
+                  id="account"
+                  type="text"
+                  autoComplete="username"
+                  value={account}
+                  onChange={(e) => setAccount(e.target.value)}
+                  onFocus={() => setFocus("email")}
                   onBlur={() => setFocus(null)}
-                  className="h-14 text-2xl rounded-2xl bg-white border-zinc-200 pr-12"
+                  placeholder="邮箱或 3～64 位用户名"
+                  className="h-14 text-xl rounded-2xl bg-white border-zinc-200"
                 />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-2xl font-medium">
+                  密码（6～128 位）
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPwd ? "text" : "password"}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    onFocus={() => setFocus("password")}
+                    onBlur={() => setFocus(null)}
+                    className="h-14 text-xl rounded-2xl bg-white border-zinc-200 pr-12"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPwd((v) => !v)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
+                  >
+                    {showPwd ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-lg">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox checked={remember} onCheckedChange={(v) => setRemember(Boolean(v))} />
+                  <span>记住本会话</span>
+                </label>
+                <Link href="#" className="hover:underline text-muted-foreground">
+                  忘记密码（未接接口）
+                </Link>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={!validLogin || loading}
+                className="w-full h-14 rounded-2xl text-2xl bg-zinc-900 hover:bg-zinc-800 text-white"
+              >
+                {loading ? "请求中…" : "登录（POST /users/login）"}
+              </Button>
+
+              {errorText ? (
+                <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-red-700 text-sm">{errorText}</div>
+              ) : null}
+
+              <div className="text-center text-lg text-zinc-600">
+                没有账号？{" "}
                 <button
                   type="button"
-                  onClick={() => setShowPwd((v) => !v)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
+                  className="font-semibold text-zinc-900 underline"
+                  onClick={() => {
+                    setMode("register");
+                    setErrorText("");
+                  }}
                 >
-                  {showPwd ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  去注册
                 </button>
               </div>
-            </div>
+            </form>
+          ) : (
+            <form onSubmit={onSubmitRegister} className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="regUsername" className="text-2xl font-medium">
+                  用户名（3～64）
+                </Label>
+                <Input
+                  id="regUsername"
+                  type="text"
+                  autoComplete="username"
+                  value={regUsername}
+                  onChange={(e) => setRegUsername(e.target.value)}
+                  onFocus={() => setFocus("email")}
+                  onBlur={() => setFocus(null)}
+                  placeholder="仅字母数字与常见符号"
+                  className="h-14 text-xl rounded-2xl bg-white border-zinc-200"
+                />
+              </div>
 
-            <div className="flex items-center justify-between text-xl">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <Checkbox checked={remember} onCheckedChange={(v) => setRemember(Boolean(v))} />
-                <span>Remember for 30 days</span>
-              </label>
-              <Link href="#" className="hover:underline">
-                Forgot password?
-              </Link>
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="regEmail" className="text-2xl font-medium">
+                  邮箱（可选）
+                </Label>
+                <Input
+                  id="regEmail"
+                  type="email"
+                  autoComplete="email"
+                  value={regEmail}
+                  onChange={(e) => setRegEmail(e.target.value)}
+                  className="h-14 text-xl rounded-2xl bg-white border-zinc-200"
+                  placeholder="name@example.com"
+                />
+              </div>
 
-            <Button
-              type="submit"
-              disabled={!valid || loading}
-              className="w-full h-14 rounded-2xl text-3xl bg-zinc-900 hover:bg-zinc-800 text-white"
-            >
-              {loading ? "Logging in..." : "Log in"}
-            </Button>
+              <div className="space-y-2">
+                <Label htmlFor="regPassword" className="text-2xl font-medium">
+                  密码（6～128）
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="regPassword"
+                    type={showPwd ? "text" : "password"}
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    onFocus={() => setFocus("password")}
+                    onBlur={() => setFocus(null)}
+                    className="h-14 text-xl rounded-2xl bg-white border-zinc-200 pr-12"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPwd((v) => !v)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
+                  >
+                    {showPwd ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
+              </div>
 
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full h-14 rounded-2xl text-3xl bg-white border-zinc-200 text-zinc-900"
-            >
-              Log in with Google
-            </Button>
+              <div className="space-y-2">
+                <Label htmlFor="regRole" className="text-2xl font-medium">
+                  角色（注册不可选 admin）
+                </Label>
+                <select
+                  id="regRole"
+                  value={regRole}
+                  onChange={(e) => setRegRole(e.target.value === "annotator" ? "annotator" : "viewer")}
+                  className="h-14 w-full text-xl rounded-2xl border border-zinc-200 bg-white px-4"
+                >
+                  <option value="viewer">viewer</option>
+                  <option value="annotator">annotator</option>
+                </select>
+              </div>
 
-            {errorText ? (
-              <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-red-700 text-sm">{errorText}</div>
-            ) : null}
+              <Button
+                type="submit"
+                disabled={!validRegister || loading}
+                className="w-full h-14 rounded-2xl text-2xl bg-zinc-900 hover:bg-zinc-800 text-white"
+              >
+                {loading ? "请求中…" : "注册（POST /users/register）并登录"}
+              </Button>
 
-            <div className="text-center text-xl text-zinc-600 mt-2">
-              Don&apos;t have an account? <span className="font-semibold text-zinc-900">Sign Up</span>
-            </div>
-          </form>
+              {errorText ? (
+                <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-red-700 text-sm">{errorText}</div>
+              ) : null}
 
-          <div className="mt-6 text-sm text-zinc-500">Demo Page</div>
+              <div className="text-center text-lg text-zinc-600">
+                已有账号？{" "}
+                <button
+                  type="button"
+                  className="font-semibold text-zinc-900 underline"
+                  onClick={() => {
+                    setMode("login");
+                    setErrorText("");
+                  }}
+                >
+                  返回登录
+                </button>
+              </div>
+            </form>
+          )}
+
+          <div className="mt-6 text-sm text-zinc-500">离线演示：offline@alpha.local / offline123</div>
         </div>
       </div>
     </div>

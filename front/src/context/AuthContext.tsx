@@ -1,7 +1,14 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { getCurrentUser, loginWithBackend, normalizeUser, saveToken } from "@/lib/backend-api";
+import {
+  AUTH_TOKEN_KEY,
+  getCurrentUser,
+  loginWithBackend,
+  normalizeUser,
+  registerWithBackend,
+  saveToken,
+} from "@/lib/backend-api";
 
 export type AuthUser = {
   id: string;
@@ -14,6 +21,12 @@ type AuthContextValue = {
   user: AuthUser | null;
   loading: boolean;
   login: (params: { email: string; password: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
+  register: (params: {
+    username: string;
+    password: string;
+    email?: string;
+    role?: "annotator" | "viewer";
+  }) => Promise<{ ok: true } | { ok: false; error: string }>;
   logout: () => void;
 };
 
@@ -53,6 +66,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const savedUser = readUserFromStorage();
     setUser(savedUser);
     if (!savedUser) {
+      setLoading(false);
+      return;
+    }
+    // 无 token（如离线登录）不调 /users/me，避免 401；旧后端未挂 auth 时则是 404
+    let token: string | null = null;
+    try {
+      token = localStorage.getItem(AUTH_TOKEN_KEY);
+    } catch {
+      token = null;
+    }
+    if (!token) {
       setLoading(false);
       return;
     }
@@ -112,13 +136,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const register: AuthContextValue["register"] = async ({ username, password, email, role }) => {
+    const u = username.trim();
+    if (u.length < 3 || u.length > 64) return { ok: false, error: "用户名长度须为 3～64" };
+    if (password.length < 6 || password.length > 128) return { ok: false, error: "密码长度须为 6～128" };
+    try {
+      await registerWithBackend({
+        username: u,
+        password,
+        ...(email?.trim() ? { email: email.trim() } : {}),
+        ...(role ? { role } : {}),
+      });
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "注册失败" };
+    }
+    try {
+      const res = await loginWithBackend(u, password);
+      saveToken(res.data.token);
+      const userObj = normalizeUser(res.data.user_info);
+      setUser(userObj);
+      writeUserToStorage(userObj);
+      return { ok: true };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "注册成功但自动登录失败，请手动登录",
+      };
+    }
+  };
+
   const logout = () => {
     setUser(null);
     writeUserToStorage(null);
     saveToken(null);
   };
 
-  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading]);
+  const value = useMemo(() => ({ user, loading, login, register, logout }), [user, loading]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

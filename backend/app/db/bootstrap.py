@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections import deque
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.tables.registry import CREATION_ORDER, TABLE_MODULES
@@ -281,7 +281,7 @@ def build_db_ui_snapshot(
 
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _table_meta(conn: sqlite3.Connection, table_key: str) -> dict[str, Any]:
