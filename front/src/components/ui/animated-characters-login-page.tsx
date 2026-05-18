@@ -538,7 +538,10 @@ export function Component() {
             ) : null}
 
             <div className="text-center text-xl text-zinc-600 mt-2">
-              Don&apos;t have an account? <span className="font-semibold text-zinc-900">Sign Up</span>
+              Don&apos;t have an account?{" "}
+              <Link href="/signup" className="font-semibold text-zinc-900 hover:underline">
+                Sign Up
+              </Link>
             </div>
           </form>
 

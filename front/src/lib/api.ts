@@ -30,6 +30,12 @@ export type LoginResult = {
   user: AlphaUser;
 };
 
+export type SignupRequest = {
+  username: string;
+  password: string;
+  display_name?: string;
+};
+
 type VoiceInfo = {
   unique_id: string;
   icao_code?: string | null;
@@ -173,6 +179,18 @@ function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): Au
 }
 
 export const authAPI = {
+  signup: async (payload: SignupRequest): Promise<ApiResponse<AlphaUser>> => {
+    try {
+      const data = await fetchAlpha<AlphaUser>("/auth/signup", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      return toApiResponse(data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
   login: async (username: string, password: string): Promise<ApiResponse<LoginResult>> => {
     try {
       const data = await fetchAlpha<LoginResult>("/auth/login", {

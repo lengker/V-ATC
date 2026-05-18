@@ -6,6 +6,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    display_name: str | None = None
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -22,4 +28,3 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: dict
-
