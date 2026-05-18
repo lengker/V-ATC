@@ -135,6 +135,7 @@ function HomeContent() {
           recordings={backendRecordings}
           recordingMeta={{}}
           onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+          onRefreshRecordings={() => setReloadToken((x) => x + 1)}
         />
       );
     }
@@ -159,6 +160,7 @@ function HomeContent() {
       recordings={demoRecordings}
       recordingMeta={demoRecordingMeta}
       onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+      onRefreshRecordings={() => setReloadToken((x) => x + 1)}
     />
   );
 }

@@ -13,6 +13,7 @@ import { LayerToggles, type LayerTogglesState } from "@/components/layer-toggles
 import { TimeRover } from "@/components/time-rover";
 import { TargetsPanel } from "@/components/targets-panel";
 import { RecordingsPanel } from "@/components/recordings-panel";
+import { A2VoicePanel } from "@/components/a2-voice-panel";
 import { QianwenAgentWidget } from "@/components/qianwen-agent-widget";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { AudioData, ADSBData, VoiceTimestamp } from "@/types";
@@ -49,6 +50,7 @@ interface AnnotationPageProps {
   recordings?: AudioData[];
   recordingMeta?: Record<string, RecordingMeta>;
   onSelectRecording?: (id: string) => void;
+  onRefreshRecordings?: () => void;
 }
 
 export function AnnotationPage({
@@ -57,6 +59,7 @@ export function AnnotationPage({
   recordings = [audioData],
   recordingMeta = {},
   onSelectRecording,
+  onRefreshRecordings,
 }: AnnotationPageProps) {
   const [timestamps, setTimestamps] = useState<VoiceTimestamp[]>(() => {
     // 初次加载：合并本地保存的 override（无后端也能持久化）
@@ -106,6 +109,7 @@ export function AnnotationPage({
         recordings={recordings}
         recordingMeta={recordingMeta}
         onSelectRecording={onSelectRecording}
+        onRefreshRecordings={onRefreshRecordings}
         timestamps={timestamps}
         setTimestamps={setTimestamps}
         timelineMax={timelineMax || 60}
@@ -126,6 +130,7 @@ function AnnotationPageInner({
   recordings = [audioData],
   recordingMeta = {},
   onSelectRecording,
+  onRefreshRecordings,
   timestamps,
   setTimestamps,
   timelineMax,
@@ -456,6 +461,7 @@ function AnnotationPageInner({
               recordingMeta={recordingMeta}
             />
           </div>
+          <A2VoicePanel onRefreshRecordings={onRefreshRecordings} />
           <div ref={audioSectionRef}>
             <Card className="overflow-hidden rounded-3xl border-border/70 efb-panel efb-glow">
               <AudioWaveform

@@ -84,7 +84,7 @@ function SignupForm() {
             New accounts are saved through the Alpha backend and start with the annotator role.
           </p>
         </div>
-        <div className="text-sm text-zinc-400">Alpha A-5 auth service</div>
+        <div className="text-sm text-zinc-400">账号认证服务</div>
       </div>
 
       <div className="flex items-center justify-center px-8 py-10">

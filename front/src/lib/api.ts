@@ -1,6 +1,7 @@
 import { ADSBData, Annotation, ApiResponse, AudioData, VoiceTimestamp } from "@/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+const A2_API_BASE_URL = process.env.NEXT_PUBLIC_A2_API_BASE_URL || API_BASE_URL;
 const API_PREFIX = "/api/v1";
 const ACCESS_TOKEN_KEY = "alpha.auth.accessToken";
 const REFRESH_TOKEN_KEY = "alpha.auth.refreshToken";
@@ -63,6 +64,61 @@ type PageResult<T> = {
   total: number;
   page: number;
   page_size: number;
+};
+
+type A2Response<T> = {
+  code: number;
+  msg?: string;
+  message?: string;
+  data: T;
+  count?: number;
+};
+
+export type A2VoiceRecord = {
+  unique_id: string;
+  icao_code: string;
+  band: string;
+  original_time?: string | null;
+  process_time?: string | null;
+  file_path?: string | null;
+  file_name?: string | null;
+  file_size?: number | null;
+  data_type?: "S" | "H" | string;
+  start_at: string;
+  end_at: string;
+  checksum?: string | null;
+  valid_status?: string | null;
+  downloadUrl?: string;
+};
+
+export type A2VoiceQuery = {
+  startTime: string;
+  endTime: string;
+  icaoCode?: string;
+  band?: string;
+  pageNum?: number;
+  pageSize?: number;
+};
+
+export type A2DownloadTaskCreate = {
+  task_name: string;
+  icao_code: string;
+  band: string;
+  start_time: string;
+  end_time: string;
+  speed_limit?: number;
+  exec_type?: number;
+  exec_time?: string | null;
+  priority?: "high" | "medium" | "low";
+};
+
+export type A2LiveAtcExecute = {
+  source_url: string;
+  date: string;
+  time: string;
+  icao_code?: string;
+  band?: string;
+  speed_limit_kbps?: number;
 };
 
 export function getAccessToken(): string | null {
@@ -136,6 +192,44 @@ async function fetchAlpha<T>(
   }
 
   return payload.data;
+}
+
+async function fetchA2<T>(endpoint: string, options: RequestInit = {}): Promise<A2Response<T>> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((options.headers as Record<string, string> | undefined) ?? {}),
+  };
+
+  const response = await fetch(`${A2_API_BASE_URL}${endpoint}`, {
+    ...options,
+    headers,
+  });
+  const responseText = await response.text();
+  const payload = responseText
+    ? (() => {
+        try {
+          return JSON.parse(responseText) as A2Response<T>;
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+
+  if (!response.ok || !payload || payload.code !== 200) {
+    throw new Error(payload?.msg || payload?.message || responseText || `语音服务错误: ${response.status}`);
+  }
+
+  return payload;
+}
+
+function buildQuery(params: Record<string, string | number | undefined | null>) {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && `${value}`.trim() !== "") {
+      qs.set(key, `${value}`);
+    }
+  });
+  return qs.toString();
 }
 
 function parseSeconds(value?: string | null): number | undefined {
@@ -297,6 +391,90 @@ export const audioAPI = {
   },
 };
 
+export const a2VoiceAPI = {
+  queryVoice: async (payload: A2VoiceQuery): Promise<ApiResponse<{ items: A2VoiceRecord[]; total: number }>> => {
+    try {
+      const result = await fetchA2<A2VoiceRecord[]>("/api/a2/voice/query", {
+        method: "POST",
+        body: JSON.stringify({
+          ...payload,
+          pageNum: payload.pageNum ?? 1,
+          pageSize: payload.pageSize ?? 20,
+        }),
+      });
+      return toApiResponse({ items: result.data, total: result.count ?? result.data.length });
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  listDownloadTasks: async (): Promise<ApiResponse<Record<string, unknown>[]>> => {
+    try {
+      const result = await fetchA2<Record<string, unknown>[]>("/api/a2/tasks/download");
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  createDownloadTask: async (payload: A2DownloadTaskCreate): Promise<ApiResponse<{ taskId: number }>> => {
+    try {
+      const result = await fetchA2<{ taskId: number }>("/api/a2/tasks/download", {
+        method: "POST",
+        body: JSON.stringify({
+          speed_limit: 0,
+          exec_type: 1,
+          priority: "medium",
+          ...payload,
+        }),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  executeLiveAtcDownload: async (
+    payload: A2LiveAtcExecute
+  ): Promise<ApiResponse<{ taskId?: number; record?: A2VoiceRecord; metadata?: Record<string, unknown> }>> => {
+    try {
+      const result = await fetchA2<{ taskId?: number; record?: A2VoiceRecord; metadata?: Record<string, unknown> }>(
+        "/api/a2/tasks/download/liveatc/execute",
+        {
+          method: "POST",
+          body: JSON.stringify({ speed_limit_kbps: 0, ...payload }),
+        }
+      );
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  syncMetadata: async (): Promise<ApiResponse<{ missing: number; updated: number; scanned: number }>> => {
+    try {
+      const result = await fetchA2<{ missing: number; updated: number; scanned: number }>("/api/a2/sync/run", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  exportVoiceUrl: (payload: A2VoiceQuery & { outputFormat?: "wav" | "mp3"; icaoCode: string; band: string }) =>
+    `${A2_API_BASE_URL}/api/a2/voice/export?${buildQuery({
+      startTime: payload.startTime,
+      endTime: payload.endTime,
+      icaoCode: payload.icaoCode,
+      band: payload.band,
+      outputFormat: payload.outputFormat ?? "wav",
+    })}`,
+
+  fileUrl: (uniqueId: string) => `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(uniqueId)}`,
+};
+
 export const adsbAPI = {
   getADSBData: async (
     _audioId: string,
@@ -305,7 +483,7 @@ export const adsbAPI = {
   ): Promise<ApiResponse<ADSBData[]>> => {
     return {
       success: false,
-      error: "Alpha A-5 exposes ADSB ingest, but no ADSB list query endpoint yet.",
+      error: "后端已提供 ADSB 写入能力，但暂未提供 ADSB 列表查询接口。",
     };
   },
 
@@ -316,7 +494,7 @@ export const adsbAPI = {
   ): Promise<ApiResponse<ADSBData[]>> => {
     return {
       success: false,
-      error: "Alpha A-5 exposes ADSB ingest, but no aircraft track query endpoint yet.",
+      error: "后端已提供 ADSB 写入能力，但暂未提供单机轨迹查询接口。",
     };
   },
 };
