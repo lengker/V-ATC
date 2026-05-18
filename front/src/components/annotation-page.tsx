@@ -14,6 +14,7 @@ import { TimeRover } from "@/components/time-rover";
 import { TargetsPanel } from "@/components/targets-panel";
 import { RecordingsPanel } from "@/components/recordings-panel";
 import { QianwenAgentWidget } from "@/components/qianwen-agent-widget";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { AudioData, ADSBData, VoiceTimestamp } from "@/types";
 import type { RecordingMeta } from "@/mock/demo-data";
 import { audioAPI } from "@/lib/api";
@@ -465,6 +466,7 @@ function AnnotationPageInner({
                 currentTime={currentTime}
                 onTimeUpdate={handleTimeUpdate}
                 onTimestampClick={handleTimestampClick}
+                onTimestampsChange={handleSetTimestamps}
               />
             </Card>
           </div>
@@ -500,13 +502,15 @@ function AnnotationPageInner({
               onSelectAircraft={handleAircraftSelect}
             />
             <div className="absolute top-3 right-3 z-20">
-              <QianwenAgentWidget
-                audioId={audioData.id}
-                currentTime={currentTime}
-                selectedAircraft={selectedAircraft}
-                selectedTimestamp={selectedTimestamp}
-                onApplySuggestedText={handleApplyAiSuggestedText}
-              />
+              <ErrorBoundary name="千问智能体（A-4）" className="w-[320px]">
+                <QianwenAgentWidget
+                  audioId={audioData.id}
+                  currentTime={currentTime}
+                  selectedAircraft={selectedAircraft}
+                  selectedTimestamp={selectedTimestamp}
+                  onApplySuggestedText={handleApplyAiSuggestedText}
+                />
+              </ErrorBoundary>
             </div>
           </div>
           <div ref={settingsSectionRef}>
