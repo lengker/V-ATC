@@ -137,50 +137,58 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
   };
 
   return (
-    <Card className="overflow-hidden rounded-3xl border-border/70 efb-panel efb-glow">
-      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent pb-3">
+    <Card className="overflow-hidden rounded-2xl border-border/70 efb-panel efb-glow">
+      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent px-3 py-2.5">
         <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-base font-semibold tracking-tight">语音数据</CardTitle>
+          <CardTitle className="text-sm font-semibold tracking-tight">语音数据</CardTitle>
           <span className="rounded-full bg-background/50 px-2 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/50">
             {total} 条
           </span>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3 pt-4">
-        <div className="grid grid-cols-2 gap-2">
+      <CardContent className="space-y-2.5 px-3 py-3">
+        <div className="grid grid-cols-2 gap-1.5">
           <div className="space-y-1">
             <Label className="text-xs">ICAO</Label>
-            <Input value={icaoCode} onChange={(e) => setIcaoCode(e.target.value)} className="h-9" />
+            <Input value={icaoCode} onChange={(e) => setIcaoCode(e.target.value)} className="h-8 text-xs" />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">频段</Label>
-            <Input value={band} onChange={(e) => setBand(e.target.value)} className="h-9" />
+            <Input value={band} onChange={(e) => setBand(e.target.value)} className="h-8 text-xs" />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">开始时间</Label>
-            <Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="h-9" />
+            <Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="h-8 text-xs" />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">结束时间</Label>
-            <Input type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="h-9" />
+            <Input type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="h-8 text-xs" />
           </div>
         </div>
 
-        <div className="space-y-1">
-          <Label className="text-xs">LiveATC archive URL</Label>
-          <Input value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} className="h-9" />
-        </div>
-        <div className="grid grid-cols-[1fr_92px] gap-2">
+        <div className="grid grid-cols-[1fr_92px] gap-1.5">
           <div className="space-y-1">
-            <Label className="text-xs">LiveATC 时段</Label>
-            <Input value={liveAtcSlot} onChange={(e) => setLiveAtcSlot(e.target.value)} className="h-9" />
+            <Label className="text-xs">LiveATC URL</Label>
+            <Input value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} className="h-8 text-xs" />
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">导出格式</Label>
+            <Label className="text-xs">时段</Label>
+            <Input value={liveAtcSlot} onChange={(e) => setLiveAtcSlot(e.target.value)} className="h-8 text-xs" />
+          </div>
+        </div>
+        <div className="grid grid-cols-[1fr_92px] gap-1.5">
+          <div className="space-y-1">
+            <Label className="text-xs">切片范围</Label>
+            <div className="h-8 rounded-md border border-border/60 bg-background/30 px-2 py-1.5 text-xs text-muted-foreground">
+              {queryPayload.icaoCode} / {queryPayload.band}
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">格式</Label>
             <select
               value={outputFormat}
               onChange={(e) => setOutputFormat(e.target.value as "wav" | "mp3")}
-              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
             >
               <option value="wav">wav</option>
               <option value="mp3">mp3</option>
@@ -188,29 +196,29 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <Button size="sm" onClick={queryVoice} disabled={busyAction !== null}>
-            <Search className="h-4 w-4" /> 查询
+        <div className="grid grid-cols-3 gap-1.5">
+          <Button size="sm" className="h-8 px-2 text-xs" onClick={queryVoice} disabled={busyAction !== null}>
+            <Search className="h-3.5 w-3.5" /> 查询
           </Button>
-          <Button size="sm" variant="secondary" onClick={createTask} disabled={busyAction !== null}>
-            <Download className="h-4 w-4" /> 创建任务
+          <Button size="sm" className="h-8 px-2 text-xs" variant="secondary" onClick={createTask} disabled={busyAction !== null}>
+            <Download className="h-3.5 w-3.5" /> 新任务
           </Button>
-          <Button size="sm" variant="secondary" onClick={executeLiveAtc} disabled={busyAction !== null}>
-            <RefreshCw className="h-4 w-4" /> 下载 LiveATC
+          <Button size="sm" className="h-8 px-2 text-xs" variant="secondary" onClick={executeLiveAtc} disabled={busyAction !== null}>
+            <RefreshCw className="h-3.5 w-3.5" /> 下载
           </Button>
-          <Button size="sm" variant="outline" onClick={exportSlice}>
-            <FileDown className="h-4 w-4" /> 导出切片
+          <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={exportSlice}>
+            <FileDown className="h-3.5 w-3.5" /> 导出
           </Button>
-          <Button size="sm" variant="outline" onClick={() => runAction("tasks", listTasks)} disabled={busyAction !== null}>
-            <ListFilter className="h-4 w-4" /> 任务列表
+          <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => runAction("tasks", listTasks)} disabled={busyAction !== null}>
+            <ListFilter className="h-3.5 w-3.5" /> 任务
           </Button>
-          <Button size="sm" variant="outline" onClick={syncMetadata} disabled={busyAction !== null}>
-            <RefreshCw className="h-4 w-4" /> 同步元数据
+          <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={syncMetadata} disabled={busyAction !== null}>
+            <RefreshCw className="h-3.5 w-3.5" /> 同步
           </Button>
         </div>
 
         {(records.length > 0 || tasks.length > 0) && (
-          <div className="max-h-52 space-y-2 overflow-auto pr-1 text-xs">
+          <div className="max-h-36 space-y-1.5 overflow-auto pr-1 text-xs">
             {records.map((record) => (
               <div key={record.unique_id} className="rounded-xl border border-border/60 bg-background/20 p-2">
                 <div className="truncate font-medium">{record.unique_id}</div>

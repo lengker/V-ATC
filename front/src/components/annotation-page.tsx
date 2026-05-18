@@ -449,10 +449,10 @@ function AnnotationPageInner({
       />
 
       {/* 主内容区 */}
-      <div ref={contentScrollRef} className="flex-1 overflow-y-auto scroll-smooth p-3">
-        <div className="grid grid-cols-12 gap-3">
+      <div ref={contentScrollRef} className="flex-1 overflow-y-auto scroll-smooth p-2.5">
+        <div className="grid grid-cols-12 gap-2.5">
         {/* 左侧：录音列表 + 波形 */}
-        <div className="col-span-12 lg:col-span-4 flex flex-col gap-3">
+        <div className="col-span-12 flex flex-col gap-2.5 lg:col-span-3">
           <div ref={radioSectionRef}>
             <RecordingsPanel
               recordings={recordings}
@@ -462,26 +462,12 @@ function AnnotationPageInner({
             />
           </div>
           <A2VoicePanel onRefreshRecordings={onRefreshRecordings} />
-          <div ref={audioSectionRef}>
-            <Card className="overflow-hidden rounded-3xl border-border/70 efb-panel efb-glow">
-              <AudioWaveform
-                className="p-4 sm:p-5"
-                ref={audioWaveformRef}
-                audioUrl={audioData.url}
-                timestamps={timestamps}
-                currentTime={currentTime}
-                onTimeUpdate={handleTimeUpdate}
-                onTimestampClick={handleTimestampClick}
-                onTimestampsChange={handleSetTimestamps}
-              />
-            </Card>
-          </div>
         </div>
 
         {/* 中间：地图/航迹（整栏用于地图可视化） */}
-        <div className="col-span-12 lg:col-span-5 flex flex-col gap-3 min-h-0">
+        <div className="col-span-12 flex min-h-0 flex-col gap-2.5 lg:col-span-6">
           <div ref={mapSectionRef} className="min-h-0 flex-1">
-            <Card className="flex h-[min(78vh,940px)] min-h-[420px] flex-col overflow-hidden p-3 rounded-3xl border-border/70 efb-panel efb-glow">
+            <Card className="flex h-[clamp(300px,42vh,520px)] min-h-[300px] flex-col overflow-hidden rounded-2xl border-border/70 p-2.5 efb-panel efb-glow">
               <div className="min-h-0 flex-1">
                 <ADSBMap
                   adsbData={adsbData}
@@ -495,10 +481,24 @@ function AnnotationPageInner({
               </div>
             </Card>
           </div>
+          <div ref={audioSectionRef}>
+            <Card className="overflow-hidden rounded-2xl border-border/70 efb-panel efb-glow">
+              <AudioWaveform
+                className="p-3 sm:p-4"
+                ref={audioWaveformRef}
+                audioUrl={audioData.url}
+                timestamps={timestamps}
+                currentTime={currentTime}
+                onTimeUpdate={handleTimeUpdate}
+                onTimestampClick={handleTimestampClick}
+                onTimestampsChange={handleSetTimestamps}
+              />
+            </Card>
+          </div>
         </div>
 
         {/* 右侧：仪表 + 辅助信息 */}
-        <div className="col-span-12 lg:col-span-3 lg:row-span-2 flex flex-col gap-3">
+        <div className="col-span-12 flex flex-col gap-2.5 lg:col-span-3 lg:row-span-2">
           <div className="relative">
             <TargetsPanel
               adsbData={adsbData}
@@ -528,7 +528,7 @@ function AnnotationPageInner({
             selectedAircraft={selectedAircraft}
             adsbData={adsbData}
           />
-          <div className="min-h-[280px]">
+          <div className="min-h-[220px]">
             <AuxiliaryInfo
               audioData={audioData}
               adsbData={adsbData}

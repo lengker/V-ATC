@@ -88,18 +88,18 @@ export function RecordingsPanel({
   ];
 
   return (
-    <Card className="rounded-3xl border-border/70 efb-panel efb-glow overflow-hidden">
-      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent pb-3">
+    <Card className="rounded-2xl border-border/70 efb-panel efb-glow overflow-hidden">
+      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent px-3 py-2.5">
         <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-base font-semibold tracking-tight">录音列表</CardTitle>
+          <CardTitle className="text-sm font-semibold tracking-tight">录音列表</CardTitle>
           <span className="rounded-full bg-background/50 px-2 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/50">
             {filtered.length} 条
           </span>
         </div>
       </CardHeader>
-      <CardContent className="pt-4">
+      <CardContent className="px-3 py-3">
         <div
-          className="mb-3 flex flex-wrap gap-1.5 rounded-2xl border border-border/50 bg-muted/15 p-1"
+          className="mb-2 flex flex-wrap gap-1 rounded-xl border border-border/50 bg-muted/15 p-0.5"
           role="tablist"
           aria-label="录音筛选"
         >
@@ -111,7 +111,7 @@ export function RecordingsPanel({
               aria-selected={tab === id}
               onClick={() => setTab(id)}
               className={cn(
-                "inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-[11px] font-medium transition-all sm:text-xs",
+                "inline-flex flex-1 items-center justify-center gap-1 rounded-lg px-1.5 py-1.5 text-[11px] font-medium transition-all",
                 tab === id
                   ? "bg-primary text-primary-foreground shadow-sm"
                   : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
@@ -124,8 +124,8 @@ export function RecordingsPanel({
         </div>
         <VirtualList
           items={filtered}
-          className="h-[200px] pr-2"
-          gapPx={8}
+          className="h-[168px] pr-2"
+          gapPx={6}
           overscan={10}
           estimateSizePx={84}
           getKey={(r) => r.id}
@@ -151,7 +151,7 @@ export function RecordingsPanel({
                 }
               }}
               className={cn(
-                "w-full text-left rounded-xl border p-3 transition-all duration-200",
+                "w-full text-left rounded-lg border p-2.5 transition-all duration-200",
                 r.id === activeId
                   ? "border-primary/80 bg-primary/12 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
                   : "border-border/60 bg-background/15 hover:border-border hover:bg-accent/30"
