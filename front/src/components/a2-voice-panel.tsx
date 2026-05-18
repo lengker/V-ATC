@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Download, FileDown, ListFilter, RefreshCw, Search } from "lucide-react";
-import { a2VoiceAPI, type A2VoiceRecord } from "@/lib/api";
+import { useMemo, useRef, useState } from "react";
+import { Download, FileDown, ListFilter, RefreshCw, Search, Upload } from "lucide-react";
+import { a2VoiceAPI, audioAPI, type A2VoiceRecord } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -28,6 +28,7 @@ function downloadFromUrl(url: string) {
 
 export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: () => void }) {
   const { toast } = useToast();
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [icaoCode, setIcaoCode] = useState("VHHH");
   const [band, setBand] = useState("app-dep-dir-zone");
   const [startTime, setStartTime] = useState("2026-05-07T00:00");
@@ -118,19 +119,47 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
     }
   };
 
-  const syncMetadata = () =>
-    runAction("sync", async () => {
-      const res = await a2VoiceAPI.syncMetadata();
-      if (!res.success || !res.data) {
-        toast({ title: "元数据同步失败", description: res.error, variant: "destructive" });
+  const importAudio = async (file: File) => {
+    await runAction("import", async () => {
+      const taskRes = await a2VoiceAPI.createDownloadTask({
+        task_name: `${queryPayload.icaoCode}-${queryPayload.band}-${file.name}`,
+        icao_code: queryPayload.icaoCode,
+        band: queryPayload.band,
+        start_time: queryPayload.startTime,
+        end_time: queryPayload.endTime,
+      });
+      if (!taskRes.success || !taskRes.data) {
+        toast({ title: "导入任务创建失败", description: taskRes.error, variant: "destructive" });
         return;
       }
-      toast({
-        title: "元数据已同步",
-        description: `扫描 ${res.data.scanned}，更新 ${res.data.updated}，缺失 ${res.data.missing}`,
+
+      const importRes = await a2VoiceAPI.importHistoryFile({
+        file,
+        taskId: taskRes.data.taskId,
+        icaoCode: queryPayload.icaoCode,
+        band: queryPayload.band,
+        startAt: queryPayload.startTime,
+        endAt: queryPayload.endTime,
+        originalTime: queryPayload.startTime,
       });
+      if (!importRes.success || !importRes.data) {
+        toast({ title: "音频导入失败", description: importRes.error, variant: "destructive" });
+        return;
+      }
+
+      setRecords((prev) => [importRes.data!, ...prev.filter((item) => item.unique_id !== importRes.data!.unique_id)]);
+      setTotal((prev) => Math.max(prev + 1, 1));
+      const alphaRes = await audioAPI.saveA2AudioMetadata(importRes.data);
+      toast({
+        title: "音频导入完成",
+        description: alphaRes.success
+          ? `新增语音: ${importRes.data.unique_id}`
+          : `新增语音: ${importRes.data.unique_id}；Alpha 元数据同步失败`,
+      });
+      await queryVoice();
       onRefreshRecordings?.();
     });
+  };
 
   const exportSlice = () => {
     downloadFromUrl(a2VoiceAPI.exportVoiceUrl({ ...queryPayload, icaoCode: queryPayload.icaoCode, band: queryPayload.band, outputFormat }));
@@ -197,6 +226,19 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
         </div>
 
         <div className="grid grid-cols-3 gap-1.5">
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) {
+                void importAudio(file);
+              }
+            }}
+          />
           <Button size="sm" className="h-8 px-2 text-xs" onClick={queryVoice} disabled={busyAction !== null}>
             <Search className="h-3.5 w-3.5" /> 查询
           </Button>
@@ -212,8 +254,8 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
           <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => runAction("tasks", listTasks)} disabled={busyAction !== null}>
             <ListFilter className="h-3.5 w-3.5" /> 任务
           </Button>
-          <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={syncMetadata} disabled={busyAction !== null}>
-            <RefreshCw className="h-3.5 w-3.5" /> 同步
+          <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => importInputRef.current?.click()} disabled={busyAction !== null}>
+            <Upload className="h-3.5 w-3.5" /> 导入
           </Button>
         </div>
 

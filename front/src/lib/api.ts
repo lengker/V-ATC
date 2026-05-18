@@ -121,6 +121,16 @@ export type A2LiveAtcExecute = {
   speed_limit_kbps?: number;
 };
 
+export type A2HistoryImport = {
+  file: File;
+  taskId: number;
+  icaoCode: string;
+  band: string;
+  startAt: string;
+  endAt: string;
+  originalTime?: string;
+};
+
 export function getAccessToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem(ACCESS_TOKEN_KEY);
@@ -195,10 +205,13 @@ async function fetchAlpha<T>(
 }
 
 async function fetchA2<T>(endpoint: string, options: RequestInit = {}): Promise<A2Response<T>> {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     ...((options.headers as Record<string, string> | undefined) ?? {}),
   };
+  if (!isFormData && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
 
   const response = await fetch(`${A2_API_BASE_URL}${endpoint}`, {
     ...options,
@@ -230,6 +243,10 @@ function buildQuery(params: Record<string, string | number | undefined | null>) 
     }
   });
   return qs.toString();
+}
+
+function buildA2VoiceFileUrl(uniqueId: string) {
+  return `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(uniqueId)}`;
 }
 
 function parseSeconds(value?: string | null): number | undefined {
@@ -389,6 +406,31 @@ export const audioAPI = {
       return toErrorResponse(error);
     }
   },
+
+  saveA2AudioMetadata: async (record: A2VoiceRecord): Promise<ApiResponse<{ unique_id: string; version: string }>> => {
+    try {
+      const data = await fetchAlpha<{ unique_id: string; version: string }>("/audio/metadata", {
+        method: "POST",
+        body: JSON.stringify({
+          unique_id: record.unique_id,
+          version: "front-a2-import-v1",
+          icao_code: record.icao_code,
+          band: record.band,
+          original_time: record.original_time ?? record.start_at,
+          process_time: record.process_time,
+          file_path: buildA2VoiceFileUrl(record.unique_id),
+          file_name: record.file_name,
+          file_size: record.file_size,
+          data_type: record.data_type,
+          start_at: record.start_at,
+          end_at: record.end_at,
+        }),
+      });
+      return toApiResponse(data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
 };
 
 export const a2VoiceAPI = {
@@ -463,6 +505,51 @@ export const a2VoiceAPI = {
     }
   },
 
+  importLiveAtcHistoryFile: async (
+    file: File,
+    taskId?: number
+  ): Promise<ApiResponse<A2VoiceRecord>> => {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const query = buildQuery({ taskId });
+      const result = await fetchA2<A2VoiceRecord>(
+        `/api/a2/voice/import/history/liveatc${query ? `?${query}` : ""}`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  importHistoryFile: async (payload: A2HistoryImport): Promise<ApiResponse<A2VoiceRecord>> => {
+    try {
+      const formData = new FormData();
+      formData.append("file", payload.file);
+      const result = await fetchA2<A2VoiceRecord>(
+        `/api/a2/voice/import/history?${buildQuery({
+          taskId: payload.taskId,
+          icaoCode: payload.icaoCode,
+          band: payload.band,
+          startAt: payload.startAt,
+          endAt: payload.endAt,
+          originalTime: payload.originalTime,
+        })}`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
   exportVoiceUrl: (payload: A2VoiceQuery & { outputFormat?: "wav" | "mp3"; icaoCode: string; band: string }) =>
     `${A2_API_BASE_URL}/api/a2/voice/export?${buildQuery({
       startTime: payload.startTime,
@@ -472,7 +559,7 @@ export const a2VoiceAPI = {
       outputFormat: payload.outputFormat ?? "wav",
     })}`,
 
-  fileUrl: (uniqueId: string) => `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(uniqueId)}`,
+  fileUrl: buildA2VoiceFileUrl,
 };
 
 export const adsbAPI = {
