@@ -18,7 +18,13 @@ interface ADSBMapProps {
   selectedAircraft?: string;
   onAircraftSelect?: (icao24: string) => void;
   toggles?: {
+    runways?: boolean;
+    taxiways?: boolean;
+    waypoints?: boolean;
+    landmarks?: boolean;
     trails?: boolean;
+    routes?: boolean;
+    obstacles?: boolean;
   };
 }
 
@@ -58,7 +64,7 @@ function buildAircraftDivIcon(p: ADSBData, isSelected: boolean) {
 export function ADSBMap({
   adsbData,
   visibleAircraftSet,
-  staticLayers: _staticLayers,
+  staticLayers,
   currentTime = 0,
   selectedAircraft,
   onAircraftSelect,
@@ -69,6 +75,7 @@ export function ADSBMap({
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const trailsLayerRef = useRef<L.LayerGroup | null>(null);
+  const staticLayerRef = useRef<L.LayerGroup | null>(null);
 
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const markerFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
@@ -83,7 +90,13 @@ export function ADSBMap({
   const [zoomLevel, setZoomLevel] = useState<number>(12);
 
   const show = {
+    runways: toggles?.runways ?? true,
+    taxiways: toggles?.taxiways ?? true,
+    waypoints: toggles?.waypoints ?? true,
+    landmarks: toggles?.landmarks ?? true,
     trails: toggles?.trails ?? true,
+    routes: toggles?.routes ?? true,
+    obstacles: toggles?.obstacles ?? true,
   };
 
   const normalizedVisibleSet = useMemo(() => {
@@ -108,9 +121,21 @@ export function ADSBMap({
     const llAll = saneAdsb
       .map((p) => [p.latitude, p.longitude] as [number, number])
       .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
+    for (const line of [...(staticLayers?.runways ?? []), ...(staticLayers?.taxiways ?? [])]) {
+      for (const p of line.points) llAll.push([p.lat, p.lon]);
+    }
+    for (const point of [...(staticLayers?.waypoints ?? []), ...(staticLayers?.landmarks ?? [])]) {
+      llAll.push([point.lat, point.lon]);
+    }
+    for (const route of staticLayers?.routeLines ?? []) {
+      for (const p of route.points) llAll.push([p.lat, p.lon]);
+    }
+    for (const zone of staticLayers?.obstacleZones ?? []) {
+      for (const p of zone.polygon) llAll.push([p.lat, p.lon]);
+    }
 
     return llAll.length ? L.latLngBounds(llAll.map(([a, b]) => L.latLng(a, b))) : null;
-  }, [saneAdsb]);
+  }, [saneAdsb, staticLayers]);
 
   const trackIndex = useMemo(() => {
     const isVisible = (icao24: string) => {
@@ -169,6 +194,7 @@ export function ADSBMap({
 
     markersLayerRef.current = L.layerGroup().addTo(map);
     trailsLayerRef.current = L.layerGroup().addTo(map);
+    staticLayerRef.current = L.layerGroup().addTo(map);
 
     const onZoomEnd = () => setZoomLevel(map.getZoom());
     map.on("zoomend", onZoomEnd);
@@ -211,10 +237,12 @@ export function ADSBMap({
 
       trailsLayerRef.current?.remove();
       markersLayerRef.current?.remove();
+      staticLayerRef.current?.remove();
       baseLayerRef.current?.remove();
 
       trailsLayerRef.current = null;
       markersLayerRef.current = null;
+      staticLayerRef.current = null;
       baseLayerRef.current = null;
 
       map.remove();
@@ -226,6 +254,97 @@ export function ADSBMap({
       }
     };
   }, []);
+
+  useEffect(() => {
+    const layer = staticLayerRef.current;
+    if (!layer) return;
+    layer.clearLayers();
+    if (!staticLayers) return;
+
+    if (show.obstacles) {
+      for (const zone of staticLayers.obstacleZones ?? []) {
+        L.polygon(
+          zone.polygon.map((p) => [p.lat, p.lon] as L.LatLngExpression),
+          {
+            color: "#f97316",
+            fillColor: "#f97316",
+            fillOpacity: 0.12,
+            opacity: 0.7,
+            weight: 2,
+          }
+        )
+          .bindTooltip(zone.name, { sticky: true })
+          .addTo(layer);
+      }
+    }
+
+    const lineGroups = [
+      ...(show.runways ? staticLayers.runways ?? [] : []),
+      ...(show.taxiways ? staticLayers.taxiways ?? [] : []),
+    ];
+    for (const line of lineGroups) {
+      const isRunway = line.kind === "runway";
+      L.polyline(
+        line.points.map((p) => [p.lat, p.lon] as L.LatLngExpression),
+        {
+          color: isRunway ? "#f59e0b" : "#94a3b8",
+          opacity: isRunway ? 0.95 : 0.65,
+          weight: isRunway ? 6 : 2,
+          lineCap: "round",
+        }
+      )
+        .bindTooltip(`${line.name}${line.note ? ` · ${line.note}` : ""}`, { sticky: true })
+        .addTo(layer);
+    }
+
+    if (show.routes) {
+      for (const route of staticLayers.routeLines ?? []) {
+        L.polyline(
+          route.points.map((p) => [p.lat, p.lon] as L.LatLngExpression),
+          {
+            color: route.kind === "detour" ? "#22c55e" : route.kind === "missed" ? "#ef4444" : "#38bdf8",
+            opacity: 0.8,
+            weight: 3,
+            dashArray: route.kind === "planned" ? "6 6" : undefined,
+          }
+        )
+          .bindTooltip(route.name, { sticky: true })
+          .addTo(layer);
+      }
+    }
+
+    const points = [
+      ...(show.waypoints ? staticLayers.waypoints ?? [] : []),
+      ...(show.landmarks ? staticLayers.landmarks ?? [] : []),
+    ];
+    for (const point of points) {
+      const isNavaid = point.kind === "navaid";
+      const isLandmark = point.kind === "landmark";
+      L.circleMarker([point.lat, point.lon], {
+        radius: isLandmark ? 7 : 5,
+        color: isNavaid ? "#a855f7" : isLandmark ? "#10b981" : "#38bdf8",
+        fillColor: isNavaid ? "#a855f7" : isLandmark ? "#10b981" : "#38bdf8",
+        fillOpacity: 0.85,
+        opacity: 0.95,
+        weight: 2,
+      })
+        .bindTooltip(`${point.name}${point.note ? ` · ${point.note}` : ""}`, {
+          permanent: isNavaid,
+          direction: "top",
+          offset: [0, -6],
+          className: "text-xs",
+        })
+        .addTo(layer);
+    }
+  }, [
+    show.landmarks,
+    show.obstacles,
+    show.routes,
+    show.runways,
+    show.taxiways,
+    show.waypoints,
+    staticLayers,
+  ]);
 
   // Smart viewport follow: keep selected aircraft inside a safe margin.
   useEffect(() => {
@@ -544,6 +663,34 @@ export function ADSBMap({
           {selectedCurrentPoint ? (
             <div className="text-cyan-300 max-w-[11rem] truncate">SEL: {selectedCurrentPoint.callsign || selectedCurrentPoint.icao24}</div>
           ) : null}
+        </div>
+
+        <div className="absolute bottom-4 left-4 z-[1200] rounded-lg border border-border/30 bg-black/55 px-3 py-2 text-xs text-white/90 backdrop-blur-sm">
+          <div className="mb-1 font-semibold">VSP/AIP overlay</div>
+          <div className="flex items-center gap-2">
+            <span className="h-1.5 w-6 rounded-full bg-amber-500" />
+            <span>Runway</span>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
+            <span>Navaid</span>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-sky-500" />
+            <span>Waypoint</span>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+            <span>Airport point</span>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="h-1.5 w-6 rounded-full bg-cyan-400" />
+            <span>Procedure path</span>
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-sky-500" />
+            <span>Aircraft / trail</span>
+          </div>
         </div>
       </div>
     </div>

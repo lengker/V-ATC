@@ -1,13 +1,22 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ADSBData, AudioData } from "@/types";
-import { formatTime } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useMemo, useState } from "react";
-import { vspAip } from "@/mock/vsp-aip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { formatTime } from "@/lib/utils";
+import {
+  VspAirline,
+  VspAirport,
+  VspFrequency,
+  VspNavaid,
+  VspProcedure,
+  VspRunway,
+  VspWaypoint,
+  vspAPI,
+} from "@/lib/api";
+import { ADSBData, AudioData } from "@/types";
 
 interface AuxiliaryInfoProps {
   audioData?: AudioData;
@@ -16,160 +25,174 @@ interface AuxiliaryInfoProps {
   selectedAircraft?: string;
 }
 
+type VspData = {
+  airports: VspAirport[];
+  runways: VspRunway[];
+  frequencies: VspFrequency[];
+  navaids: VspNavaid[];
+  waypoints: VspWaypoint[];
+  procedures: VspProcedure[];
+  airlines: VspAirline[];
+};
+
+const emptyVspData: VspData = {
+  airports: [],
+  runways: [],
+  frequencies: [],
+  navaids: [],
+  waypoints: [],
+  procedures: [],
+  airlines: [],
+};
+
+function parseAirlineIcao(extraJson?: string | null) {
+  if (!extraJson) return undefined;
+  try {
+    const parsed = JSON.parse(extraJson) as { icao?: string };
+    return parsed.icao;
+  } catch {
+    return undefined;
+  }
+}
+
+function joinParts(parts: Array<string | number | null | undefined>) {
+  return parts.filter((part) => part !== undefined && part !== null && part !== "").join(" · ");
+}
+
 export function AuxiliaryInfo({
   audioData,
   adsbData = [],
   currentTime = 0,
   selectedAircraft,
 }: AuxiliaryInfoProps) {
-  // 获取当前时间点的飞机数据
   const currentAircraftData = adsbData
     .filter((d) => d.icao24 === selectedAircraft && d.timestamp <= currentTime)
     .sort((a, b) => b.timestamp - a.timestamp)[0];
 
   const [q, setQ] = useState("");
+  const [vspData, setVspData] = useState<VspData>(emptyVspData);
+  const [vspLoading, setVspLoading] = useState(true);
+  const [vspError, setVspError] = useState<string | null>(null);
   const query = q.trim().toLowerCase();
 
-  const filtered = useMemo(() => {
-    if (!query) {
-      return {
-        landmarks: vspAip.commonLandmarks,
-        procedures: vspAip.procedures,
-        airlines: vspAip.airlines,
-      };
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadVspData() {
+      setVspLoading(true);
+      setVspError(null);
+      try {
+        const airports = await vspAPI.airports();
+        const airportId = airports[0]?.airport_id;
+        const [runways, frequencies, navaids, waypointsPage, procedures, airlines] = await Promise.all([
+          vspAPI.runways(airportId),
+          vspAPI.frequencies(airportId),
+          vspAPI.navaids(airportId),
+          vspAPI.waypoints(),
+          vspAPI.procedures(airportId),
+          vspAPI.airlines(),
+        ]);
+
+        if (!cancelled) {
+          setVspData({ airports, runways, frequencies, navaids, waypoints: waypointsPage.items, procedures, airlines });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setVspError(error instanceof Error ? error.message : "Failed to load VSP data");
+        }
+      } finally {
+        if (!cancelled) {
+          setVspLoading(false);
+        }
+      }
     }
-    const match = (s: string) => s.toLowerCase().includes(query);
-    return {
-      landmarks: vspAip.commonLandmarks.filter((x) => match(x.name) || match(x.note ?? "")),
-      procedures: vspAip.procedures.filter((x) => match(x.name) || match(x.type) || match(x.runway ?? "") || match(x.waypointHint ?? "")),
-      airlines: vspAip.airlines.filter((x) => match(x.icao) || match(x.iata ?? "") || match(x.name) || match(x.callsign)),
+
+    loadVspData();
+
+    return () => {
+      cancelled = true;
     };
-  }, [query]);
+  }, []);
+
+  const filtered = useMemo(() => {
+    const match = (...values: Array<string | number | null | undefined>) =>
+      !query || values.some((value) => String(value ?? "").toLowerCase().includes(query));
+
+    return {
+      airports: vspData.airports.filter((x) =>
+        match(x.icao_code, x.iata_code, x.airport_name, x.city_name, x.country_name)
+      ),
+      runways: vspData.runways.filter((x) =>
+        match(x.runway_designator, x.surface_type, x.runway_length_m, x.runway_width_m, x.bearing_deg)
+      ),
+      frequencies: vspData.frequencies.filter((x) =>
+        match(x.service_designator, x.callsign, x.frequency, x.hours_of_operation, x.remarks)
+      ),
+      navaids: vspData.navaids.filter((x) =>
+        match(x.ident, x.name, x.navaid_type, x.frequency, x.hours_of_operation, x.remarks)
+      ),
+      waypoints: vspData.waypoints.filter((x) =>
+        match(x.name, x.type, x.description, x.lat, x.lng)
+      ),
+      procedures: vspData.procedures.filter((x) =>
+        match(x.procedure_code, x.procedure_name, x.procedure_type, x.runway, x.waypoint_sequence_json)
+      ),
+      airlines: vspData.airlines.filter((x) =>
+        match(x.airline_code, parseAirlineIcao(x.extra_json), x.airline_name, x.airline_short_name, x.country_name)
+      ),
+    };
+  }, [query, vspData]);
 
   return (
     <Card className="h-full rounded-3xl border-border/70 efb-panel efb-glow">
       <CardHeader>
-        <CardTitle>辅助信息</CardTitle>
+        <CardTitle>Auxiliary Info</CardTitle>
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="vsp" className="w-full">
           <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="audio">音频信息</TabsTrigger>
-            <TabsTrigger value="aircraft">飞机信息</TabsTrigger>
+            <TabsTrigger value="audio">Audio</TabsTrigger>
+            <TabsTrigger value="aircraft">Aircraft</TabsTrigger>
             <TabsTrigger value="vsp">VSP/AIP</TabsTrigger>
           </TabsList>
 
           <TabsContent value="audio" className="space-y-4 mt-4">
             {audioData ? (
               <>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">音频ID</div>
-                  <div className="text-sm text-muted-foreground">
-                    {audioData.id}
-                  </div>
-                </div>
-                {audioData.metadata?.icao && (
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">ICAO</div>
-                    <div className="text-sm text-muted-foreground">
-                      {audioData.metadata.icao}
-                    </div>
-                  </div>
-                )}
-                {audioData.metadata?.date && (
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">日期</div>
-                    <div className="text-sm text-muted-foreground">
-                      {audioData.metadata.date}
-                    </div>
-                  </div>
-                )}
-                {audioData.metadata?.frequency && (
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">频率</div>
-                    <div className="text-sm text-muted-foreground">
-                      {audioData.metadata.frequency}
-                    </div>
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">时长</div>
-                  <div className="text-sm text-muted-foreground">
-                    {formatTime(audioData.duration)}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">时间戳数量</div>
-                  <div className="text-sm text-muted-foreground">
-                    {audioData.timestamps.length}
-                  </div>
-                </div>
+                <InfoRow label="Audio ID" value={audioData.id} />
+                {audioData.metadata?.icao ? <InfoRow label="ICAO" value={audioData.metadata.icao} /> : null}
+                {audioData.metadata?.date ? <InfoRow label="Date" value={audioData.metadata.date} /> : null}
+                {audioData.metadata?.frequency ? (
+                  <InfoRow label="Frequency" value={audioData.metadata.frequency} />
+                ) : null}
+                <InfoRow label="Duration" value={formatTime(audioData.duration)} />
+                <InfoRow label="Timestamp count" value={audioData.timestamps.length} />
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">暂无音频数据</p>
+              <p className="text-sm text-muted-foreground">No audio data.</p>
             )}
           </TabsContent>
 
           <TabsContent value="aircraft" className="space-y-4 mt-4">
             {currentAircraftData ? (
               <>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">呼号</div>
-                  <div className="text-sm text-muted-foreground">
-                    {currentAircraftData.callsign || "N/A"}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">ICAO24</div>
-                  <div className="text-sm text-muted-foreground">
-                    {currentAircraftData.icao24}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">位置</div>
-                  <div className="text-sm text-muted-foreground">
-                    {currentAircraftData.latitude.toFixed(4)},{" "}
-                    {currentAircraftData.longitude.toFixed(4)}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">高度</div>
-                  <div className="text-sm text-muted-foreground">
-                    {currentAircraftData.altitude} ft
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">速度</div>
-                  <div className="text-sm text-muted-foreground">
-                    {currentAircraftData.speed} kts
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">航向</div>
-                  <div className="text-sm text-muted-foreground">
-                    {currentAircraftData.heading}°
-                  </div>
-                </div>
-                {currentAircraftData.verticalRate !== undefined && (
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">垂直速率</div>
-                    <div className="text-sm text-muted-foreground">
-                      {currentAircraftData.verticalRate} ft/min
-                    </div>
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">时间戳</div>
-                  <div className="text-sm text-muted-foreground">
-                    {formatTime(currentAircraftData.timestamp)}
-                  </div>
-                </div>
+                <InfoRow label="Callsign" value={currentAircraftData.callsign || "N/A"} />
+                <InfoRow label="ICAO24" value={currentAircraftData.icao24} />
+                <InfoRow
+                  label="Position"
+                  value={`${currentAircraftData.latitude.toFixed(4)}, ${currentAircraftData.longitude.toFixed(4)}`}
+                />
+                <InfoRow label="Altitude" value={`${currentAircraftData.altitude} ft`} />
+                <InfoRow label="Speed" value={`${currentAircraftData.speed} kts`} />
+                <InfoRow label="Heading" value={`${currentAircraftData.heading} deg`} />
+                {currentAircraftData.verticalRate !== undefined ? (
+                  <InfoRow label="Vertical rate" value={`${currentAircraftData.verticalRate} ft/min`} />
+                ) : null}
+                <InfoRow label="Timestamp" value={formatTime(currentAircraftData.timestamp)} />
               </>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {selectedAircraft
-                  ? "当前时间点无该飞机数据"
-                  : "请选择一架飞机"}
+                {selectedAircraft ? "No aircraft data at the current time." : "Select an aircraft."}
               </p>
             )}
           </TabsContent>
@@ -178,66 +201,160 @@ export function AuxiliaryInfo({
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索：地标 / SID / STAR / 航司简字 / 呼号…"
+              placeholder="Search VSP: airport, runway, frequency, navaid, airline"
               className="h-10 bg-background/40 border-border/60"
             />
             <ScrollArea className="h-[420px] pr-2">
-              <div className="space-y-4">
-                <section className="space-y-2">
-                  <div className="text-xs font-semibold text-muted-foreground">常用地标点</div>
-                  <div className="space-y-2">
-                    {filtered.landmarks.map((x) => (
-                      <div key={x.name} className="rounded-xl border border-border/60 bg-background/20 p-3">
-                        <div className="text-sm font-medium">{x.name}</div>
-                        {x.note ? <div className="text-xs text-muted-foreground mt-1">{x.note}</div> : null}
-                      </div>
+              {vspLoading ? (
+                <p className="text-sm text-muted-foreground">Loading VSP data...</p>
+              ) : vspError ? (
+                <p className="text-sm text-destructive">{vspError}</p>
+              ) : (
+                <div className="space-y-4">
+                  <VspSection title={`Airports / Runways (${filtered.airports.length + filtered.runways.length})`}>
+                    {filtered.airports.map((x) => (
+                      <VspCard
+                        key={x.airport_id}
+                        title={x.airport_name}
+                        meta={`${x.icao_code}${x.iata_code ? ` / ${x.iata_code}` : ""}`}
+                        detail={joinParts([
+                          `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
+                          x.elevation_ft != null ? `${x.elevation_ft} ft` : null,
+                          x.city_name,
+                          x.country_name,
+                        ])}
+                      />
                     ))}
-                  </div>
-                </section>
+                    {filtered.runways.map((x) => (
+                      <VspCard
+                        key={x.runway_id}
+                        title={`Runway ${x.runway_designator}`}
+                        meta={`${x.runway_length_m ?? "-"} x ${x.runway_width_m ?? "-"} m`}
+                        detail={joinParts([
+                          x.surface_type ?? "Surface -",
+                          x.bearing_deg != null ? `${x.bearing_deg} deg` : null,
+                          x.threshold_lat != null && x.threshold_lng != null
+                            ? `THR ${x.threshold_lat.toFixed(5)}, ${x.threshold_lng.toFixed(5)}`
+                            : null,
+                        ])}
+                      />
+                    ))}
+                  </VspSection>
 
-                <section className="space-y-2">
-                  <div className="text-xs font-semibold text-muted-foreground">SID / STAR</div>
-                  <div className="space-y-2">
+                  <VspSection title={`Frequencies / Navaids / Waypoints (${filtered.frequencies.length + filtered.navaids.length + filtered.waypoints.length})`}>
+                    {filtered.frequencies.map((x) => (
+                      <VspCard
+                        key={x.frequency_id}
+                        title={x.callsign ?? x.service_designator ?? "Frequency"}
+                        meta={x.frequency}
+                        detail={joinParts([x.service_designator, x.hours_of_operation, x.remarks])}
+                        metaClassName="text-primary font-semibold"
+                      />
+                    ))}
+                    {filtered.navaids.map((x) => (
+                      <VspCard
+                        key={x.navaid_id}
+                        title={x.ident}
+                        meta={x.navaid_type ?? "Navaid"}
+                        detail={joinParts([
+                          x.frequency ?? "Frequency -",
+                          `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
+                          x.remarks,
+                        ])}
+                      />
+                    ))}
+                    {filtered.waypoints.map((x) => (
+                      <VspCard
+                        key={x.waypoint_id}
+                        title={x.name}
+                        meta={x.type ?? "Waypoint"}
+                        detail={joinParts([
+                          x.description,
+                          `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
+                        ])}
+                      />
+                    ))}
+                  </VspSection>
+
+                  <VspSection title={`SID / STAR (${filtered.procedures.length})`}>
                     {filtered.procedures.map((x) => (
-                      <div key={`${x.type}-${x.name}`} className="rounded-xl border border-border/60 bg-background/20 p-3">
-                        <div className="text-sm font-medium">
-                          <span className="text-primary">{x.type}</span> {x.name}
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-1">
-                          {x.runway ? `Runway ${x.runway}` : "Runway -"}{x.waypointHint ? ` · Hint: ${x.waypointHint}` : ""}
-                        </div>
-                      </div>
+                      <VspCard
+                        key={x.procedure_id}
+                        title={`${x.procedure_type.toUpperCase()} ${x.procedure_name}`}
+                        meta={x.procedure_code}
+                        detail={joinParts([
+                          x.runway ? `Runway ${x.runway}` : null,
+                          x.waypoint_sequence_json,
+                        ])}
+                      />
                     ))}
-                  </div>
-                </section>
+                    {filtered.procedures.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No procedure records returned by the backend.</p>
+                    ) : null}
+                  </VspSection>
 
-                <section className="space-y-2">
-                  <div className="text-xs font-semibold text-muted-foreground">航司简字 ↔ 呼号</div>
-                  <div className="space-y-2">
+                  <VspSection title={`Airlines / Callsigns (${filtered.airlines.length})`}>
                     {filtered.airlines.map((x) => {
-                      const note = (x as { note?: string }).note;
+                      const icao = parseAirlineIcao(x.extra_json);
                       return (
-                        <div key={x.icao} className="rounded-xl border border-border/60 bg-background/20 p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-sm font-medium truncate">{x.name}</div>
-                            <div className="text-xs text-muted-foreground tabular-nums">
-                              {(x.iata ? `${x.iata} / ` : "") + x.icao}
-                            </div>
-                          </div>
-                          <div className="text-xs mt-1">
-                            Callsign: <span className="text-primary font-semibold">{x.callsign}</span>
-                          </div>
-                          {note ? <div className="text-xs text-muted-foreground mt-1">{note}</div> : null}
-                        </div>
+                        <VspCard
+                          key={x.airline_id}
+                          title={x.airline_name}
+                          meta={`${x.airline_code}${icao ? ` / ${icao}` : ""}`}
+                          detail={joinParts([
+                            `Callsign: ${x.airline_short_name ?? "-"}`,
+                            x.country_name,
+                          ])}
+                        />
                       );
                     })}
-                  </div>
-                </section>
-              </div>
+                  </VspSection>
+                </div>
+              )}
             </ScrollArea>
           </TabsContent>
         </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">{label}</div>
+      <div className="text-sm text-muted-foreground">{value}</div>
+    </div>
+  );
+}
+
+function VspSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <div className="text-xs font-semibold text-muted-foreground">{title}</div>
+      <div className="space-y-2">{children}</div>
+    </section>
+  );
+}
+
+function VspCard({
+  title,
+  meta,
+  detail,
+  metaClassName = "text-muted-foreground",
+}: {
+  title: string;
+  meta?: string;
+  detail?: string;
+  metaClassName?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border/60 bg-background/20 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-medium truncate">{title}</div>
+        {meta ? <div className={`text-xs tabular-nums ${metaClassName}`}>{meta}</div> : null}
+      </div>
+      {detail ? <div className="text-xs text-muted-foreground mt-1">{detail}</div> : null}
+    </div>
   );
 }

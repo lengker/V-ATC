@@ -66,6 +66,91 @@ type PageResult<T> = {
   page_size: number;
 };
 
+export type VspAirport = {
+  airport_id: string;
+  icao_code: string;
+  iata_code?: string | null;
+  airport_name: string;
+  city_name?: string | null;
+  country_name?: string | null;
+  lat: number;
+  lng: number;
+  elevation_ft?: number | null;
+  extra_json?: string | null;
+};
+
+export type VspRunway = {
+  runway_id: string;
+  airport_id: string;
+  runway_designator: string;
+  surface_type?: string | null;
+  runway_length_m?: number | null;
+  runway_width_m?: number | null;
+  bearing_deg?: number | null;
+  threshold_lat?: number | null;
+  threshold_lng?: number | null;
+  elevation_ft?: number | null;
+  remarks?: string | null;
+  extra_json?: string | null;
+};
+
+export type VspFrequency = {
+  frequency_id: string;
+  airport_id: string;
+  service_designator?: string | null;
+  callsign?: string | null;
+  frequency: string;
+  hours_of_operation?: string | null;
+  remarks?: string | null;
+  extra_json?: string | null;
+};
+
+export type VspNavaid = {
+  navaid_id: string;
+  airport_id: string;
+  ident: string;
+  name?: string | null;
+  navaid_type?: string | null;
+  frequency?: string | null;
+  lat: number;
+  lng: number;
+  elevation_ft?: number | null;
+  hours_of_operation?: string | null;
+  remarks?: string | null;
+  extra_json?: string | null;
+};
+
+export type VspWaypoint = {
+  waypoint_id: string;
+  name: string;
+  type?: string | null;
+  lat: number;
+  lng: number;
+  description?: string | null;
+  extra_json?: string | null;
+};
+
+export type VspProcedure = {
+  procedure_id: string;
+  airport_id: string;
+  procedure_code: string;
+  procedure_name: string;
+  procedure_type: string;
+  runway?: string | null;
+  waypoint_sequence_json?: string | null;
+  path_geojson?: string | null;
+  extra_json?: string | null;
+};
+
+export type VspAirline = {
+  airline_id: string;
+  airline_code: string;
+  airline_name: string;
+  airline_short_name?: string | null;
+  country_name?: string | null;
+  extra_json?: string | null;
+};
+
 type A2Response<T> = {
   code: number;
   msg?: string;
@@ -670,15 +755,19 @@ export const annotationAPI = {
 
 export const vspAPI = {
   airports: (icaoCode?: string) =>
-    fetchAlpha(`/vsp/airports${icaoCode ? `?icao_code=${encodeURIComponent(icaoCode)}` : ""}`),
-  waypoints: (keyword?: string) =>
-    fetchAlpha(`/vsp/waypoints${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ""}`),
+    fetchAlpha<VspAirport[]>(`/vsp/airports${icaoCode ? `?icao_code=${encodeURIComponent(icaoCode)}` : ""}`),
+  waypoints: (keyword?: string, pageSize = 500) => {
+    const query = buildQuery({ keyword, page: 1, page_size: pageSize });
+    return fetchAlpha<PageResult<VspWaypoint>>(`/vsp/waypoints${query ? `?${query}` : ""}`);
+  },
   procedures: (airportId?: string) =>
-    fetchAlpha(`/vsp/procedures${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
+    fetchAlpha<VspProcedure[]>(`/vsp/procedures${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
   runways: (airportId?: string) =>
-    fetchAlpha(`/vsp/runways${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
+    fetchAlpha<VspRunway[]>(`/vsp/runways${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
   frequencies: (airportId?: string) =>
-    fetchAlpha(`/vsp/frequencies${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
+    fetchAlpha<VspFrequency[]>(`/vsp/frequencies${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
   navaids: (airportId?: string) =>
-    fetchAlpha(`/vsp/navaids${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
+    fetchAlpha<VspNavaid[]>(`/vsp/navaids${airportId ? `?airport_id=${encodeURIComponent(airportId)}` : ""}`),
+  airlines: (keyword?: string) =>
+    fetchAlpha<VspAirline[]>(`/vsp/airlines${keyword ? `?keyword=${encodeURIComponent(keyword)}` : ""}`),
 };

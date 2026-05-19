@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import { AudioWaveform, type AudioWaveformHandle } from "@/components/audio-waveform";
 import { TimestampList } from "@/components/timestamp-list";
@@ -21,8 +21,18 @@ import type { RecordingMeta } from "@/mock/demo-data";
 import { audioAPI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Card } from "@/components/ui/card";
-import { vhhhStatic } from "@/mock/vhhh-static";
+import { type VhhhStaticLayers } from "@/mock/vhhh-static";
 import { exportAsJson, exportTimestampsAsCsv } from "@/lib/exporters";
+import {
+  VspAirport,
+  VspFrequency,
+  VspNavaid,
+  VspProcedure,
+  VspRunway,
+  VspWaypoint,
+  VspAirline,
+  vspAPI,
+} from "@/lib/api";
 import {
   applyTimestampOverrides,
   loadTimestampOverrides,
@@ -118,11 +128,210 @@ export function AnnotationPage({
   );
 }
 
+function VspSourceBanner({
+  data,
+  loading,
+  error,
+}: {
+  data: VspMapData | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (loading) {
+    return (
+      <Card className="mb-2.5 rounded-2xl border-border/70 p-3 efb-panel">
+        <div className="text-sm text-muted-foreground">Loading VSP/AIP data...</div>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className="mb-2.5 rounded-2xl border-destructive/50 p-3 efb-panel">
+        <div className="text-sm font-semibold text-destructive">VSP/AIP data failed to load</div>
+        <div className="mt-1 text-xs text-muted-foreground">{error}</div>
+      </Card>
+    );
+  }
+
+  const airports = data?.airports.length ?? 0;
+  const runways = data?.runways.length ?? 0;
+  const frequencies = data?.frequencies.length ?? 0;
+  const navaids = data?.navaids.length ?? 0;
+  const waypoints = data?.waypoints.length ?? 0;
+  const procedures = data?.procedures.length ?? 0;
+  const airlines = data?.airlines.length ?? 0;
+  const airport = data?.airports[0];
+
+  return (
+    <Card className="mb-2.5 rounded-2xl border-emerald-500/40 bg-emerald-500/5 p-3 efb-panel">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-emerald-300">
+            VSP/AIP data loaded
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Airports {airports}, runways {runways}, frequencies {frequencies}, navaids {navaids}, waypoints {waypoints}, procedures {procedures}, airlines {airlines}
+          </div>
+        </div>
+        {airport ? (
+          <div className="rounded-lg border border-border/60 bg-background/30 px-3 py-2 text-xs">
+            <span className="font-semibold">{airport.icao_code}</span>
+            <span className="text-muted-foreground"> · {airport.airport_name}</span>
+          </div>
+        ) : null}
+      </div>
+      <div className="mt-2 text-xs text-muted-foreground">
+        Map overlay: orange lines are runways, purple labels are Navaids, blue dots are waypoints, green marker is the airport reference point.
+      </div>
+    </Card>
+  );
+}
+
 type AnnotationPageInnerProps = AnnotationPageProps & {
   timestamps: VoiceTimestamp[];
   setTimestamps: React.Dispatch<React.SetStateAction<VoiceTimestamp[]>>;
   timelineMax: number;
 };
+
+type VspMapData = {
+  airports: VspAirport[];
+  runways: VspRunway[];
+  frequencies: VspFrequency[];
+  navaids: VspNavaid[];
+  waypoints: VspWaypoint[];
+  procedures: VspProcedure[];
+  airlines: VspAirline[];
+};
+
+const emptyStaticLayers: VhhhStaticLayers = {
+  runways: [],
+  taxiways: [],
+  waypoints: [],
+  landmarks: [],
+  procedures: [],
+  routeLines: [],
+  obstacleZones: [],
+};
+
+function destinationPoint(lat: number, lon: number, bearingDeg: number, distanceM: number) {
+  const radiusM = 6371000;
+  const angularDistance = distanceM / radiusM;
+  const bearing = (bearingDeg * Math.PI) / 180;
+  const lat1 = (lat * Math.PI) / 180;
+  const lon1 = (lon * Math.PI) / 180;
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
+  );
+  const lon2 =
+    lon1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
+    );
+  return { lat: (lat2 * 180) / Math.PI, lon: (lon2 * 180) / Math.PI };
+}
+
+function parseProcedureLine(pathGeojson?: string | null) {
+  if (!pathGeojson) return [];
+  try {
+    const parsed = JSON.parse(pathGeojson) as { type?: string; coordinates?: unknown };
+    if (parsed.type !== "LineString" || !Array.isArray(parsed.coordinates)) return [];
+    return parsed.coordinates
+      .map((coord) => {
+        if (!Array.isArray(coord) || coord.length < 2) return null;
+        const lon = Number(coord[0]);
+        const lat = Number(coord[1]);
+        return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+      })
+      .filter((point): point is { lat: number; lon: number } => Boolean(point));
+  } catch {
+    return [];
+  }
+}
+
+function buildVspStaticLayers(data: VspMapData): VhhhStaticLayers {
+  const navaidWaypointIds = new Set(data.navaids.map((navaid) => navaid.ident.toLowerCase()));
+  const nonNavaidWaypoints = data.waypoints.filter(
+    (waypoint) => waypoint.type !== "navaid" && !navaidWaypointIds.has(waypoint.name.toLowerCase())
+  );
+
+  return {
+    runways: data.runways
+      .filter(
+        (rw) =>
+          rw.threshold_lat != null &&
+          rw.threshold_lng != null &&
+          rw.bearing_deg != null &&
+          rw.runway_length_m != null
+      )
+      .map((rw) => {
+        const end = destinationPoint(
+          rw.threshold_lat!,
+          rw.threshold_lng!,
+          rw.bearing_deg!,
+          rw.runway_length_m!
+        );
+        return {
+          id: rw.runway_id,
+          name: `RWY ${rw.runway_designator}`,
+          kind: "runway" as const,
+          points: [{ lat: rw.threshold_lat!, lon: rw.threshold_lng! }, end],
+          note: `${rw.runway_length_m} x ${rw.runway_width_m ?? "-"} m`,
+        };
+      }),
+    taxiways: [],
+    waypoints: [
+      ...data.navaids.map((navaid) => ({
+        id: navaid.navaid_id,
+        name: navaid.ident,
+        kind: "navaid" as const,
+        lat: navaid.lat,
+        lon: navaid.lng,
+        note: [navaid.navaid_type, navaid.frequency].filter(Boolean).join(" · "),
+      })),
+      ...nonNavaidWaypoints.map((waypoint) => ({
+        id: waypoint.waypoint_id,
+        name: waypoint.name,
+        kind: "waypoint" as const,
+        lat: waypoint.lat,
+        lon: waypoint.lng,
+        note: [waypoint.type, waypoint.description].filter(Boolean).join(" · "),
+      })),
+    ],
+    landmarks: data.airports.map((airport) => ({
+      id: airport.airport_id,
+      name: `${airport.icao_code} ${airport.airport_name}`,
+      kind: "landmark" as const,
+      lat: airport.lat,
+      lon: airport.lng,
+      note: airport.iata_code ?? undefined,
+    })),
+    procedures: data.procedures.map((procedure) => ({
+      id: procedure.procedure_id,
+      type: procedure.procedure_type.toUpperCase() === "SID" ? ("SID" as const) : ("STAR" as const),
+      name: procedure.procedure_name,
+      runway: procedure.runway ?? undefined,
+      note: procedure.procedure_code,
+    })),
+    routeLines: data.procedures
+      .map((procedure) => {
+        const points = parseProcedureLine(procedure.path_geojson);
+        if (points.length < 2) return null;
+        return {
+          id: procedure.procedure_id,
+          name: procedure.procedure_name,
+          kind: procedure.procedure_type.toLowerCase() === "star" ? ("planned" as const) : ("detour" as const),
+          points,
+          note: procedure.procedure_code,
+          endLabel: procedure.runway ?? undefined,
+        };
+      })
+      .filter((route): route is NonNullable<typeof route> => Boolean(route)),
+    obstacleZones: [],
+  };
+}
 
 function AnnotationPageInner({
   audioData,
@@ -152,6 +361,9 @@ function AnnotationPageInner({
   const [activeBottomTab, setActiveBottomTab] = useState<
     "map" | "transcripts" | "radio" | "audio" | "settings"
   >("transcripts");
+  const [vspMapData, setVspMapData] = useState<VspMapData | null>(null);
+  const [vspMapError, setVspMapError] = useState<string | null>(null);
+  const [vspMapLoading, setVspMapLoading] = useState(true);
   const mapSectionRef = useRef<HTMLDivElement>(null);
   const audioWaveformRef = useRef<AudioWaveformHandle>(null);
   const transcriptSectionRef = useRef<HTMLDivElement>(null);
@@ -162,6 +374,49 @@ function AnnotationPageInner({
 
   const fullSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestFullDraftRef = useRef<VoiceTimestamp[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadVspForMap() {
+      setVspMapLoading(true);
+      setVspMapError(null);
+      try {
+        const airports = await vspAPI.airports();
+        const airportId = airports[0]?.airport_id;
+        const [runways, frequencies, navaids, waypointsPage, procedures, airlines] = await Promise.all([
+          vspAPI.runways(airportId),
+          vspAPI.frequencies(airportId),
+          vspAPI.navaids(airportId),
+          vspAPI.waypoints(),
+          vspAPI.procedures(airportId),
+          vspAPI.airlines(),
+        ]);
+        if (!cancelled) {
+          setVspMapData({ airports, runways, frequencies, navaids, waypoints: waypointsPage.items, procedures, airlines });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setVspMapError(error instanceof Error ? error.message : "Failed to load VSP data");
+          setVspMapData(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setVspMapLoading(false);
+        }
+      }
+    }
+
+    loadVspForMap();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const vspStaticLayers = useMemo(
+    () => (vspMapData ? buildVspStaticLayers(vspMapData) : emptyStaticLayers),
+    [vspMapData]
+  );
 
   // audioId 切换/组件卸载时，清理未完成的防抖写入
   useEffect(() => {
@@ -428,7 +683,7 @@ function AnnotationPageInner({
           audio: audioData,
           timestamps,
           adsb: adsbData,
-          staticLayers: vhhhStatic,
+          staticLayers: vspStaticLayers,
           exportedAt: new Date().toISOString(),
         });
         toast({ title: "已导出", description: "JSON 文件已下载" });
@@ -439,7 +694,7 @@ function AnnotationPageInner({
     };
     window.addEventListener("alpha.export", handler as EventListener);
     return () => window.removeEventListener("alpha.export", handler as EventListener);
-  }, [audioData, timestamps, adsbData, toast]);
+  }, [audioData, timestamps, adsbData, toast, vspStaticLayers]);
 
   return (
     <div className="min-h-screen flex flex-col efb-surface">
@@ -450,6 +705,7 @@ function AnnotationPageInner({
 
       {/* 主内容区 */}
       <div ref={contentScrollRef} className="flex-1 overflow-y-auto scroll-smooth p-2.5">
+        <VspSourceBanner data={vspMapData} loading={vspMapLoading} error={vspMapError} />
         <div className="grid grid-cols-12 gap-2.5">
         {/* 左侧：录音列表 + 波形 */}
         <div className="col-span-12 flex flex-col gap-2.5 lg:col-span-3">
@@ -472,7 +728,7 @@ function AnnotationPageInner({
                 <ADSBMap
                   adsbData={adsbData}
                   visibleAircraftSet={visibleAircraftSet}
-                  staticLayers={vhhhStatic}
+                  staticLayers={vspStaticLayers}
                   toggles={layerToggles}
                   currentTime={currentTime}
                   selectedAircraft={selectedAircraft}
