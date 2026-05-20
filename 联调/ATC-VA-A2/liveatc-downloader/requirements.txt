@@ -1,0 +1,8 @@
+numpy
+pydub
+requests
+beautifulsoup4
+noisereduce
+cloudscraper
+playwright
+pytest-cov

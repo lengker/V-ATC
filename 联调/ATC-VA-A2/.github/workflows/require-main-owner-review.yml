@@ -1,0 +1,65 @@
+name: "PR: Run tests (informational)"
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  run-tests:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run unit tests
+        run: |
+          mkdir -p reports
+          # Run pytest, produce JUnit XML and save console output; propagate pytest exit code
+          pytest -q -m "unit" --junitxml=reports/junit.xml 2>&1 | tee reports/pytest.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Summarize unit test results
+        if: always()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          import sys
+          try:
+              tree = ET.parse('reports/junit.xml')
+              root = tree.getroot()
+              tests = int(root.attrib.get('tests', '0'))
+              failures = int(root.attrib.get('failures', root.attrib.get('errors', '0')))
+              skipped = int(root.attrib.get('skipped', '0'))
+              print(f"Unit tests summary: total={tests} failures={failures} skipped={skipped}")
+              if failures > 0:
+                  print('Some tests failed — see uploaded artifact "unit-test-reports" for details.')
+          except Exception as e:
+              print('No junit report found or failed to parse:', e)
+              sys.exit(0)
+          PY
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: reports
