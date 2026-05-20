@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>A5 DB 管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem 1.25rem; background: #f5f5f5; color: #222; }
+    h1 { font-size: 1.25rem; margin: 0 0 0.75rem; font-weight: 600; }
+    .top-actions { display: flex; justify-content: center; margin: 0 0 1rem; }
+    #status { margin-bottom: 1rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.875rem; }
+    #status.error { background: #ffe8e8; color: #8b0000; }
+    #status.ok { background: #e8f5e9; color: #1b5e20; }
+    #status.info { background: #e3f2fd; color: #0d47a1; }
+    section { margin-bottom: 1.5rem; background: #fff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+    .section-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; padding: 0.6rem 0.75rem; border-bottom: 1px solid #eee; background: #fafafa; }
+    .section-title { text-align: left; }
+    .section-title strong { font-size: 1rem; }
+    .section-title .key { font-size: 0.8rem; color: #666; font-weight: normal; margin-left: 0.35rem; }
+    .section-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+    .section-actions .tracks-ext { border-color: #6a1b9a; color: #6a1b9a; }
+    .section-actions .tracks-ext:hover { background: #f3e5f5; }
+    .section-actions .chain-ext { border-color: #1565c0; color: #1565c0; }
+    .section-actions .chain-ext:hover { background: #e3f2fd; }
+    .section-actions .chain-ext-ann { border-color: #00695c; color: #00695c; }
+    .section-actions .chain-ext-ann:hover { background: #e0f2f1; }
+    button { padding: 0.35rem 0.65rem; font-size: 0.8rem; border-radius: 6px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+    button:hover { background: #f0f0f0; }
+    button.danger { border-color: #c62828; color: #c62828; }
+    button.danger:hover { background: #ffebee; }
+    button.primary { border-color: #1565c0; color: #1565c0; }
+    button.primary:hover { background: #e3f2fd; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .content { padding: 0.75rem; min-height: 2rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th, td { border: 1px solid #e0e0e0; padding: 0.35rem 0.5rem; text-align: left; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; }
+    tr:nth-child(even) { background: #fafafa; }
+    dialog { border: 1px solid #ddd; border-radius: 10px; width: min(720px, 92vw); padding: 0; }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
+    .modal-head { padding: 0.8rem; border-bottom: 1px solid #eee; font-weight: 600; }
+    .modal-body { padding: 0.8rem; max-height: 70vh; overflow: auto; }
+    .field { display: grid; grid-template-columns: 180px 1fr; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+    .field label { font-size: 0.82rem; color: #444; }
+    .field input { width: 100%; padding: 0.35rem 0.45rem; border: 1px solid #ccc; border-radius: 6px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 0.8rem; border-top: 1px solid #eee; }
+    .help { font-size: 0.78rem; color: #777; margin-bottom: 0.5rem; }
+    .query-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .query-col h3 { margin: 0 0 0.5rem; font-size: 0.9rem; }
+    .query-col textarea { width: 100%; min-height: 220px; resize: vertical; border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; }
+    .result-box { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; background: #f7f7f7; border: 1px solid #e0e0e0; border-radius: 6px; padding: 0.6rem; }
+  </style>
+</head>
+<body>
+  <h1>A5数据库表一览（开发态）</h1>
+  <div class="top-actions">
+    <button type="button" class="primary" id="openGeneralQueryBtn">通用查询</button>
+  </div>
+  <div id="status" class="info" role="status">加载中…</div>
+  <div id="root"></div>
+  <dialog id="crudModal"></dialog>
+  <dialog id="generalQueryModal"></dialog>
+  <dialog id="generalQueryResultModal"></dialog>
+
+  <script>
+    const root = document.getElementById("root");
+    const statusEl = document.getElementById("status");
+    const crudModal = document.getElementById("crudModal");
+    const generalQueryModal = document.getElementById("generalQueryModal");
+    const generalQueryResultModal = document.getElementById("generalQueryResultModal");
+    const openGeneralQueryBtn = document.getElementById("openGeneralQueryBtn");
+    let latestSnapshot = [];
+    let busyAction = false;
+
+    function setStatus(msg, kind) {
+      statusEl.textContent = msg;
+      statusEl.className = kind || "info";
+    }
+
+    function esc(s) {
+      const d = document.createElement("div");
+      d.textContent = s == null ? "" : String(s);
+      return d.innerHTML;
+    }
+
+    function cellValue(v) {
+      if (v === null || v === undefined) return "";
+      if (typeof v === "object") return JSON.stringify(v);
+      return String(v);
+    }
+
+    async function fetchSnapshot() {
+      const r = await fetch("/dev/db-ui/snapshot");
+      if (r.status === 403) {
+        throw new Error("开发模式未开启（需 APP_ENV=development 等）或 /dev 接口被禁用。");
+      }
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(t || ("HTTP " + r.status));
+      }
+      return r.json();
+    }
+
+    function render(data) {
+      root.innerHTML = "";
+      const tables = data.tables || [];
+      latestSnapshot = tables;
+      for (const t of tables) {
+        const sec = document.createElement("section");
+        const head = document.createElement("div");
+        head.className = "section-head";
+
+        const title = document.createElement("div");
+        title.className = "section-title";
+        title.innerHTML = "<strong>" + esc(t.sql_name) + "</strong><span class=\"key\">(" + esc(t.key) + ")</span>";
+
+        const actions = document.createElement("div");
+        actions.className = "section-actions";
+
+        const btnDrop = document.createElement("button");
+        btnDrop.className = "danger";
+        btnDrop.type = "button";
+        btnDrop.textContent = "删除此表";
+        btnDrop.addEventListener("click", () => onDrop(t.key, btnDrop));
+
+        const btnEnsure = document.createElement("button");
+        btnEnsure.className = "primary";
+        btnEnsure.type = "button";
+        btnEnsure.textContent = "建立此表";
+        btnEnsure.addEventListener("click", () => onEnsure(t.key, btnEnsure));
+
+        const btnCreate = document.createElement("button");
+        btnCreate.type = "button";
+        btnCreate.textContent = "增加";
+        btnCreate.addEventListener("click", () => openCrudModal("create", t));
+
+        const btnDelete = document.createElement("button");
+        btnDelete.type = "button";
+        btnDelete.textContent = "删除";
+        btnDelete.addEventListener("click", () => openCrudModal("delete", t));
+
+        const btnSearch = document.createElement("button");
+        btnSearch.type = "button";
+        btnSearch.textContent = "查找";
+        btnSearch.addEventListener("click", () => openCrudModal("search", t));
+
+        const btnUpdate = document.createElement("button");
+        btnUpdate.type = "button";
+        btnUpdate.textContent = "更新";
+        btnUpdate.addEventListener("click", () => openCrudModal("update", t));
+
+        if (t.key === "tracks") {
+          const extActions = [
+            ["ext-create", "扩展增加"],
+            ["ext-delete", "扩展删除"],
+            ["ext-search", "扩展查找"],
+            ["ext-update", "扩展更新"],
+          ];
+          for (const [actionKey, label] of extActions) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "tracks-ext";
+            btn.textContent = label;
+            btn.addEventListener("click", () => openCrudModal(actionKey, t));
+            actions.appendChild(btn);
+          }
+        }
+        if (t.key === "audio_records") {
+          const extActions = [
+            ["ext-create", "扩展增加"],
+            ["ext-delete-chain", "扩展删链"],
+            ["ext-delete-one", "扩展单删"],
+            ["ext-search-all", "扩展查全"],
+            ["ext-search-one", "扩展查单"],
+            ["ext-update", "扩展更新"],
+          ];
+          for (const [actionKey, label] of extActions) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "chain-ext";
+            btn.textContent = label;
+            btn.addEventListener("click", () => openCrudModal(actionKey, t));
+            actions.appendChild(btn);
+          }
+        }
+        if (t.key === "annotations") {
+          const extActions = [
+            ["ext-create", "扩展增加"],
+            ["ext-delete-chain", "扩展删链"],
+            ["ext-delete-one", "扩展单删"],
+            ["ext-search-all", "扩展查全"],
+            ["ext-search-one", "扩展查单"],
+            ["ext-update", "扩展更新"],
+          ];
+          for (const [actionKey, label] of extActions) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "chain-ext-ann";
+            btn.textContent = label;
+            btn.addEventListener("click", () => openCrudModal(actionKey, t));
+            actions.appendChild(btn);
+          }
+        }
+
+        actions.appendChild(btnDrop);
+        actions.appendChild(btnEnsure);
+        actions.appendChild(btnCreate);
+        actions.appendChild(btnDelete);
+        actions.appendChild(btnSearch);
+        actions.appendChild(btnUpdate);
+        head.appendChild(title);
+        head.appendChild(actions);
+
+        const content = document.createElement("div");
+        content.className = "content";
+
+        if (!t.exists) {
+          /* 无表：整块留白，不渲染表头 */
+        } else {
+          const tbl = document.createElement("table");
+          const thead = document.createElement("thead");
+          const trh = document.createElement("tr");
+          for (const col of t.columns || []) {
+            const th = document.createElement("th");
+            th.textContent = col;
+            trh.appendChild(th);
+          }
+          thead.appendChild(trh);
+          tbl.appendChild(thead);
+          const tbody = document.createElement("tbody");
+          const rows = t.rows || [];
+          for (const row of rows) {
+            const tr = document.createElement("tr");
+            for (const col of t.columns || []) {
+              const td = document.createElement("td");
+              td.innerHTML = esc(cellValue(row[col]));
+              tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+          }
+          tbl.appendChild(tbody);
+          content.appendChild(tbl);
+        }
+
+        sec.appendChild(head);
+        sec.appendChild(content);
+        root.appendChild(sec);
+      }
+    }
+
+    async function refresh(force = false) {
+      if (busyAction && !force) return;
+      try {
+        setStatus("刷新中…", "info");
+        const data = await fetchSnapshot();
+        render(data);
+        setStatus("已加载 " + (data.tables || []).length + " 个逻辑表。打开页面或操作后会自动刷新。", "ok");
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+        root.innerHTML = "";
+      }
+    }
+
+    async function onDrop(tableKey, btn) {
+      if (busyAction) return;
+      if (!confirm("将删除该表及所有下级关联表（DROP TABLE），数据不可恢复。确定？")) return;
+      busyAction = true;
+      btn.disabled = true;
+      try {
+        setStatus("删除中…", "info");
+        const r = await fetch("/dev/db-ui/drop/" + encodeURIComponent(tableKey), { method: "POST" });
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(t || ("HTTP " + r.status));
+        }
+        await refresh(true);
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+      } finally {
+        busyAction = false;
+        btn.disabled = false;
+      }
+    }
+
+    async function onEnsure(tableKey, btn) {
+      if (busyAction) return;
+      busyAction = true;
+      btn.disabled = true;
+      try {
+        setStatus("建立中…", "info");
+        const r = await fetch("/dev/db-ui/ensure/" + encodeURIComponent(tableKey), { method: "POST" });
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(t || ("HTTP " + r.status));
+        }
+        await refresh(true);
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+      } finally {
+        busyAction = false;
+        btn.disabled = false;
+      }
+    }
+
+    function buildInput(label, name, required = false, placeholder = "") {
+      return "<div class=\"field\"><label>" + esc(label) + "</label><input data-name=\"" + esc(name) + "\" " + (required ? "required" : "") + " placeholder=\"" + esc(placeholder) + "\" /></div>";
+    }
+
+    function getPkName(table) {
+      if (table.columns && table.columns.length > 0) {
+        if (table.key === "airports") return "airport_code";
+        const idCol = table.columns.find(c => c.endsWith("_id") || c === "id");
+        if (idCol) return idCol;
+      }
+      return table.key === "airports" ? "airport_code" : "id";
+    }
+
+    function getAutoManagedColumns(tableKey) {
+      if (tableKey === "audio_records") return new Set(["last_access_at"]);
+      if (tableKey === "annotations") return new Set(["annotation_time"]);
+      return new Set();
+    }
+
+    function validateBusinessInputs(action, table, values) {
+      if (table.key === "tracks" && action === "ext-create") {
+        if (!values.airport_code) {
+          throw new Error("tracks 扩展新增必须填写 airport_code，多个机场请用英文逗号分隔。");
+        }
+      }
+      if ((action === "create" || action === "update" || action === "ext-create") && table.key === "audio_records") {
+        const start = values.start_time_utc;
+        const end = values.end_time_utc;
+        if (start || end) {
+          const ds = new Date(start || "");
+          const de = new Date(end || "");
+          if (Number.isNaN(ds.getTime()) || Number.isNaN(de.getTime())) {
+            throw new Error("audio_records 的 start_time_utc/end_time_utc 需要 ISO 时间，例如 2026-04-07T12:00:00Z。");
+          }
+          if (de.getTime() < ds.getTime()) {
+            throw new Error("audio_records 要求 end_time_utc >= start_time_utc。");
+          }
+        }
+      }
+      if (action === "ext-create" && table.key === "annotations") {
+        const a = values.abs_start_time;
+        const b = values.abs_end_time;
+        if (a || b) {
+          const ds = new Date(a || "");
+          const de = new Date(b || "");
+          if (Number.isNaN(ds.getTime()) || Number.isNaN(de.getTime())) {
+            throw new Error("annotations 的 abs_start_time/abs_end_time 需要 ISO 时间。");
+          }
+          if (de.getTime() < ds.getTime()) {
+            throw new Error("annotations 要求 abs_end_time >= abs_start_time。");
+          }
+        }
+        const rs = values.relative_start;
+        const re = values.relative_end;
+        if (rs !== undefined && re !== undefined && String(rs) !== "" && String(re) !== "") {
+          const x = Number(rs);
+          const y = Number(re);
+          if (!Number.isNaN(x) && !Number.isNaN(y) && y < x) {
+            throw new Error("annotations 要求 relative_end >= relative_start。");
+          }
+        }
+      }
+    }
+
+    function isTracksExtAction(action, table) {
+      return table.key === "tracks" && action.startsWith("ext-");
+    }
+
+    function isChainExtAction(action, table) {
+      return (table.key === "audio_records" || table.key === "annotations") && action.startsWith("ext-");
+    }
+
+    const CHAIN_EXT_META = {
+      audio_records: {
+        label: "LNG_AUDIO_RECORDS",
+        basePath: "/dev/db-ui/rows/audio_records/ext",
+      },
+      annotations: {
+        label: "LNG_ANNOTATIONS",
+        basePath: "/dev/db-ui/rows/annotations/ext",
+      },
+    };
+
+    function coerceChainField(tableKey, fieldName, raw) {
+      if (raw === undefined || raw === null) return raw;
+      const s = String(raw).trim();
+      if (s === "") return undefined;
+      if (tableKey === "audio_records") {
+        if (["track_id", "duration_ms", "file_size", "status"].includes(fieldName) && /^-?\d+$/.test(s)) {
+          return Number(s);
+        }
+      }
+      if (tableKey === "annotations") {
+        if (["audio_id", "author_id", "is_annotated"].includes(fieldName) && /^-?\d+$/.test(s)) {
+          return Number(s);
+        }
+        if (["relative_start", "relative_end", "vad_confidence"].includes(fieldName) && /^-?\d+(\.\d+)?$/.test(s)) {
+          return Number(s);
+        }
+      }
+      return s;
+    }
+
+    function buildChainExtTitle(tableKey, action) {
+      const lab = CHAIN_EXT_META[tableKey].label;
+      if (action === "ext-create") return lab + " - 扩展增加";
+      if (action === "ext-delete-chain") return lab + " - 扩展删链";
+      if (action === "ext-delete-one") return lab + " - 扩展单删";
+      if (action === "ext-search-all") return lab + " - 扩展查全";
+      if (action === "ext-search-one") return lab + " - 扩展查单";
+      return lab + " - 扩展更新";
+    }
+
+    function buildChainExtFields(tableKey, action) {
+      if (tableKey === "audio_records") {
+        if (action === "ext-create") {
+          return [
+            buildInput("track_id", "track_id", true, "必填"),
+            buildInput("source_url", "source_url", true, "必填"),
+            buildInput("start_time_utc", "start_time_utc", true, "ISO，如 2026-04-07T12:00:00Z"),
+            buildInput("end_time_utc", "end_time_utc", true, "ISO"),
+            buildInput("duration_ms", "duration_ms", true, "毫秒，整数"),
+            buildInput("file_name", "file_name", true, "必填"),
+            buildInput("file_path", "file_path", true, "必填"),
+            buildInput("file_size", "file_size", false, "可留空"),
+            buildInput("status", "status", false, "0–3，可留空（默认 0）"),
+          ].join("");
+        }
+        if (action === "ext-delete-chain" || action === "ext-delete-one") {
+          return buildInput("主键 audio_id", "id", true, "链中任意节点 id");
+        }
+        if (action === "ext-search-all" || action === "ext-search-one") {
+          return [
+            buildInput("track_id", "track_id", false, "可留空"),
+            buildInput("status", "status", false, "可留空"),
+            buildInput("source_url", "source_url", false, "可留空"),
+            buildInput("file_name", "file_name", false, "可留空"),
+            buildInput("file_path", "file_path", false, "可留空"),
+          ].join("");
+        }
+        return buildInput("主键 audio_id", "id", true, "必填") + [
+          buildInput("source_url", "source_url", false, "更新为"),
+          buildInput("start_time_utc", "start_time_utc", false, "更新为"),
+          buildInput("end_time_utc", "end_time_utc", false, "更新为"),
+          buildInput("duration_ms", "duration_ms", false, "更新为"),
+          buildInput("file_name", "file_name", false, "更新为"),
+          buildInput("file_path", "file_path", false, "更新为"),
+          buildInput("file_size", "file_size", false, "更新为"),
+          buildInput("status", "status", false, "更新为"),
+          buildInput("track_id", "track_id", false, "更新为"),
+        ].join("");
+      }
+      /* annotations */
+      if (action === "ext-create") {
+        return [
+          buildInput("audio_id", "audio_id", true, "必填"),
+          buildInput("author_id", "author_id", true, "必填"),
+          buildInput("label_type", "label_type", false, ""),
+          buildInput("relative_start", "relative_start", false, ""),
+          buildInput("relative_end", "relative_end", false, ""),
+          buildInput("abs_start_time", "abs_start_time", false, "ISO"),
+          buildInput("abs_end_time", "abs_end_time", false, "ISO"),
+          buildInput("asr_content", "asr_content", false, ""),
+          buildInput("vad_confidence", "vad_confidence", false, ""),
+          buildInput("is_annotated", "is_annotated", false, "0 或 1"),
+          buildInput("annotation_text", "annotation_text", false, ""),
+          buildInput("storage_tag", "storage_tag", false, ""),
+        ].join("");
+      }
+      if (action === "ext-delete-chain" || action === "ext-delete-one") {
+        return buildInput("主键 annotation_id", "id", true, "链中任意节点 id");
+      }
+      if (action === "ext-search-all" || action === "ext-search-one") {
+        return [
+          buildInput("audio_id", "audio_id", false, "可留空"),
+          buildInput("author_id", "author_id", false, "可留空"),
+          buildInput("is_annotated", "is_annotated", false, "可留空"),
+          buildInput("label_type", "label_type", false, "可留空"),
+          buildInput("annotation_text", "annotation_text", false, "可留空"),
+        ].join("");
+      }
+      return buildInput("主键 annotation_id", "id", true, "必填") + [
+        buildInput("label_type", "label_type", false, "更新为"),
+        buildInput("author_id", "author_id", false, "更新为"),
+        buildInput("audio_id", "audio_id", false, "更新为"),
+        buildInput("relative_start", "relative_start", false, "更新为"),
+        buildInput("relative_end", "relative_end", false, "更新为"),
+        buildInput("abs_start_time", "abs_start_time", false, "更新为"),
+        buildInput("abs_end_time", "abs_end_time", false, "更新为"),
+        buildInput("asr_content", "asr_content", false, "更新为"),
+        buildInput("vad_confidence", "vad_confidence", false, "更新为"),
+        buildInput("is_annotated", "is_annotated", false, "更新为"),
+        buildInput("annotation_text", "annotation_text", false, "更新为"),
+        buildInput("storage_tag", "storage_tag", false, "更新为"),
+      ].join("");
+    }
+
+    function buildChainExtHint(tableKey, action) {
+      if (action === "ext-create") {
+        if (tableKey === "audio_records") {
+          return "last_access_at、prev_id、next_id 由后端自动维护，无需填写。可用「下一条」累计多条；连续相同 track_id 会作为一批提交。start/end 时间需合法。";
+        }
+        return "annotation_time、prev_id、next_id 由后端自动维护。连续相同 audio_id 会作为一批提交。";
+      }
+      if (action === "ext-delete-chain") {
+        return "输入链中任意 annotation_id / audio_id，将删除整条链。";
+      }
+      if (action === "ext-delete-one") {
+        return "仅删除一条并重连前后节点。";
+      }
+      if (action === "ext-search-all" || action === "ext-search-one") {
+        return "留空的字段不参与过滤；全部留空表示全查（limit=200）。结果以 JSON 弹窗展示，不做表格适配。";
+      }
+      return "必须填写 id。禁止填写 prev_id、next_id；last_access_at（音频）与 annotation_time（标注）由后端自动更新。";
+    }
+
+    function normalizeChainExtCreateRow(tableKey, values) {
+      const out = {};
+      for (const [k, v] of Object.entries(values)) {
+        const c = coerceChainField(tableKey, k, v);
+        if (c !== undefined && c !== "") out[k] = c;
+      }
+      return out;
+    }
+
+    function normalizeChainExtSearchPayload(tableKey, values) {
+      const filters = {};
+      for (const [k, v] of Object.entries(values)) {
+        const c = coerceChainField(tableKey, k, v);
+        if (c !== undefined && c !== "") filters[k] = c;
+      }
+      return { filters, limit: 200 };
+    }
+
+    function normalizeChainExtUpdatePayload(tableKey, values) {
+      const idRaw = values.id;
+      if (idRaw === undefined || String(idRaw).trim() === "") {
+        throw new Error("必须填写主键 id。");
+      }
+      const id = /^-?\d+$/.test(String(idRaw).trim()) ? Number(String(idRaw).trim()) : idRaw;
+      const payload = {};
+      for (const [k, v] of Object.entries(values)) {
+        if (k === "id") continue;
+        const c = coerceChainField(tableKey, k, v);
+        if (c !== undefined && c !== "") payload[k] = c;
+      }
+      return { id, values: payload };
+    }
+
+    function buildTracksExtTitle(action) {
+      if (action === "ext-create") return "LNG_TRACKS - 扩展增加";
+      if (action === "ext-delete") return "LNG_TRACKS - 扩展删除";
+      if (action === "ext-search") return "LNG_TRACKS - 扩展查找";
+      return "LNG_TRACKS - 扩展更新";
+    }
+
+    function buildTracksExtFields(action) {
+      const sharedFields = [
+        "timestamp",
+        "flight_id",
+        "tracks_latitude",
+        "tracks_longitude",
+        "altitude",
+        "speed",
+        "heading",
+      ];
+      if (action === "ext-create") {
+        return sharedFields.map(c => buildInput(c, c, false, c)).join("") +
+          buildInput("airport_code", "airport_code", true, "多个机场用英文逗号分隔");
+      }
+      if (action === "ext-delete") {
+        return buildInput("主键 id", "id", true, "输入任意链路中的 track_id");
+      }
+      if (action === "ext-search") {
+        return [
+          buildInput("timestamp", "timestamp", false, "可留空"),
+          buildInput("flight_id", "flight_id", false, "可留空"),
+          buildInput("tracks_latitude", "tracks_latitude", false, "可留空"),
+          buildInput("tracks_longitude", "tracks_longitude", false, "可留空"),
+          buildInput("altitude", "altitude", false, "可留空"),
+          buildInput("speed", "speed", false, "可留空"),
+          buildInput("heading", "heading", false, "可留空"),
+          buildInput("departure_airport_code", "departure_airport_code", false, "可留空"),
+          buildInput("arrival_airport_code", "arrival_airport_code", false, "可留空"),
+        ].join("");
+      }
+      return buildInput("主键 id", "id", true, "必填") + [
+        buildInput("timestamp", "timestamp", false, "更新为"),
+        buildInput("flight_id", "flight_id", false, "更新为"),
+        buildInput("tracks_latitude", "tracks_latitude", false, "更新为"),
+        buildInput("tracks_longitude", "tracks_longitude", false, "更新为"),
+        buildInput("altitude", "altitude", false, "更新为"),
+        buildInput("speed", "speed", false, "更新为"),
+        buildInput("heading", "heading", false, "更新为"),
+        buildInput("departure_airport_code", "departure_airport_code", false, "更新为"),
+        buildInput("arrival_airport_code", "arrival_airport_code", false, "更新为"),
+      ].join("");
+    }
+
+    function buildTracksExtHint(action) {
+      if (action === "ext-create") {
+        return "airport_code 必填，多个机场用英文逗号分隔。点击“下一条”可继续累计多条，最终会按数组调用扩展新增接口。";
+      }
+      if (action === "ext-delete") {
+        return "只需要输入任意链路中的 track_id，后端会删除整条关联链。";
+      }
+      if (action === "ext-search") {
+        return "不要输入 track_id、next_id、prev_id。留空的字段表示不参与过滤，全部留空表示全查。";
+      }
+      return "必须填写 id。不要填写 track_id、next_id、prev_id；填写的字段都会参与更新。";
+    }
+
+    function normalizeTracksExtValues(action, values) {
+      if (action === "ext-create") {
+        const airportRaw = values.airport_code || "";
+        const airportCode = airportRaw.split(",").map(x => x.trim()).filter(Boolean);
+        const payload = {};
+        for (const [k, v] of Object.entries(values)) {
+          if (k === "airport_code") continue;
+          payload[k] = /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+        }
+        payload.airport_code = airportCode;
+        return payload;
+      }
+      if (action === "ext-delete") {
+        return { id: values.id };
+      }
+      if (action === "ext-search") {
+        const payload = {};
+        for (const [k, v] of Object.entries(values)) {
+          payload[k] = /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+        }
+        return { filters: payload, limit: 200 };
+      }
+      const id = values.id;
+      const payload = {};
+      for (const [k, v] of Object.entries(values)) {
+        if (k === "id") continue;
+        payload[k] = /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v;
+      }
+      return { id, values: payload };
+    }
+
+    function openCrudModal(action, table) {
+      if (!table.exists) {
+        setStatus("该表尚未建立，请先点“建立此表”。", "error");
+        return;
+      }
+      if (isTracksExtAction(action, table)) {
+        openTracksExtModal(action, table);
+        return;
+      }
+      if (isChainExtAction(action, table)) {
+        openChainExtModal(action, table);
+        return;
+      }
+      const pk = getPkName(table);
+      const columns = table.columns || [];
+      const autoManaged = getAutoManagedColumns(table.key);
+      const nonPkColumns = columns.filter(c => c !== pk && !autoManaged.has(c));
+      let fieldsHtml = "";
+      let hint = "";
+      if (action === "create") {
+        hint = "除 airports 外主键不需要输入。";
+        if (table.key === "audio_records") {
+          hint += " start_time_utc/end_time_utc 请填 ISO 时间（如 2026-04-07T12:00:00Z），且结束时间必须大于等于开始时间。";
+        }
+        const target = table.key === "airports" ? columns : nonPkColumns;
+        fieldsHtml = target.map(c => buildInput(c, c, false, c)).join("");
+      } else if (action === "delete") {
+        fieldsHtml = buildInput("主键 " + pk, "id", true, "输入主键");
+      } else if (action === "search") {
+        hint = "不支持主键查找；全部留空表示全查。";
+        fieldsHtml = nonPkColumns.map(c => buildInput(c, c, false, "可留空")).join("");
+      } else {
+        if (table.key === "airports") {
+          fieldsHtml += buildInput("旧主键 airport_code", "id", true, "必填");
+          fieldsHtml += buildInput("新主键 airport_code", "new_id", false, "不改主键可留空");
+          fieldsHtml += nonPkColumns.map(c => buildInput(c, c, false, "更新为")).join("");
+        } else {
+          if (table.key === "audio_records") {
+            hint = "start_time_utc/end_time_utc 请填 ISO 时间，且结束时间必须大于等于开始时间。";
+          }
+          fieldsHtml += buildInput("主键 " + pk, "id", true, "必填");
+          fieldsHtml += nonPkColumns.map(c => buildInput(c, c, false, "更新为")).join("");
+        }
+      }
+      crudModal.innerHTML =
+        "<form method=\"dialog\" id=\"crudForm\">" +
+        "<div class=\"modal-head\">" + esc(table.sql_name + " - " + action.toUpperCase()) + "</div>" +
+        "<div class=\"modal-body\">" +
+        (hint ? "<div class=\"help\">" + esc(hint) + "</div>" : "") +
+        fieldsHtml +
+        "</div>" +
+        "<div class=\"modal-actions\">" +
+        "<button type=\"button\" id=\"cancelBtn\">取消</button>" +
+        "<button type=\"submit\" id=\"submitBtn\">提交</button>" +
+        "</div></form>";
+      const form = document.getElementById("crudForm");
+      document.getElementById("cancelBtn").addEventListener("click", () => crudModal.close());
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        await submitCrudAction(action, table, form);
+      });
+      crudModal.showModal();
+    }
+
+    function openChainExtModal(action, table) {
+      const formId = "chainExtCrudForm";
+      const tableKey = table.key;
+      const actionButtons = action === "ext-create"
+        ? "<button type=\"button\" id=\"chainNextItemBtn\">下一条</button><button type=\"submit\" id=\"chainSubmitBtn\">提交</button>"
+        : "<button type=\"submit\" id=\"chainSubmitBtn\">提交</button>";
+      crudModal.innerHTML =
+        "<form method=\"dialog\" id=\"" + formId + "\">" +
+        "<div class=\"modal-head\">" + esc(buildChainExtTitle(tableKey, action)) + "</div>" +
+        "<div class=\"modal-body\">" +
+        "<div class=\"help\">" + esc(buildChainExtHint(tableKey, action)) + "</div>" +
+        (action === "ext-create" ? "<div class=\"help\" id=\"chainPendingCreateCount\">当前待提交 0 条</div>" : "") +
+        buildChainExtFields(tableKey, action) +
+        "</div>" +
+        "<div class=\"modal-actions\">" +
+        "<button type=\"button\" id=\"chainCancelBtn\">取消</button>" +
+        actionButtons +
+        "</div></form>";
+      const form = document.getElementById(formId);
+      const pendingItems = [];
+      const countEl = document.getElementById("chainPendingCreateCount");
+      document.getElementById("chainCancelBtn").addEventListener("click", () => crudModal.close());
+      if (action === "ext-create") {
+        document.getElementById("chainNextItemBtn").addEventListener("click", () => {
+          try {
+            const values = collectFormValues(form);
+            validateBusinessInputs(action, table, values);
+            pendingItems.push(normalizeChainExtCreateRow(tableKey, values));
+            if (countEl) countEl.textContent = "当前待提交 " + pendingItems.length + " 条";
+            for (const el of form.querySelectorAll("input[data-name]")) el.value = "";
+            setStatus("已暂存第 " + pendingItems.length + " 条，继续填写下一条。", "ok");
+          } catch (e) {
+            setStatus(e.message || String(e), "error");
+          }
+        });
+      }
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        await submitChainExtAction(action, table, form, pendingItems);
+      });
+      crudModal.showModal();
+    }
+
+    function openTracksExtModal(action, table) {
+      const formId = "tracksExtCrudForm";
+      const actionButtons = action === "ext-create"
+        ? "<button type=\"button\" id=\"nextItemBtn\">下一条</button><button type=\"submit\" id=\"submitBtn\">提交</button>"
+        : "<button type=\"submit\" id=\"submitBtn\">提交</button>";
+      crudModal.innerHTML =
+        "<form method=\"dialog\" id=\"" + formId + "\">" +
+        "<div class=\"modal-head\">" + esc(buildTracksExtTitle(action)) + "</div>" +
+        "<div class=\"modal-body\">" +
+        "<div class=\"help\">" + esc(buildTracksExtHint(action)) + "</div>" +
+        (action === "ext-create" ? "<div class=\"help\" id=\"pendingCreateCount\">当前待提交 0 条</div>" : "") +
+        buildTracksExtFields(action) +
+        "</div>" +
+        "<div class=\"modal-actions\">" +
+        "<button type=\"button\" id=\"cancelBtn\">取消</button>" +
+        actionButtons +
+        "</div></form>";
+      const form = document.getElementById(formId);
+      const pendingItems = [];
+      const countEl = document.getElementById("pendingCreateCount");
+      document.getElementById("cancelBtn").addEventListener("click", () => crudModal.close());
+      if (action === "ext-create") {
+        document.getElementById("nextItemBtn").addEventListener("click", () => {
+          try {
+            const values = collectFormValues(form);
+            validateBusinessInputs(action, table, values);
+            pendingItems.push(normalizeTracksExtValues(action, values));
+            if (countEl) countEl.textContent = "当前待提交 " + pendingItems.length + " 条";
+            for (const el of form.querySelectorAll("input[data-name]")) el.value = "";
+            setStatus("已暂存第 " + pendingItems.length + " 条，继续填写下一条。", "ok");
+          } catch (e) {
+            setStatus(e.message || String(e), "error");
+          }
+        });
+      }
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        await submitTracksExtAction(action, table, form, pendingItems);
+      });
+      crudModal.showModal();
+    }
+
+    function collectFormValues(form) {
+      const out = {};
+      for (const el of form.querySelectorAll("input[data-name]")) {
+        const k = el.getAttribute("data-name");
+        const v = (el.value || "").trim();
+        if (v !== "") out[k] = v;
+      }
+      return out;
+    }
+
+    async function postJson(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(t || ("HTTP " + r.status));
+      }
+      return r.json();
+    }
+
+    async function submitCrudAction(action, table, form) {
+      if (busyAction) return;
+      busyAction = true;
+      try {
+        const values = collectFormValues(form);
+        validateBusinessInputs(action, table, values);
+        if (action === "create") {
+          await postJson("/dev/db-ui/rows/create/" + encodeURIComponent(table.key), { values });
+          setStatus("新增成功", "ok");
+        } else if (action === "delete") {
+          await postJson("/dev/db-ui/rows/delete/" + encodeURIComponent(table.key), { id: values.id });
+          setStatus("删除成功", "ok");
+        } else if (action === "search") {
+          const resp = await postJson("/dev/db-ui/rows/search/" + encodeURIComponent(table.key), { filters: values, limit: 200 });
+          const target = latestSnapshot.find(t => t.key === table.key);
+          if (target) target.rows = resp.rows || [];
+          render({ tables: latestSnapshot });
+          setStatus("查找完成，共 " + (resp.rows || []).length + " 条", "ok");
+          crudModal.close();
+          return;
+        } else {
+          const newId = values.new_id;
+          delete values.new_id;
+          const id = values.id;
+          delete values.id;
+          await postJson("/dev/db-ui/rows/update/" + encodeURIComponent(table.key), {
+            id,
+            new_id: newId || null,
+            values,
+          });
+          setStatus("更新成功", "ok");
+        }
+        crudModal.close();
+        await refresh(true);
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+      } finally {
+        busyAction = false;
+      }
+    }
+
+    function openChainExtSearchResultModal(tableLabel, modeLabel, result) {
+      generalQueryResultModal.innerHTML =
+        "<form method=\"dialog\">" +
+        "<div class=\"modal-head\">" + esc(tableLabel + " 扩展查找（" + modeLabel + "）") + "</div>" +
+        "<div class=\"modal-body\"><div class=\"result-box\">" + esc(JSON.stringify(result, null, 2)) + "</div></div>" +
+        "<div class=\"modal-actions\"><button type=\"submit\">关闭</button></div>" +
+        "</form>";
+      generalQueryResultModal.showModal();
+    }
+
+    async function submitChainExtAction(action, table, form, pendingItems) {
+      if (busyAction) return;
+      busyAction = true;
+      const meta = CHAIN_EXT_META[table.key];
+      try {
+        const values = collectFormValues(form);
+        if (action === "ext-create") {
+          if (Object.keys(values).length > 0) {
+            validateBusinessInputs(action, table, values);
+            pendingItems.push(normalizeChainExtCreateRow(table.key, values));
+          }
+          if (pendingItems.length < 1) {
+            throw new Error("请至少填写一条要新增的数据。");
+          }
+          const payload = pendingItems.length === 1 ? pendingItems[0] : pendingItems;
+          await postJson(meta.basePath + "/create", payload);
+          setStatus("扩展新增成功，共提交 " + pendingItems.length + " 条。", "ok");
+        } else if (action === "ext-delete-chain") {
+          if (!values.id) throw new Error("请填写主键 id。");
+          await postJson(meta.basePath + "/delete-chain", { id: Number(values.id) });
+          setStatus("扩展删链成功", "ok");
+        } else if (action === "ext-delete-one") {
+          if (!values.id) throw new Error("请填写主键 id。");
+          await postJson(meta.basePath + "/delete-one", { id: Number(values.id) });
+          setStatus("扩展单删成功", "ok");
+        } else if (action === "ext-search-all") {
+          const resp = await postJson(meta.basePath + "/search-all", normalizeChainExtSearchPayload(table.key, values));
+          openChainExtSearchResultModal(meta.label, "全", resp);
+          setStatus("扩展查全完成（结果见弹窗）。", "ok");
+          crudModal.close();
+          return;
+        } else if (action === "ext-search-one") {
+          const resp = await postJson(meta.basePath + "/search-one", normalizeChainExtSearchPayload(table.key, values));
+          openChainExtSearchResultModal(meta.label, "单", resp);
+          setStatus("扩展查单完成（结果见弹窗）。", "ok");
+          crudModal.close();
+          return;
+        } else if (action === "ext-update") {
+          const payload = normalizeChainExtUpdatePayload(table.key, values);
+          if (Object.keys(payload.values).length < 1) {
+            throw new Error("请至少填写一个要更新的字段。");
+          }
+          await postJson(meta.basePath + "/update", payload);
+          setStatus("扩展更新成功", "ok");
+        }
+        crudModal.close();
+        await refresh(true);
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+      } finally {
+        busyAction = false;
+      }
+    }
+
+    async function submitTracksExtAction(action, table, form, pendingItems) {
+      if (busyAction) return;
+      busyAction = true;
+      try {
+        const values = collectFormValues(form);
+        let payload;
+        if (action === "ext-create") {
+          if (Object.keys(values).length > 0) {
+            validateBusinessInputs(action, table, values);
+            pendingItems.push(normalizeTracksExtValues(action, values));
+          }
+          if (pendingItems.length < 1) {
+            throw new Error("请至少填写一条要新增的 tracks 数据。");
+          }
+          payload = pendingItems.length === 1 ? pendingItems[0] : pendingItems;
+          await postJson("/dev/db-ui/rows/tracks/ext/create", payload);
+          setStatus("扩展新增成功，共提交 " + pendingItems.length + " 条。", "ok");
+        } else if (action === "ext-delete") {
+          payload = normalizeTracksExtValues(action, values);
+          await postJson("/dev/db-ui/rows/tracks/ext/delete", payload);
+          setStatus("扩展删除成功", "ok");
+        } else if (action === "ext-search") {
+          payload = normalizeTracksExtValues(action, values);
+          const resp = await postJson("/dev/db-ui/rows/tracks/ext/search", payload);
+          openTracksExtSearchResultModal(resp);
+          setStatus("扩展查找完成，共 " + (Array.isArray(resp) ? resp.length : (resp ? 1 : 0)) + " 条。", "ok");
+          crudModal.close();
+          return;
+        } else {
+          payload = normalizeTracksExtValues(action, values);
+          if (Object.keys(payload.values).length < 1) {
+            throw new Error("请至少填写一个要更新的字段。");
+          }
+          await postJson("/dev/db-ui/rows/tracks/ext/update", payload);
+          setStatus("扩展更新成功", "ok");
+        }
+        crudModal.close();
+        await refresh(true);
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+      } finally {
+        busyAction = false;
+      }
+    }
+
+    function parseReferenceText(text) {
+      const out = {};
+      const lines = (text || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      for (const line of lines) {
+        const idx = line.indexOf(":");
+        if (idx <= 0) {
+          throw new Error("参考项每行必须是 key:value 形式。错误行: " + line);
+        }
+        const key = line.slice(0, idx).trim();
+        const rawVal = line.slice(idx + 1).trim();
+        if (!key) throw new Error("参考项 key 不能为空。");
+        if (rawVal === "") throw new Error("参考项 value 不能为空。");
+        if (rawVal === "true" || rawVal === "false") {
+          out[key] = rawVal === "true";
+        } else if (/^-?\d+(\.\d+)?$/.test(rawVal)) {
+          out[key] = Number(rawVal);
+        } else {
+          out[key] = rawVal;
+        }
+      }
+      if (Object.keys(out).length < 1) {
+        throw new Error("参考项至少填写一行。");
+      }
+      return out;
+    }
+
+    function parseSelectText(text) {
+      const arr = (text || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+      if (arr.length < 1) {
+        throw new Error("搜索项至少填写一行。");
+      }
+      return arr;
+    }
+
+    function openGeneralQueryModal() {
+      generalQueryModal.innerHTML =
+        "<form method=\"dialog\" id=\"generalQueryForm\">" +
+        "<div class=\"modal-head\">通用查询</div>" +
+        "<div class=\"modal-body\">" +
+        "<div class=\"help\">左侧参考项每行写 key:value；右侧搜索项每行写一个 key。</div>" +
+        "<div class=\"query-grid\">" +
+        "<div class=\"query-col\"><h3>参考项</h3><textarea id=\"queryReferenceText\" placeholder=\"file_size:2\nsource_url:https://example.com/a.wav\"></textarea></div>" +
+        "<div class=\"query-col\"><h3>搜索项</h3><textarea id=\"querySelectText\" placeholder=\"name\"></textarea></div>" +
+        "</div>" +
+        "</div>" +
+        "<div class=\"modal-actions\">" +
+        "<button type=\"button\" id=\"generalQueryCancelBtn\">取消</button>" +
+        "<button type=\"submit\">查询</button>" +
+        "</div></form>";
+      const form = document.getElementById("generalQueryForm");
+      document.getElementById("generalQueryCancelBtn").addEventListener("click", () => generalQueryModal.close());
+      form.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        await submitGeneralQuery();
+      });
+      generalQueryModal.showModal();
+    }
+
+    function openGeneralQueryResultModal(result) {
+      generalQueryResultModal.innerHTML =
+        "<form method=\"dialog\">" +
+        "<div class=\"modal-head\">通用查询结果</div>" +
+        "<div class=\"modal-body\"><div class=\"result-box\">" + esc(JSON.stringify(result, null, 2)) + "</div></div>" +
+        "<div class=\"modal-actions\"><button type=\"submit\">关闭</button></div>" +
+        "</form>";
+      generalQueryResultModal.showModal();
+    }
+
+    function openTracksExtSearchResultModal(result) {
+      generalQueryResultModal.innerHTML =
+        "<form method=\"dialog\">" +
+        "<div class=\"modal-head\">LNG_TRACKS 扩展查找结果</div>" +
+        "<div class=\"modal-body\"><div class=\"result-box\">" + esc(JSON.stringify(result, null, 2)) + "</div></div>" +
+        "<div class=\"modal-actions\"><button type=\"submit\">关闭</button></div>" +
+        "</form>";
+      generalQueryResultModal.showModal();
+    }
+
+    async function submitGeneralQuery() {
+      if (busyAction) return;
+      busyAction = true;
+      try {
+        const refText = document.getElementById("queryReferenceText").value;
+        const selText = document.getElementById("querySelectText").value;
+        const reference = parseReferenceText(refText);
+        const select = parseSelectText(selText);
+        const result = await postJson("/query/arbitrary", { reference, select });
+        generalQueryModal.close();
+        openGeneralQueryResultModal(result);
+        setStatus("通用查询完成，共 " + (Array.isArray(result) ? result.length : 0) + " 条。", "ok");
+      } catch (e) {
+        setStatus(e.message || String(e), "error");
+      } finally {
+        busyAction = false;
+      }
+    }
+
+    openGeneralQueryBtn.addEventListener("click", openGeneralQueryModal);
+    window.addEventListener("load", refresh);
+  </script>
+</body>
+</html>
