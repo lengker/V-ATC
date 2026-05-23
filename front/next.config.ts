@@ -5,10 +5,15 @@ const nextConfig: NextConfig = {
   outputFileTracingRoot: require("path").join(__dirname),
   async rewrites() {
     const backendUrl = process.env.ALPHA_BACKEND_URL || "http://127.0.0.1:8000";
+    const a2BackendUrl = process.env.A2_BACKEND_URL || "http://127.0.0.1:8001";
     return [
       {
         source: "/api/v1/:path*",
         destination: `${backendUrl}/api/v1/:path*`,
+      },
+      {
+        source: "/api/a2/:path*",
+        destination: `${a2BackendUrl}/api/a2/:path*`,
       },
       {
         source: "/health",

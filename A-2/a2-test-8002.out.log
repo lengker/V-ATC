@@ -1,0 +1,2 @@
+INFO:     127.0.0.1:51868 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51868 - "GET /api/a2/voice/query?startTime=2026-05-19%2003%3A20%3A00&endTime=2026-05-19%2003%3A45%3A00&icaoCode=VHHH&band=string&pageNum=1&pageSize=5 HTTP/1.1" 200 OK

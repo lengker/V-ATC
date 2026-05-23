@@ -46,6 +46,7 @@ type VoiceInfo = {
   file_name?: string | null;
   start_at?: string | null;
   end_at?: string | null;
+  downloadUrl?: string | null;
 };
 
 type AsrResult = {
@@ -206,6 +207,37 @@ export type A2LiveAtcExecute = {
   speed_limit_kbps?: number;
 };
 
+export type A2DownloadExecute = {
+  task_id: number;
+  source_url: string;
+  icao_code?: string;
+  band?: string;
+  start_time?: string;
+  end_time?: string;
+  original_time?: string;
+  speed_limit_kbps?: number;
+};
+
+export type A2RealtimeTaskCreate = {
+  task_name: string;
+  icao_code: string;
+  band: string;
+  source_url: string;
+  segment_seconds?: number;
+  stream_format?: string;
+};
+
+export type A2RealtimeState = {
+  taskId: number;
+  running: boolean;
+  monitoring: boolean;
+  receiving: boolean;
+  segmentsSaved: number;
+  lastSegmentAt?: string | null;
+  lastError?: string | null;
+  streamUrl?: string | null;
+};
+
 export type A2HistoryImport = {
   file: File;
   taskId: number;
@@ -361,9 +393,14 @@ function mapAsrToTimestamp(item: AsrResult, index: number): VoiceTimestamp {
 }
 
 function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): AudioData {
+  const downloadUrl = item.downloadUrl
+    ? `${A2_API_BASE_URL}${item.downloadUrl}`
+    : item.file_path
+      ? `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(item.unique_id)}`
+      : "";
   return {
     id: item.unique_id,
-    url: item.file_path || "",
+    url: downloadUrl,
     duration: Math.max(secondsBetween(item.start_at, item.end_at), ...timestamps.map((ts) => ts.endTime), 0),
     timestamps,
     metadata: {
@@ -561,6 +598,18 @@ export const a2VoiceAPI = {
     }
   },
 
+  executeDownloadTask: async (payload: A2DownloadExecute): Promise<ApiResponse<A2VoiceRecord>> => {
+    try {
+      const result = await fetchA2<A2VoiceRecord>("/api/a2/tasks/download/execute", {
+        method: "POST",
+        body: JSON.stringify({ speed_limit_kbps: 0, ...payload }),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
   executeLiveAtcDownload: async (
     payload: A2LiveAtcExecute
   ): Promise<ApiResponse<{ taskId?: number; record?: A2VoiceRecord; metadata?: Record<string, unknown> }>> => {
@@ -572,6 +621,63 @@ export const a2VoiceAPI = {
           body: JSON.stringify({ speed_limit_kbps: 0, ...payload }),
         }
       );
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  listRealtimeTasks: async (): Promise<ApiResponse<Record<string, unknown>[]>> => {
+    try {
+      const result = await fetchA2<Record<string, unknown>[]>("/api/a2/tasks/realtime");
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  createRealtimeTask: async (payload: A2RealtimeTaskCreate): Promise<ApiResponse<{ taskId: number }>> => {
+    try {
+      const result = await fetchA2<{ taskId: number }>("/api/a2/tasks/realtime", {
+        method: "POST",
+        body: JSON.stringify({
+          segment_seconds: 60,
+          ...payload,
+        }),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  startRealtimeReceive: async (taskId: number): Promise<ApiResponse<A2RealtimeState>> => {
+    try {
+      const result = await fetchA2<A2RealtimeState>("/api/a2/tasks/realtime/start-receive", {
+        method: "POST",
+        body: JSON.stringify({ task_id: taskId }),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  stopRealtimeReceive: async (taskId: number): Promise<ApiResponse<A2RealtimeState>> => {
+    try {
+      const result = await fetchA2<A2RealtimeState>(`/api/a2/tasks/realtime/${encodeURIComponent(taskId)}/stop-receive`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  getRealtimeState: async (taskId: number): Promise<ApiResponse<A2RealtimeState>> => {
+    try {
+      const result = await fetchA2<A2RealtimeState>(`/api/a2/tasks/realtime/${encodeURIComponent(taskId)}/state`);
       return toApiResponse(result.data);
     } catch (error) {
       return toErrorResponse(error);
