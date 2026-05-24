@@ -366,6 +366,28 @@ function buildA2VoiceFileUrl(uniqueId: string) {
   return `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(uniqueId)}`;
 }
 
+function buildA2VoiceExportUrl(payload: {
+  startTime: string;
+  endTime: string;
+  icaoCode: string;
+  band: string;
+  outputFormat?: "wav" | "mp3";
+}) {
+  return `${A2_API_BASE_URL}/api/a2/voice/export?${buildQuery({
+    startTime: payload.startTime,
+    endTime: payload.endTime,
+    icaoCode: payload.icaoCode,
+    band: payload.band,
+    outputFormat: payload.outputFormat ?? "wav",
+  })}`;
+}
+
+function resolveA2Url(url?: string | null) {
+  if (!url) return "";
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${A2_API_BASE_URL}${url.startsWith("/") ? url : `/${url}`}`;
+}
+
 function parseSeconds(value?: string | null): number | undefined {
   if (!value) return undefined;
   const numeric = Number(value);
@@ -394,9 +416,9 @@ function mapAsrToTimestamp(item: AsrResult, index: number): VoiceTimestamp {
 
 function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): AudioData {
   const downloadUrl = item.downloadUrl
-    ? `${A2_API_BASE_URL}${item.downloadUrl}`
+    ? resolveA2Url(item.downloadUrl)
     : item.file_path
-      ? `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(item.unique_id)}`
+      ? resolveA2Url(item.file_path)
       : "";
   return {
     id: item.unique_id,
@@ -531,6 +553,13 @@ export const audioAPI = {
 
   saveA2AudioMetadata: async (record: A2VoiceRecord): Promise<ApiResponse<{ unique_id: string; version: string }>> => {
     try {
+      const playableWavUrl = buildA2VoiceExportUrl({
+        startTime: record.start_at,
+        endTime: record.end_at,
+        icaoCode: record.icao_code,
+        band: record.band,
+        outputFormat: "wav",
+      });
       const data = await fetchAlpha<{ unique_id: string; version: string }>("/audio/metadata", {
         method: "POST",
         body: JSON.stringify({
@@ -540,8 +569,8 @@ export const audioAPI = {
           band: record.band,
           original_time: record.original_time ?? record.start_at,
           process_time: record.process_time,
-          file_path: buildA2VoiceFileUrl(record.unique_id),
-          file_name: record.file_name,
+          file_path: playableWavUrl,
+          file_name: record.file_name?.replace(/\.[^.]+$/, ".wav") ?? `${record.unique_id}.wav`,
           file_size: record.file_size,
           data_type: record.data_type,
           start_at: record.start_at,
@@ -741,14 +770,7 @@ export const a2VoiceAPI = {
     }
   },
 
-  exportVoiceUrl: (payload: A2VoiceQuery & { outputFormat?: "wav" | "mp3"; icaoCode: string; band: string }) =>
-    `${A2_API_BASE_URL}/api/a2/voice/export?${buildQuery({
-      startTime: payload.startTime,
-      endTime: payload.endTime,
-      icaoCode: payload.icaoCode,
-      band: payload.band,
-      outputFormat: payload.outputFormat ?? "wav",
-    })}`,
+  exportVoiceUrl: buildA2VoiceExportUrl,
 
   fileUrl: buildA2VoiceFileUrl,
 };

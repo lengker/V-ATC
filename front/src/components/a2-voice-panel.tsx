@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import type { AudioData } from "@/types";
 
 const TEXT = {
   alphaSyncFailed: "Alpha \u540c\u6b65\u5931\u8d25",
@@ -27,6 +28,7 @@ const TEXT = {
   fileImportFailed: "\u97f3\u9891\u5bfc\u5165\u5931\u8d25",
   format: "\u683c\u5f0f",
   noRecordReturned: "\u540e\u7aef\u672a\u8fd4\u56de\u8bed\u97f3\u8bb0\u5f55\uff0c\u8bf7\u7a0d\u540e\u67e5\u8be2\u3002",
+  openWaveform: "\u8f7d\u5165\u6ce2\u5f62",
   query: "\u67e5\u8be2",
   queryComplete: "\u67e5\u8be2\u5b8c\u6210",
   queryFailed: "\u67e5\u8be2\u5931\u8d25",
@@ -83,7 +85,15 @@ function isA2VoiceRecord(value: unknown): value is A2VoiceRecord {
   );
 }
 
-export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: () => void }) {
+export function A2VoicePanel({
+  onRefreshRecordings,
+  onSelectRecording,
+  onLoadRecording,
+}: {
+  onRefreshRecordings?: () => void;
+  onSelectRecording?: (id: string) => void;
+  onLoadRecording?: (audio: AudioData) => void;
+}) {
   const { toast } = useToast();
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const [icaoCode, setIcaoCode] = useState("VHHH");
@@ -98,6 +108,33 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
   const [records, setRecords] = useState<A2VoiceRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [realtimeTaskId, setRealtimeTaskId] = useState<number | null>(null);
+
+  const recordToAudioData = (record: A2VoiceRecord): AudioData => {
+    const startMs = Date.parse(record.start_at);
+    const endMs = Date.parse(record.end_at);
+    const duration =
+      Number.isFinite(startMs) && Number.isFinite(endMs)
+        ? Math.max(0, Math.round((endMs - startMs) / 1000))
+        : 0;
+
+    return {
+      id: record.unique_id,
+      url: a2VoiceAPI.exportVoiceUrl({
+        startTime: record.start_at,
+        endTime: record.end_at,
+        icaoCode: record.icao_code,
+        band: record.band,
+        outputFormat: "wav",
+      }),
+      duration,
+      timestamps: [],
+      metadata: {
+        icao: record.icao_code,
+        date: record.original_time ?? record.start_at,
+        frequency: record.band,
+      },
+    };
+  };
 
   const queryPayload = useMemo(
     () => ({
@@ -124,12 +161,23 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
   };
 
   const attachDownloadedRecord = async (record: A2VoiceRecord) => {
+    onLoadRecording?.(recordToAudioData(record));
     setRecords((prev) => [record, ...prev.filter((item) => item.unique_id !== record.unique_id)]);
     setTotal((prev) => Math.max(prev + 1, 1));
     const alphaRes = await audioAPI.saveA2AudioMetadata(record);
     onRefreshRecordings?.();
+    onSelectRecording?.(record.unique_id);
     return alphaRes;
   };
+
+  const openRecordInWaveform = (record: A2VoiceRecord) =>
+    runAction(`open-${record.unique_id}`, async () => {
+      const alphaRes = await attachDownloadedRecord(record);
+      toast({
+        title: TEXT.openWaveform,
+        description: alphaRes.success ? record.unique_id : `${record.unique_id}; ${TEXT.alphaSyncFailed}`,
+      });
+    });
 
   const queryVoice = () =>
     runAction("query", async () => {
@@ -373,7 +421,18 @@ export function A2VoicePanel({ onRefreshRecordings }: { onRefreshRecordings?: ()
           <div className="max-h-36 space-y-1.5 overflow-auto pr-1 text-xs">
             {records.map((record) => (
               <div key={record.unique_id} className="rounded-xl border border-border/60 bg-background/20 p-2">
-                <div className="truncate font-medium">{record.unique_id}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 truncate font-medium">{record.unique_id}</div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0 px-2 text-[11px]"
+                    onClick={() => openRecordInWaveform(record)}
+                    disabled={busyAction !== null}
+                  >
+                    {TEXT.openWaveform}
+                  </Button>
+                </div>
                 <div className="mt-1 text-muted-foreground">
                   {record.icao_code} / {record.band} / {record.start_at} - {record.end_at}
                 </div>

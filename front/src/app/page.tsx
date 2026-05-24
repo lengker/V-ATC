@@ -1,22 +1,17 @@
 "use client";
 
-// 为了让前端在没有后端的情况下也能预览完整 UI，
-// 这里默认使用本地 mock 数据。后续接入后端时，
-// 只需要把 demo 数据替换为调用 API 的结果即可。
-
 import { AnnotationPage } from "@/components/annotation-page";
+import { EmptyState } from "@/components/empty-state";
 import { demoAdsbTrack, demoRecordings, demoRecordingMeta } from "@/mock/demo-data";
+import { audioAPI, adsbAPI } from "@/lib/api";
+import type { ADSBData, AudioData } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { audioAPI, adsbAPI } from "@/lib/api";
-import type { AudioData, ADSBData } from "@/types";
-import { EmptyState } from "@/components/empty-state";
 
 function HomeContent() {
   const router = useRouter();
   const params = useSearchParams();
   const audioId = params.get("audioId") ?? demoRecordings[0].id;
-
   const useBackend = process.env.NEXT_PUBLIC_USE_BACKEND === "1";
 
   const [backendLoading, setBackendLoading] = useState(false);
@@ -24,12 +19,29 @@ function HomeContent() {
   const [backendRecordings, setBackendRecordings] = useState<AudioData[] | null>(null);
   const [backendActive, setBackendActive] = useState<AudioData | null>(null);
   const [backendAdsb, setBackendAdsb] = useState<ADSBData[] | null>(null);
+  const [loadedA2Audio, setLoadedA2Audio] = useState<AudioData | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
   const active = useMemo(
-    () => demoRecordings.find((x) => x.id === audioId) ?? demoRecordings[0],
-    [audioId]
+    () =>
+      loadedA2Audio?.id === audioId
+        ? loadedA2Audio
+        : demoRecordings.find((x) => x.id === audioId) ?? demoRecordings[0],
+    [audioId, loadedA2Audio]
   );
+
+  const demoRecordingsWithLoaded = useMemo(
+    () =>
+      loadedA2Audio
+        ? [loadedA2Audio, ...demoRecordings.filter((item) => item.id !== loadedA2Audio.id)]
+        : demoRecordings,
+    [loadedA2Audio]
+  );
+
+  const handleLoadA2Recording = (audio: AudioData) => {
+    setLoadedA2Audio(audio);
+    router.replace(`/?audioId=${encodeURIComponent(audio.id)}`);
+  };
 
   useEffect(() => {
     if (!useBackend) return;
@@ -42,9 +54,10 @@ function HomeContent() {
       const listRes = await audioAPI.getAudioList();
       if (cancelled) return;
       if (!listRes.success || !listRes.data || listRes.data.length === 0) {
-        const status = listRes.status;
-        const title = status === 404 ? "后端接口不存在（404）" : status === 500 ? "后端服务异常（500）" : "无法加载音频列表";
-        setBackendError({ title, description: listRes.error || "请检查后端是否启动，以及 NEXT_PUBLIC_API_BASE_URL 配置。" });
+        setBackendError({
+          title: "无法加载音频列表",
+          description: listRes.error || "请检查后端是否启动，以及 NEXT_PUBLIC_API_BASE_URL 配置。",
+        });
         setBackendRecordings(null);
         setBackendActive(null);
         setBackendAdsb(null);
@@ -59,21 +72,9 @@ function HomeContent() {
       const audioRes = await audioAPI.getAudio(chosenId);
       if (cancelled) return;
       if (!audioRes.success || !audioRes.data) {
-        const status = audioRes.status;
-        const title = status === 404 ? "音频资源不存在（404）" : status === 500 ? "后端服务异常（500）" : "无法加载音频详情";
-        setBackendError({ title, description: audioRes.error || "请稍后重试。" });
-        setBackendActive(null);
-        setBackendAdsb(null);
-        setBackendLoading(false);
-        return;
-      }
-
-      const audio = audioRes.data;
-      const hasAsrText = Array.isArray(audio.timestamps) && audio.timestamps.some((t) => (t.text ?? "").trim().length > 0);
-      if (!hasAsrText) {
         setBackendError({
-          title: "ASR 文本缺失",
-          description: "当前音频未返回有效转写文本（timestamps 为空或 text 为空）。请确认后端已完成 ASR 处理后再重试。",
+          title: "无法加载音频详情",
+          description: audioRes.error || "请稍后重试。",
         });
         setBackendActive(null);
         setBackendAdsb(null);
@@ -81,20 +82,15 @@ function HomeContent() {
         return;
       }
 
+      const audio = {
+        ...audioRes.data,
+        timestamps: Array.isArray(audioRes.data.timestamps) ? audioRes.data.timestamps : [],
+      };
+
       const adsbRes = await adsbAPI.getADSBData(chosenId);
       if (cancelled) return;
-      if (!adsbRes.success || !adsbRes.data) {
-        const status = adsbRes.status;
-        const title = status === 404 ? "ADSB 数据不存在（404）" : status === 500 ? "后端服务异常（500）" : "无法加载 ADSB 数据";
-        setBackendError({ title, description: adsbRes.error || "请稍后重试。" });
-        setBackendActive(null);
-        setBackendAdsb(null);
-        setBackendLoading(false);
-        return;
-      }
-
       setBackendActive(audio);
-      setBackendAdsb(adsbRes.data);
+      setBackendAdsb(adsbRes.success && adsbRes.data ? adsbRes.data : []);
       setBackendLoading(false);
     };
 
@@ -107,7 +103,7 @@ function HomeContent() {
   if (useBackend) {
     if (backendLoading) {
       return (
-        <div className="min-h-screen grid place-items-center p-4">
+        <div className="grid min-h-screen place-items-center p-4">
           <div className="text-sm text-muted-foreground">加载后端数据中...</div>
         </div>
       );
@@ -115,7 +111,7 @@ function HomeContent() {
 
     if (backendError) {
       return (
-        <div className="min-h-screen p-4 grid place-items-center">
+        <div className="grid min-h-screen place-items-center p-4">
           <EmptyState
             title={backendError.title}
             description={backendError.description}
@@ -127,21 +123,29 @@ function HomeContent() {
       );
     }
 
-    if (backendActive && backendAdsb && backendRecordings) {
+    const effectiveBackendActive =
+      loadedA2Audio?.id === audioId ? loadedA2Audio : backendActive;
+    const effectiveBackendRecordings =
+      loadedA2Audio && backendRecordings
+        ? [loadedA2Audio, ...backendRecordings.filter((item) => item.id !== loadedA2Audio.id)]
+        : backendRecordings;
+
+    if (effectiveBackendActive && backendAdsb && effectiveBackendRecordings) {
       return (
         <AnnotationPage
-          audioData={backendActive}
+          audioData={effectiveBackendActive}
           adsbData={backendAdsb}
-          recordings={backendRecordings}
+          recordings={effectiveBackendRecordings}
           recordingMeta={{}}
           onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+          onLoadRecording={handleLoadA2Recording}
           onRefreshRecordings={() => setReloadToken((x) => x + 1)}
         />
       );
     }
 
     return (
-      <div className="min-h-screen p-4 grid place-items-center">
+      <div className="grid min-h-screen place-items-center p-4">
         <EmptyState
           title="数据未就绪"
           description="后端未返回可用数据，请重试。"
@@ -157,9 +161,10 @@ function HomeContent() {
     <AnnotationPage
       audioData={active}
       adsbData={demoAdsbTrack}
-      recordings={demoRecordings}
+      recordings={demoRecordingsWithLoaded}
       recordingMeta={demoRecordingMeta}
       onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+      onLoadRecording={handleLoadA2Recording}
       onRefreshRecordings={() => setReloadToken((x) => x + 1)}
     />
   );
@@ -167,7 +172,7 @@ function HomeContent() {
 
 export default function Home() {
   return (
-    <Suspense fallback={<div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading page...</div>}>
+    <Suspense fallback={<div className="grid min-h-screen place-items-center text-sm text-muted-foreground">Loading page...</div>}>
       <HomeContent />
     </Suspense>
   );

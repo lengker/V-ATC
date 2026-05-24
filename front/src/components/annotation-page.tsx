@@ -60,6 +60,7 @@ interface AnnotationPageProps {
   recordings?: AudioData[];
   recordingMeta?: Record<string, RecordingMeta>;
   onSelectRecording?: (id: string) => void;
+  onLoadRecording?: (audio: AudioData) => void;
   onRefreshRecordings?: () => void;
 }
 
@@ -69,6 +70,7 @@ export function AnnotationPage({
   recordings = [audioData],
   recordingMeta = {},
   onSelectRecording,
+  onLoadRecording,
   onRefreshRecordings,
 }: AnnotationPageProps) {
   const [timestamps, setTimestamps] = useState<VoiceTimestamp[]>(() => {
@@ -119,6 +121,7 @@ export function AnnotationPage({
         recordings={recordings}
         recordingMeta={recordingMeta}
         onSelectRecording={onSelectRecording}
+        onLoadRecording={onLoadRecording}
         onRefreshRecordings={onRefreshRecordings}
         timestamps={timestamps}
         setTimestamps={setTimestamps}
@@ -339,6 +342,7 @@ function AnnotationPageInner({
   recordings = [audioData],
   recordingMeta = {},
   onSelectRecording,
+  onLoadRecording,
   onRefreshRecordings,
   timestamps,
   setTimestamps,
@@ -717,7 +721,11 @@ function AnnotationPageInner({
               recordingMeta={recordingMeta}
             />
           </div>
-          <A2VoicePanel onRefreshRecordings={onRefreshRecordings} />
+          <A2VoicePanel
+            onRefreshRecordings={onRefreshRecordings}
+            onSelectRecording={onSelectRecording}
+            onLoadRecording={onLoadRecording}
+          />
         </div>
 
         {/* 中间：地图/航迹（整栏用于地图可视化） */}

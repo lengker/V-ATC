@@ -10,3 +10,5 @@ __pycache__/
 venv/
 .DS_Store
 A-2/storage/VHHH/string/
+A-2/storage/tmp/
+A-2/.pytest_cache/
