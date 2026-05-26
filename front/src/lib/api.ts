@@ -227,6 +227,22 @@ export type A2RealtimeTaskCreate = {
   stream_format?: string;
 };
 
+export type A2RealtimeAsxCreate = {
+  taskName: string;
+  icaoCode: string;
+  band: string;
+  asxContent: string;
+  filename?: string;
+  segmentSeconds?: number;
+  preferredRef?: number;
+};
+
+export type A2RealtimeAsxResult = {
+  taskId: number;
+  streamUrl: string;
+  refs: string[];
+};
+
 export type A2RealtimeState = {
   taskId: number;
   running: boolean;
@@ -673,6 +689,30 @@ export const a2VoiceAPI = {
           segment_seconds: 60,
           ...payload,
         }),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  createRealtimeTaskFromAsx: async (payload: A2RealtimeAsxCreate): Promise<ApiResponse<A2RealtimeAsxResult>> => {
+    try {
+      const formData = new FormData();
+      formData.append("taskName", payload.taskName);
+      formData.append("icaoCode", payload.icaoCode);
+      formData.append("band", payload.band);
+      formData.append("segmentSeconds", `${payload.segmentSeconds ?? 60}`);
+      formData.append("preferredRef", `${payload.preferredRef ?? 0}`);
+      formData.append(
+        "file",
+        new Blob([payload.asxContent], { type: "video/x-ms-asf" }),
+        payload.filename ?? "live.asx"
+      );
+
+      const result = await fetchA2<A2RealtimeAsxResult>("/api/a2/tasks/realtime/from-asx", {
+        method: "POST",
+        body: formData,
       });
       return toApiResponse(result.data);
     } catch (error) {

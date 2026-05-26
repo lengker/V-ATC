@@ -26,7 +26,9 @@ def _check_bypass_cloudflare(sb: BaseCase) -> bool:
     wait_time = random.uniform(1, 7)
     tm.sleep(wait_time)
     sb.solve_captcha()
-    return "ATC" in sb.get_title()
+    if "ATC" in sb.get_title():
+        return True
+    return sb.is_element_present("#player2_html5") or sb.is_element_present("#container")
 
 
 @wait("fails to load '#archiveDate'")
@@ -160,7 +162,8 @@ class _BrowserLock:
         return self._held
 
     def __enter__(self) -> None:
-        self._lock.acquire()
+        if not self._lock.acquire(timeout=5):
+            raise ATCDownloadError("Another LiveATC browser download is still running, please retry later")
         self._held = True
 
     def __exit__(self, *args: object) -> None:

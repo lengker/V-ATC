@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Radio, Search, Square, Upload } from "lucide-react";
 import { a2VoiceAPI, audioAPI, type A2VoiceRecord } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -54,9 +54,47 @@ function toLiveAtcDate(value: string) {
   return value.replaceAll("-", "");
 }
 
+function escapeXmlAttribute(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function resolveRealtimeStreamUrl(value: string) {
+  const source = value.trim();
+  try {
+    const url = new URL(source);
+    const mount = url.searchParams.get("m") || url.searchParams.get("mount");
+    if (mount && url.hostname.includes("liveatc.net")) {
+      return `http://d.liveatc.net/${mount}.mp3`;
+    }
+  } catch {
+    return source;
+  }
+  return source;
+}
+
+function buildRealtimeAsxContent(sourceUrl: string) {
+  const streamUrl = resolveRealtimeStreamUrl(sourceUrl);
+  return `<asx version="3.0">
+<entry>
+ <ref href="${escapeXmlAttribute(streamUrl)}"/>
+<abstract>VHHH App/Dep/Dir/Zone</abstract>
+</entry>
+</asx>
+`;
+}
+
 function toDateTimeInputValue(date: Date) {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function toA2UtcDateTime(date: Date) {
+  const pad = (value: number, length = 2) => String(value).padStart(length, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`;
 }
 
 function defaultArchiveStartTime() {
@@ -108,6 +146,8 @@ export function A2VoicePanel({
   const [records, setRecords] = useState<A2VoiceRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [realtimeTaskId, setRealtimeTaskId] = useState<number | null>(null);
+  const realtimeStartedAtRef = useRef<Date | null>(null);
+  const loadedRealtimeRecordIdsRef = useRef<Set<string>>(new Set());
 
   const recordToAudioData = (record: A2VoiceRecord): AudioData => {
     const startMs = Date.parse(record.start_at);
@@ -160,15 +200,65 @@ export function A2VoicePanel({
     }
   };
 
-  const attachDownloadedRecord = async (record: A2VoiceRecord) => {
+  const attachDownloadedRecord = useCallback(async (record: A2VoiceRecord) => {
     onLoadRecording?.(recordToAudioData(record));
-    setRecords((prev) => [record, ...prev.filter((item) => item.unique_id !== record.unique_id)]);
-    setTotal((prev) => Math.max(prev + 1, 1));
+    setRecords((prev) => {
+      const next = [record, ...prev.filter((item) => item.unique_id !== record.unique_id)];
+      setTotal((current) => Math.max(current, next.length));
+      return next;
+    });
     const alphaRes = await audioAPI.saveA2AudioMetadata(record);
     onRefreshRecordings?.();
     onSelectRecording?.(record.unique_id);
     return alphaRes;
-  };
+  }, [onLoadRecording, onRefreshRecordings, onSelectRecording]);
+
+  const syncRealtimeRecords = useCallback(async (showToast = false) => {
+    const startedAt = realtimeStartedAtRef.current;
+    if (!startedAt) return;
+
+    const windowStart = new Date(startedAt.getTime() - 30_000);
+    const windowEnd = new Date(Date.now() + 60_000);
+    const res = await a2VoiceAPI.queryVoice({
+      icaoCode: queryPayload.icaoCode,
+      band: queryPayload.band,
+      startTime: toA2UtcDateTime(windowStart),
+      endTime: toA2UtcDateTime(windowEnd),
+      pageNum: 1,
+      pageSize: 200,
+    });
+    if (!res.success || !res.data) return;
+
+    const realtimeItems = res.data.items.filter((record) => record.data_type === "S");
+    setRecords(realtimeItems);
+    setTotal(realtimeItems.length);
+
+    const newRecords = realtimeItems.filter((record) => !loadedRealtimeRecordIdsRef.current.has(record.unique_id));
+    if (newRecords.length === 0) return;
+
+    newRecords.forEach((record) => loadedRealtimeRecordIdsRef.current.add(record.unique_id));
+    let latestAlphaSuccess = true;
+    for (const record of newRecords) {
+      const alphaRes = await attachDownloadedRecord(record);
+      latestAlphaSuccess = alphaRes.success;
+    }
+    const latest = newRecords[newRecords.length - 1];
+    if (showToast) {
+      toast({
+        title: TEXT.downloadImported,
+        description: latestAlphaSuccess ? latest.unique_id : `${latest.unique_id}; ${TEXT.alphaSyncFailed}`,
+      });
+    }
+  }, [attachDownloadedRecord, queryPayload.band, queryPayload.icaoCode, toast]);
+
+  useEffect(() => {
+    if (!realtimeTaskId) return;
+    const intervalId = window.setInterval(() => {
+      void syncRealtimeRecords();
+    }, 15000);
+    void syncRealtimeRecords();
+    return () => window.clearInterval(intervalId);
+  }, [realtimeTaskId, syncRealtimeRecords]);
 
   const openRecordInWaveform = (record: A2VoiceRecord) =>
     runAction(`open-${record.unique_id}`, async () => {
@@ -190,6 +280,32 @@ export function A2VoicePanel({
       setTotal(res.data.total);
       toast({ title: TEXT.queryComplete, description: `${res.data.total} ${TEXT.recordsHit}` });
     });
+
+  const createAndStartRealtimeFromAsx = async () => {
+    const taskRes = await a2VoiceAPI.createRealtimeTaskFromAsx({
+      taskName: `${queryPayload.icaoCode}-${queryPayload.band}-realtime`,
+      icaoCode: queryPayload.icaoCode,
+      band: queryPayload.band,
+      asxContent: buildRealtimeAsxContent(sourceUrl),
+      filename: `${queryPayload.icaoCode.toLowerCase()}.asx`,
+      segmentSeconds: 60,
+      preferredRef: 0,
+    });
+    if (!taskRes.success || !taskRes.data) {
+      toast({ title: TEXT.realtimeCreateFailed, description: taskRes.error, variant: "destructive" });
+      return;
+    }
+
+    const startRes = await a2VoiceAPI.startRealtimeReceive(taskRes.data.taskId);
+    if (!startRes.success || !startRes.data) {
+      toast({ title: TEXT.realtimeStartFailed, description: startRes.error, variant: "destructive" });
+      return;
+    }
+    setRealtimeTaskId(taskRes.data.taskId);
+    realtimeStartedAtRef.current = new Date();
+    loadedRealtimeRecordIdsRef.current = new Set();
+    toast({ title: TEXT.realtimeStarted, description: `taskId: ${taskRes.data.taskId}` });
+  };
 
   const executeDownload = () =>
     runAction("download", async () => {
@@ -250,26 +366,7 @@ export function A2VoicePanel({
 
   const startRealtimeDownload = () =>
     runAction("realtime-start", async () => {
-      const taskRes = await a2VoiceAPI.createRealtimeTask({
-        task_name: `${queryPayload.icaoCode}-${queryPayload.band}-realtime`,
-        icao_code: queryPayload.icaoCode,
-        band: queryPayload.band,
-        source_url: sourceUrl.trim(),
-        segment_seconds: 30,
-        stream_format: outputFormat,
-      });
-      if (!taskRes.success || !taskRes.data) {
-        toast({ title: TEXT.realtimeCreateFailed, description: taskRes.error, variant: "destructive" });
-        return;
-      }
-
-      const startRes = await a2VoiceAPI.startRealtimeReceive(taskRes.data.taskId);
-      if (!startRes.success || !startRes.data) {
-        toast({ title: TEXT.realtimeStartFailed, description: startRes.error, variant: "destructive" });
-        return;
-      }
-      setRealtimeTaskId(taskRes.data.taskId);
-      toast({ title: TEXT.realtimeStarted, description: `taskId: ${taskRes.data.taskId}` });
+      await createAndStartRealtimeFromAsx();
     });
 
   const stopRealtimeDownload = () =>
@@ -280,8 +377,8 @@ export function A2VoicePanel({
         toast({ title: TEXT.realtimeStopFailed, description: res.error, variant: "destructive" });
         return;
       }
+      await syncRealtimeRecords(true);
       setRealtimeTaskId(null);
-      await queryVoice();
       onRefreshRecordings?.();
       toast({ title: TEXT.realtimeStopped });
     });

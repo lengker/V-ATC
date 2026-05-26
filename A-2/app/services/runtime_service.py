@@ -236,11 +236,18 @@ class RealtimeConnectionManager:
                 self._receive_state[task_id]["streamUrl"] = stream_url
                 self._receive_state[task_id]["lastError"] = None
                 self.repository.update_realtime_status(task_id, 1)
+                parsed = urlparse(str(task["source_url"]))
+                netloc = (parsed.netloc or "").lower()
+                is_liveatc = "liveatc.net" in netloc
+                is_liveatc_web = netloc in ("www.liveatc.net", "liveatc.net")
+
                 headers: dict[str, str] = {"User-Agent": "ATC-A2/1.0"}
                 cookies: dict[str, str] = {}
+                if is_liveatc and not is_liveatc_web:
+                    headers["Referer"] = "https://www.liveatc.net/"
+                    headers["Icy-MetaData"] = "1"
 
-                parsed = urlparse(str(task["source_url"]))
-                if "liveatc.net" in (parsed.netloc or ""):
+                if is_liveatc_web:
                     from app.services.liveatc_downloader import StreamDownloader
 
                     sd = StreamDownloader(str(task["source_url"]), Path("."))
@@ -336,7 +343,7 @@ class RealtimeConnectionManager:
                 current_bytes = bytearray()
                 segment_start = now
 
-        if current_bytes:
+        if current_bytes and (datetime.now(UTC) - segment_start).total_seconds() >= segment_seconds:
             end_time = datetime.now(UTC)
             self._save_segment(task, bytes(current_bytes), segment_start, end_time, extension)
 

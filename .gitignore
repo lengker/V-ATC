@@ -12,3 +12,5 @@ venv/
 A-2/storage/VHHH/string/
 A-2/storage/tmp/
 A-2/.pytest_cache/
+A-2/storage/
+A-2/storage/VHHH/app-dep-dir-zone
