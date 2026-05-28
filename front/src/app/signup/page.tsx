@@ -45,28 +45,28 @@ function SignupForm() {
     });
 
     if (!signup.success) {
-      const error = signup.error || "Sign up failed";
+      const error = signup.error || "注册失败";
       setErrorText(error);
-      toast({ title: "Sign up failed", description: error, variant: "destructive" });
+      toast({ title: "注册失败", description: error, variant: "destructive" });
       setLoading(false);
       return;
     }
 
     const loggedIn = await login({ email: username, password });
     if (!loggedIn.ok) {
-      toast({ title: "Account created", description: "Please log in with your new account." });
+      toast({ title: "账号已创建", description: "请使用新账号登录。" });
       router.replace("/login");
       return;
     }
 
-    toast({ title: "Account created", description: "You are signed in now." });
+    toast({ title: "账号已创建", description: "已为你自动登录。" });
     router.replace(next);
   };
 
   const passwordHint =
     password && confirmPassword && password !== confirmPassword
-      ? "Passwords do not match."
-      : "Username needs 3+ characters. Password needs 6+ characters.";
+      ? "两次输入的密码不一致。"
+      : "用户名至少 3 个字符，密码至少 6 个字符。";
 
   return (
     <div className="min-h-screen grid md:grid-cols-2 bg-zinc-100 text-zinc-900">
@@ -75,13 +75,13 @@ function SignupForm() {
           <div className="h-10 w-10 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center">
             <UserPlus className="h-5 w-5" />
           </div>
-          <div className="text-3xl font-bold">Alpha ATC</div>
+          <div className="text-3xl font-bold">空管语音标注</div>
         </div>
         <div className="max-w-xl">
-          <p className="text-sm uppercase tracking-[0.25em] text-cyan-200 mb-4">Account setup</p>
-          <h1 className="text-6xl font-bold leading-tight">Create your annotation workspace account.</h1>
+          <p className="text-sm uppercase tracking-[0.25em] text-cyan-200 mb-4">账号设置</p>
+          <h1 className="text-6xl font-bold leading-tight">创建你的标注工作台账号</h1>
           <p className="mt-6 text-xl text-zinc-300">
-            New accounts are saved through the Alpha backend and start with the annotator role.
+            新账号会通过 Alpha 后端保存，并默认拥有标注员权限。
           </p>
         </div>
         <div className="text-sm text-zinc-400">账号认证服务</div>
@@ -90,14 +90,14 @@ function SignupForm() {
       <div className="flex items-center justify-center px-8 py-10">
         <div className="w-full max-w-[470px]">
           <div className="mb-10">
-            <h2 className="text-5xl font-bold tracking-tight mb-3">Sign up</h2>
-            <p className="text-zinc-500 text-xl">Create an account with username and password.</p>
+            <h2 className="text-5xl font-bold tracking-tight mb-3">注册账号</h2>
+            <p className="text-zinc-500 text-xl">使用用户名和密码创建账号。</p>
           </div>
 
           <form onSubmit={onSubmit} className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="username" className="text-2xl font-medium">
-                Username
+                用户名
               </Label>
               <Input
                 id="username"
@@ -110,20 +110,20 @@ function SignupForm() {
 
             <div className="space-y-2">
               <Label htmlFor="displayName" className="text-2xl font-medium">
-                Display name
+                显示名称
               </Label>
               <Input
                 id="displayName"
                 value={displayName}
                 onChange={(event) => setDisplayName(event.target.value)}
-                placeholder="Optional"
+                placeholder="可选"
                 className="h-14 text-xl rounded-2xl bg-white border-zinc-200"
               />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="password" className="text-2xl font-medium">
-                Password
+                密码
               </Label>
               <div className="relative">
                 <Input
@@ -137,7 +137,7 @@ function SignupForm() {
                   type="button"
                   onClick={() => setShowPwd((value) => !value)}
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-700"
-                  aria-label={showPwd ? "Hide password" : "Show password"}
+                  aria-label={showPwd ? "隐藏密码" : "显示密码"}
                 >
                   {showPwd ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
                 </button>
@@ -146,7 +146,7 @@ function SignupForm() {
 
             <div className="space-y-2">
               <Label htmlFor="confirmPassword" className="text-2xl font-medium">
-                Confirm password
+                确认密码
               </Label>
               <Input
                 id="confirmPassword"
@@ -167,13 +167,13 @@ function SignupForm() {
               disabled={!valid || loading}
               className="w-full h-14 rounded-2xl text-2xl bg-zinc-900 hover:bg-zinc-800 text-white"
             >
-              {loading ? "Creating..." : "Create account"}
+              {loading ? "正在创建..." : "创建账号"}
             </Button>
 
             <div className="text-center text-lg text-zinc-600">
-              Already have an account?{" "}
+              已有账号？{" "}
               <Link href="/login" className="font-semibold text-zinc-900 hover:underline">
-                Log in
+                登录
               </Link>
             </div>
           </form>
@@ -185,7 +185,7 @@ function SignupForm() {
 
 export default function SignupPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading signup...</div>}>
+    <Suspense fallback={<div className="min-h-screen grid place-items-center text-sm text-muted-foreground">正在加载注册页...</div>}>
       <SignupForm />
     </Suspense>
   );

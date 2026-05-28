@@ -433,7 +433,7 @@ export function A2VoicePanel({
       <CardContent className="space-y-2.5 px-3 py-3">
         <div className="grid grid-cols-2 gap-1.5">
           <div className="space-y-1">
-            <Label className="text-xs">ICAO</Label>
+            <Label className="text-xs">机场四字码</Label>
             <Input value={icaoCode} onChange={(e) => setIcaoCode(e.target.value)} className="h-8 text-xs" />
           </div>
           <div className="space-y-1">

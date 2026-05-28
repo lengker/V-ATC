@@ -65,7 +65,7 @@ export function TargetsPanel({
   return (
     <Card className="rounded-3xl border-border/70 efb-panel efb-glow">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Targets</CardTitle>
+        <CardTitle className="text-base">目标</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <Input

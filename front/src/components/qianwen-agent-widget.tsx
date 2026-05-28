@@ -195,7 +195,7 @@ export function QianwenAgentWidget({
             <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
               {chat.length === 0 ? (
                 <div className="text-xs text-muted-foreground leading-relaxed">
-                  点击发送后，智能体会基于你当前选中的时间戳文本给出建议。若返回了 <code className="text-primary">suggestedText</code>，你可以一键应用到当前时间戳。
+                  点击发送后，智能体会基于你当前选中的时间戳文本给出建议。若返回了建议文本，你可以一键应用到当前时间戳。
                 </div>
               ) : null}
 

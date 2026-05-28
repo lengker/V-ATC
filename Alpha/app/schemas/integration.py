@@ -33,7 +33,6 @@ class AsrResultRequest(BaseModel):
     unique_id: str | None = None
     vad_segments: dict | list | str | None = None
     transcript: str
-    confidence: float | None = None
     engine: str | None = None
     start_time: str | None = None
     end_time: str | None = None
@@ -72,7 +71,6 @@ class AsrResultOut(BaseModel):
     unique_id: str | None = None
     vad_segments: str | None = None
     transcript: str
-    confidence: float | None = None
     engine: str | None = None
     start_time: str | None = None
     end_time: str | None = None

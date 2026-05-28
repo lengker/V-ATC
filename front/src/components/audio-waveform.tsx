@@ -1003,6 +1003,38 @@ export const AudioWaveform = memo(
         )}
       </div>
 
+      {timestamps.length > 0 && (
+        <div className="rounded-xl border border-border/45 bg-background/30 p-2">
+          <div className="flex max-h-28 flex-col gap-1.5 overflow-y-auto pr-1">
+            {[...timestamps]
+              .sort((a, b) => a.startTime - b.startTime)
+              .map((timestamp) => {
+                const active = deferredCurrentTime >= timestamp.startTime && deferredCurrentTime <= timestamp.endTime;
+                return (
+                  <button
+                    key={timestamp.id}
+                    type="button"
+                    onClick={() => handleTimestampClick(timestamp)}
+                    className={cn(
+                      "flex min-h-9 w-full items-start gap-2 rounded-lg border px-2 py-1.5 text-left text-xs transition-colors",
+                      active
+                        ? "border-primary/70 bg-primary/15 text-foreground"
+                        : "border-border/45 bg-muted/15 text-muted-foreground hover:bg-muted/30"
+                    )}
+                  >
+                    <span className="shrink-0 font-mono tabular-nums">
+                      {formatTime(timestamp.startTime)} - {formatTime(timestamp.endTime)}
+                    </span>
+                    <span className="min-w-0 flex-1 break-words">
+                      {timestamp.text.trim() || "等待识别文本"}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
       <div className="audio-control-cluster">
         <div className="flex flex-wrap items-center gap-1.5">
           <Button

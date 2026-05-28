@@ -60,6 +60,21 @@ type AsrResult = {
   end_time?: string | null;
 };
 
+type AlphaAsrRecognizeResult = {
+  result_id: string;
+  unique_id: string;
+  transcript: string;
+  start_time: string;
+  end_time: string;
+  engine: string;
+  vad_segments?: Array<{
+    start: number;
+    end: number;
+    text?: string;
+    lang?: string;
+  }>;
+};
+
 type PageResult<T> = {
   items: T[];
   total: number;
@@ -302,11 +317,14 @@ async function fetchAlpha<T>(
   options: RequestInit & { auth?: boolean } = {}
 ): Promise<T> {
   const { auth = false, headers, ...rest } = options;
+  const isFormData = typeof FormData !== "undefined" && rest.body instanceof FormData;
   const token = getAccessToken();
   const requestHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
     ...(headers as Record<string, string> | undefined),
   };
+  if (!isFormData && !requestHeaders["Content-Type"]) {
+    requestHeaders["Content-Type"] = "application/json";
+  }
 
   if (auth && token) {
     requestHeaders.Authorization = `Bearer ${token}`;
@@ -419,15 +437,64 @@ function secondsBetween(start?: string | null, end?: string | null): number {
   return Math.max(0, endSeconds - startSeconds);
 }
 
-function mapAsrToTimestamp(item: AsrResult, index: number): VoiceTimestamp {
+function parseDateSeconds(value?: string | null): number | undefined {
+  if (!value) return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time / 1000 : undefined;
+}
+
+function mapAsrToTimestamp(item: AsrResult, index: number, baseTime?: string | null): VoiceTimestamp {
+  const baseSeconds = parseDateSeconds(baseTime);
+  const absoluteStart = parseDateSeconds(item.start_time);
+  const absoluteEnd = parseDateSeconds(item.end_time);
+  const relativeStart =
+    baseSeconds !== undefined && absoluteStart !== undefined
+      ? Math.max(0, absoluteStart - baseSeconds)
+      : parseSeconds(item.start_time);
+  const relativeEnd =
+    baseSeconds !== undefined && absoluteEnd !== undefined
+      ? Math.max(relativeStart ?? index, absoluteEnd - baseSeconds)
+      : parseSeconds(item.end_time);
+
   return {
     id: item.result_id,
-    startTime: parseSeconds(item.start_time) ?? index,
-    endTime: parseSeconds(item.end_time) ?? index + 1,
+    startTime: relativeStart ?? index,
+    endTime: relativeEnd ?? index + 1,
     text: item.transcript,
     confidence: item.confidence ?? undefined,
     speaker: item.engine ?? undefined,
   };
+}
+
+function parseVadSegments(value?: string | null) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (segment): segment is { start: number; end: number; text?: string; lang?: string } =>
+        segment !== null &&
+        typeof segment === "object" &&
+        Number.isFinite(Number((segment as { start?: unknown }).start)) &&
+        Number.isFinite(Number((segment as { end?: unknown }).end))
+    );
+  } catch {
+    return [];
+  }
+}
+
+function mapAsrResultToTimestamps(item: AsrResult, index: number, baseTime?: string | null): VoiceTimestamp[] {
+  const segments = parseVadSegments(item.vad_segments);
+  if (segments.length === 0) {
+    return [mapAsrToTimestamp(item, index, baseTime)];
+  }
+  return segments.map((segment, segmentIndex) => ({
+    id: `${item.result_id}-${segmentIndex}`,
+    startTime: Math.max(0, Number(segment.start)),
+    endTime: Math.max(Number(segment.start), Number(segment.end)),
+    text: segment.text ?? "",
+    speaker: segment.lang ? `${item.engine ?? "ASR"} / ${segment.lang}` : item.engine ?? undefined,
+  }));
 }
 
 function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): AudioData {
@@ -520,7 +587,67 @@ export const audioAPI = {
       ]);
       const voice = voicePage.items[0];
       if (!voice) throw new Error("audio not found");
-      return toApiResponse(mapVoiceToAudio(voice, asrPage.items.map(mapAsrToTimestamp)));
+      return toApiResponse(
+        mapVoiceToAudio(
+          voice,
+          asrPage.items.flatMap((item, index) =>
+            mapAsrResultToTimestamps(item, index, voice.original_time ?? voice.start_at)
+          )
+        )
+      );
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  recognizeAudio: async (audio: AudioData): Promise<ApiResponse<VoiceTimestamp[]>> => {
+    try {
+      if (!audio.url) throw new Error("audio url is empty");
+      const audioResponse = await fetch(audio.url);
+      if (!audioResponse.ok) {
+        throw new Error(`audio fetch failed: ${audioResponse.status} ${audioResponse.statusText}`);
+      }
+      const blob = await audioResponse.blob();
+      const formData = new FormData();
+      formData.append("file", blob, `${audio.id}.wav`);
+      formData.append("unique_id", audio.id);
+      if (audio.metadata?.date) {
+        formData.append("recording_start_time", audio.metadata.date);
+      }
+      const result = await fetchAlpha<AlphaAsrRecognizeResult>("/recognize", {
+        method: "POST",
+        body: formData,
+        auth: true,
+      });
+      const segmentTimestamps =
+        result.vad_segments
+          ?.filter((segment) => Number.isFinite(segment.start) && Number.isFinite(segment.end))
+          .map((segment, index) => ({
+            id: `${result.result_id}-${index}`,
+            startTime: Math.max(0, Number(segment.start)),
+            endTime: Math.max(Number(segment.start), Number(segment.end)),
+            text: segment.text ?? "",
+            speaker: segment.lang ? `${result.engine} / ${segment.lang}` : result.engine,
+          })) ?? [];
+
+      if (segmentTimestamps.length > 0) {
+        return toApiResponse(segmentTimestamps);
+      }
+
+      return toApiResponse([
+        mapAsrToTimestamp(
+          {
+            result_id: result.result_id,
+            unique_id: result.unique_id,
+            transcript: result.transcript,
+            engine: result.engine,
+            start_time: result.start_time,
+            end_time: result.end_time,
+          },
+          0,
+          audio.metadata?.date
+        ),
+      ]);
     } catch (error) {
       return toErrorResponse(error);
     }

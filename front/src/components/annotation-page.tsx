@@ -11,7 +11,6 @@ import { EfbBottomNav } from "@/components/efb-bottom-nav";
 import { InstrumentPanel } from "@/components/instrument-panel";
 import { LayerToggles, type LayerTogglesState } from "@/components/layer-toggles";
 import { TimeRover } from "@/components/time-rover";
-import { TargetsPanel } from "@/components/targets-panel";
 import { RecordingsPanel } from "@/components/recordings-panel";
 import { A2VoicePanel } from "@/components/a2-voice-panel";
 import { QianwenAgentWidget } from "@/components/qianwen-agent-widget";
@@ -64,6 +63,20 @@ interface AnnotationPageProps {
   onRefreshRecordings?: () => void;
 }
 
+function createPendingAsrTimestamp(audioData: AudioData): VoiceTimestamp[] {
+  if (!audioData.url) return [];
+  const endTime = Math.max(audioData.duration || 0, 1);
+  return [
+    {
+      id: `pending-asr-${audioData.id}`,
+      startTime: 0,
+      endTime,
+      text: "",
+      speaker: "ASR",
+    },
+  ];
+}
+
 export function AnnotationPage({
   audioData,
   adsbData,
@@ -86,7 +99,8 @@ export function AnnotationPage({
       // ignore
     }
     const overrides = loadTimestampOverrides(audioData.id);
-    return applyTimestampOverrides(audioData.timestamps, overrides);
+    const merged = applyTimestampOverrides(audioData.timestamps, overrides);
+    return merged.length > 0 ? merged : createPendingAsrTimestamp(audioData);
   });
 
   const timelineMax = Math.max(
@@ -110,8 +124,9 @@ export function AnnotationPage({
       // ignore
     }
     const overrides = loadTimestampOverrides(audioData.id);
-    setTimestamps(applyTimestampOverrides(audioData.timestamps, overrides));
-  }, [audioData.timestamps]);
+    const merged = applyTimestampOverrides(audioData.timestamps, overrides);
+    setTimestamps(merged.length > 0 ? merged : createPendingAsrTimestamp(audioData));
+  }, [audioData.id, audioData.timestamps, audioData.url, audioData.duration]);
 
   return (
     <PlaybackProvider timelineMax={timelineMax || 60}>
@@ -143,7 +158,7 @@ function VspSourceBanner({
   if (loading) {
     return (
       <Card className="mb-2.5 rounded-2xl border-border/70 p-3 efb-panel">
-        <div className="text-sm text-muted-foreground">Loading VSP/AIP data...</div>
+        <div className="text-sm text-muted-foreground">正在加载 VSP/AIP 数据...</div>
       </Card>
     );
   }
@@ -151,7 +166,7 @@ function VspSourceBanner({
   if (error) {
     return (
       <Card className="mb-2.5 rounded-2xl border-destructive/50 p-3 efb-panel">
-        <div className="text-sm font-semibold text-destructive">VSP/AIP data failed to load</div>
+        <div className="text-sm font-semibold text-destructive">VSP/AIP 数据加载失败</div>
         <div className="mt-1 text-xs text-muted-foreground">{error}</div>
       </Card>
     );
@@ -171,10 +186,10 @@ function VspSourceBanner({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold text-emerald-300">
-            VSP/AIP data loaded
+            VSP/AIP 数据已加载
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Airports {airports}, runways {runways}, frequencies {frequencies}, navaids {navaids}, waypoints {waypoints}, procedures {procedures}, airlines {airlines}
+            机场 {airports}，跑道 {runways}，频率 {frequencies}，导航台 {navaids}，航路点 {waypoints}，程序 {procedures}，航司 {airlines}
           </div>
         </div>
         {airport ? (
@@ -185,7 +200,7 @@ function VspSourceBanner({
         ) : null}
       </div>
       <div className="mt-2 text-xs text-muted-foreground">
-        Map overlay: orange lines are runways, purple labels are Navaids, blue dots are waypoints, green marker is the airport reference point.
+        地图叠加层：橙色线条为跑道，紫色标签为导航台，蓝色点为航路点，绿色标记为机场参考点。
       </div>
     </Card>
   );
@@ -378,6 +393,7 @@ function AnnotationPageInner({
 
   const fullSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestFullDraftRef = useRef<VoiceTimestamp[] | null>(null);
+  const asrRequestedForRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -528,10 +544,49 @@ function AnnotationPageInner({
         }, 600);
       }
     },
-    [audioData.id]
+    [audioData.id, setTimestamps]
   );
 
   // 从音频数据中提取所有唯一的飞机 ICAO24
+  useEffect(() => {
+    if (!audioData.url) return;
+    const hasRecognizedText = [...timestamps, ...audioData.timestamps].some((item) => item.text.trim().length > 0);
+    if (hasRecognizedText) return;
+    if (asrRequestedForRef.current === audioData.id) return;
+
+    let cancelled = false;
+    asrRequestedForRef.current = audioData.id;
+    toast({
+      title: "ASR 识别中",
+      description: audioData.id,
+    });
+
+    audioAPI.recognizeAudio(audioData).then((result) => {
+      if (cancelled) return;
+      if (!result.success || !result.data) {
+        asrRequestedForRef.current = null;
+        toast({
+          title: "ASR 识别失败",
+          description: result.error ?? "后端没有返回识别结果",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const next = result.data.length > 0 ? result.data : createPendingAsrTimestamp(audioData);
+      handleSetTimestamps(next);
+      setSelectedTimestamp(next[0] ?? null);
+      toast({
+        title: "ASR 识别完成",
+        description: "识别结果已加载到语音剪辑",
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [audioData, handleSetTimestamps, timestamps.length, toast]);
+
   const aircraftList = Array.from(
     new Set(adsbData.map((d) => d.icao24))
   );
@@ -703,8 +758,8 @@ function AnnotationPageInner({
   return (
     <div className="min-h-screen flex flex-col efb-surface">
       <EfbTopbar
-        title="ATC Transcriptions & Playback"
-        subtitle={`Audio: ${audioData.id} · Targets: ${aircraftList.length}`}
+        title="ATC 转写与播放"
+        subtitle={`音频：${audioData.id} · 目标：${aircraftList.length}`}
       />
 
       {/* 主内容区 */}
@@ -746,7 +801,7 @@ function AnnotationPageInner({
             </Card>
           </div>
           <div ref={audioSectionRef}>
-            <Card className="overflow-hidden rounded-2xl border-border/70 efb-panel efb-glow">
+            <div className="overflow-hidden rounded-2xl border border-border/70 efb-panel efb-glow">
               <AudioWaveform
                 className="p-3 sm:p-4"
                 ref={audioWaveformRef}
@@ -757,21 +812,27 @@ function AnnotationPageInner({
                 onTimestampClick={handleTimestampClick}
                 onTimestampsChange={handleSetTimestamps}
               />
-            </Card>
+              <div className="border-t border-border/50 p-3 sm:p-4">
+                <TranscriptTimelineEditor
+                  value={timestamps}
+                  currentTime={currentTime}
+                  timelineMax={timelineMax || 60}
+                  onSeek={(t) => setCurrentTime(t)}
+                  onChange={(next) => {
+                    handleSetTimestamps(next);
+                    const active =
+                      next.find((x) => currentTime >= x.startTime && currentTime <= x.endTime) ?? null;
+                    setSelectedTimestamp(active);
+                  }}
+                />
+              </div>
+            </div>
           </div>
         </div>
 
         {/* 右侧：仪表 + 辅助信息 */}
         <div className="col-span-12 flex flex-col gap-2.5 lg:col-span-3 lg:row-span-2">
-          <div className="relative">
-            <TargetsPanel
-              adsbData={adsbData}
-              visibleSet={visibleAircraftSet}
-              onVisibleSetChange={setVisibleAircraftSet}
-              selectedAircraft={selectedAircraft}
-              onSelectAircraft={handleAircraftSelect}
-            />
-            <div className="absolute top-3 right-3 z-20">
+          <div className="flex justify-end">
               <ErrorBoundary name="千问智能体（A-4）" className="w-[320px]">
                 <QianwenAgentWidget
                   audioId={audioData.id}
@@ -781,7 +842,6 @@ function AnnotationPageInner({
                   onApplySuggestedText={handleApplyAiSuggestedText}
                 />
               </ErrorBoundary>
-            </div>
           </div>
           <div ref={settingsSectionRef}>
             <LayerToggles value={layerToggles} onChange={setLayerToggles} />
@@ -804,6 +864,16 @@ function AnnotationPageInner({
 
         {/* 语音剪辑：在原网格内扩宽到左+中区域，不单开整行 */}
         <div ref={transcriptSectionRef} className="col-span-12 lg:col-span-9">
+          <TimestampList
+            timestamps={timestamps}
+            currentTime={currentTime}
+            selectedTimestampId={selectedTimestamp?.id}
+            onTimestampClick={handleTimestampClick}
+            onTimestampEdit={handleTimestampClick}
+          />
+        </div>
+
+        {false && (
           <TranscriptTimelineEditor
             value={timestamps}
             currentTime={currentTime}
@@ -817,7 +887,7 @@ function AnnotationPageInner({
               setSelectedTimestamp(active);
             }}
           />
-        </div>
+        )}
         </div>
       </div>
 

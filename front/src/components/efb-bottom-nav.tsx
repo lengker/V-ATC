@@ -10,11 +10,11 @@ import {
 } from "lucide-react";
 
 const items = [
-  { key: "map", label: "Maps", Icon: MapIcon },
-  { key: "transcripts", label: "Transcriptions", Icon: MessageSquareText },
-  { key: "radio", label: "Radio", Icon: Radio },
-  { key: "audio", label: "Audio", Icon: Waves },
-  { key: "settings", label: "Settings", Icon: Settings },
+  { key: "map", label: "地图", Icon: MapIcon },
+  { key: "transcripts", label: "转写", Icon: MessageSquareText },
+  { key: "radio", label: "电台", Icon: Radio },
+  { key: "audio", label: "音频", Icon: Waves },
+  { key: "settings", label: "设置", Icon: Settings },
 ] as const;
 
 export function EfbBottomNav({

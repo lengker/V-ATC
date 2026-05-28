@@ -172,7 +172,7 @@ function HomeContent() {
 
 export default function Home() {
   return (
-    <Suspense fallback={<div className="grid min-h-screen place-items-center text-sm text-muted-foreground">Loading page...</div>}>
+    <Suspense fallback={<div className="grid min-h-screen place-items-center text-sm text-muted-foreground">正在加载页面...</div>}>
       <HomeContent />
     </Suspense>
   );

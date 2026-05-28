@@ -143,7 +143,7 @@ function Characters({
       className="relative h-[430px] w-full cursor-pointer select-none"
       onClick={poke}
       onDoubleClick={() => setCrazy((v) => !v)}
-      title={crazy ? "Crazy mode ON (double click to off)" : "Double click to toggle crazy mode"}
+      title={crazy ? "狂欢模式已开启，双击关闭" : "双击切换狂欢模式"}
     >
       <style jsx>{`
         @keyframes blink {
@@ -374,7 +374,7 @@ function Characters({
 
       {crazy ? (
         <div className="absolute top-2 right-2 text-[10px] px-2 py-1 rounded-full bg-pink-500/90 text-white font-semibold">
-          CRAZY MODE
+          狂欢模式
         </div>
       ) : null}
     </div>
@@ -429,7 +429,7 @@ export function Component() {
           <div className="h-9 w-9 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center">
             <Mail className="h-4 w-4" />
           </div>
-          <div className="text-3xl font-bold">YourBrand</div>
+          <div className="text-3xl font-bold">空管语音标注</div>
         </div>
 
         <div className="relative z-10">
@@ -438,13 +438,13 @@ export function Component() {
 
         <div className="relative z-10 flex items-center gap-8 text-zinc-300 text-sm">
           <Link href="#" className="hover:text-white transition-colors">
-            Privacy Policy
+            隐私政策
           </Link>
           <Link href="#" className="hover:text-white transition-colors">
-            Terms of Service
+            服务条款
           </Link>
           <Link href="#" className="hover:text-white transition-colors">
-            Contact
+            联系我们
           </Link>
         </div>
       </div>
@@ -454,22 +454,22 @@ export function Component() {
         <div className="w-full max-w-[470px]">
           {/* Mobile characters */}
           <div className="md:hidden mb-8 rounded-2xl overflow-hidden bg-[radial-gradient(circle_at_20%_20%,rgba(99,102,241,0.2),transparent_30%),linear-gradient(135deg,#0f172a_0%,#111827_100%)] p-4">
-            <div className="text-white text-sm font-semibold mb-2">Alpha ATC Labeling</div>
+            <div className="text-white text-sm font-semibold mb-2">空管语音标注</div>
             <div className="h-[180px]">
                 <Characters focus={focus} emailLength={email.length} passwordLength={password.length} />
             </div>
           </div>
 
           <div className="text-center mb-10">
-            <h1 className="text-5xl font-bold tracking-tight mb-3">Welcome back!</h1>
-            <p className="text-zinc-500 text-2xl">Please enter your details</p>
-            <p className="text-xs text-zinc-400 mt-2">UI build: v2</p>
+            <h1 className="text-5xl font-bold tracking-tight mb-3">欢迎回来</h1>
+            <p className="text-zinc-500 text-2xl">请输入账号信息</p>
+            <p className="text-xs text-zinc-400 mt-2">界面版本：v2</p>
           </div>
 
           <form onSubmit={onSubmit} className="space-y-6">
             <div className="space-y-2">
               <Label htmlFor="email" className="text-3xl font-medium">
-                Username
+                用户名
               </Label>
               <Input
                 id="email"
@@ -485,7 +485,7 @@ export function Component() {
 
             <div className="space-y-2">
               <Label htmlFor="password" className="text-3xl font-medium">
-                Password
+                密码
               </Label>
               <div className="relative">
                 <Input
@@ -510,10 +510,10 @@ export function Component() {
             <div className="flex items-center justify-between text-xl">
               <label className="flex items-center gap-2 cursor-pointer">
                 <Checkbox checked={remember} onCheckedChange={(v) => setRemember(Boolean(v))} />
-                <span>Remember for 30 days</span>
+                <span>记住 30 天</span>
               </label>
               <Link href="#" className="hover:underline">
-                Forgot password?
+                忘记密码？
               </Link>
             </div>
 
@@ -522,7 +522,7 @@ export function Component() {
               disabled={!valid || loading}
               className="w-full h-14 rounded-2xl text-3xl bg-zinc-900 hover:bg-zinc-800 text-white"
             >
-              {loading ? "Logging in..." : "Log in"}
+              {loading ? "正在登录..." : "登录"}
             </Button>
 
             <Button
@@ -530,7 +530,7 @@ export function Component() {
               variant="outline"
               className="w-full h-14 rounded-2xl text-3xl bg-white border-zinc-200 text-zinc-900"
             >
-              Log in with Google
+              使用谷歌登录
             </Button>
 
             {errorText ? (
@@ -538,14 +538,14 @@ export function Component() {
             ) : null}
 
             <div className="text-center text-xl text-zinc-600 mt-2">
-              Don&apos;t have an account?{" "}
+              还没有账号？{" "}
               <Link href="/signup" className="font-semibold text-zinc-900 hover:underline">
-                Sign Up
+                注册
               </Link>
             </div>
           </form>
 
-          <div className="mt-6 text-sm text-zinc-500">Demo Page</div>
+          <div className="mt-6 text-sm text-zinc-500">演示页面</div>
         </div>
       </div>
     </div>

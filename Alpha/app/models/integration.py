@@ -1,4 +1,4 @@
-from sqlalchemy import Float, ForeignKey, Integer, String, Text
+from sqlalchemy import ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -95,7 +95,6 @@ class AsrResult(Base):
     unique_id: Mapped[str | None] = mapped_column(String, nullable=True)
     vad_segments: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript: Mapped[str] = mapped_column(Text, nullable=False)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     engine: Mapped[str | None] = mapped_column(String, nullable=True)
     start_time: Mapped[str | None] = mapped_column(String, nullable=True)
     end_time: Mapped[str | None] = mapped_column(String, nullable=True)

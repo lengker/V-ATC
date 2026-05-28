@@ -63,7 +63,7 @@ export function TimeRover({
   return (
     <div className={cn("rounded-2xl border border-border/60 bg-background/20 p-3", className)}>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-semibold text-muted-foreground">Time Rover</div>
+        <div className="text-xs font-semibold text-muted-foreground">时间浏览</div>
         <div className="text-xs text-muted-foreground tabular-nums">
           {formatTime(value)} / {formatTime(max)}
         </div>
@@ -85,7 +85,7 @@ export function TimeRover({
           size="icon"
           className="rounded-full bg-background/30"
           onClick={() => setPlaying((p) => !p)}
-          title={playing ? "Pause" : "Play"}
+          title={playing ? "暂停" : "播放"}
         >
           {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </Button>
@@ -113,7 +113,7 @@ export function TimeRover({
           variant="outline"
           className="rounded-full bg-background/30 h-9 px-3 text-xs"
           onClick={() => setRate((r) => (r === 4 ? 0.5 : r === 2 ? 4 : r === 1 ? 2 : 1))}
-          title="Playback rate"
+          title="播放速度"
         >
           <Zap className="h-4 w-4 mr-2" />
           {rate}x

@@ -10,6 +10,11 @@ import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-re
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
+const HONG_KONG_BOUNDS = L.latLngBounds(
+  [22.05, 113.75],
+  [22.62, 114.45]
+);
+
 interface ADSBMapProps {
   adsbData: ADSBData[];
   visibleAircraftSet?: Set<string>;
@@ -59,6 +64,21 @@ function buildAircraftDivIcon(p: ADSBData, isSelected: boolean) {
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
   });
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatStaticPointKind(kind?: string) {
+  if (kind === "navaid") return "导航台";
+  if (kind === "landmark") return "地标";
+  return "航路点";
 }
 
 export function ADSBMap({
@@ -117,26 +137,6 @@ export function ADSBMap({
     );
   }, [adsbData]);
 
-  const boundsAll = useMemo(() => {
-    const llAll = saneAdsb
-      .map((p) => [p.latitude, p.longitude] as [number, number])
-      .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
-    for (const line of [...(staticLayers?.runways ?? []), ...(staticLayers?.taxiways ?? [])]) {
-      for (const p of line.points) llAll.push([p.lat, p.lon]);
-    }
-    for (const point of [...(staticLayers?.waypoints ?? []), ...(staticLayers?.landmarks ?? [])]) {
-      llAll.push([point.lat, point.lon]);
-    }
-    for (const route of staticLayers?.routeLines ?? []) {
-      for (const p of route.points) llAll.push([p.lat, p.lon]);
-    }
-    for (const zone of staticLayers?.obstacleZones ?? []) {
-      for (const p of zone.polygon) llAll.push([p.lat, p.lon]);
-    }
-
-    return llAll.length ? L.latLngBounds(llAll.map(([a, b]) => L.latLng(a, b))) : null;
-  }, [saneAdsb, staticLayers]);
-
   const trackIndex = useMemo(() => {
     const isVisible = (icao24: string) => {
       return (
@@ -180,6 +180,8 @@ export function ADSBMap({
       zoomControl: false,
       attributionControl: true,
       preferCanvas: true,
+      maxBounds: HONG_KONG_BOUNDS.pad(0.2),
+      maxBoundsViscosity: 0.8,
     });
 
     mapRef.current = map;
@@ -216,8 +218,7 @@ export function ADSBMap({
     const ro = new ResizeObserver(() => map.invalidateSize());
     ro.observe(host);
 
-    // fallback view
-    map.setView([22.308, 113.918], 12);
+    map.fitBounds(HONG_KONG_BOUNDS, { padding: [24, 24], animate: false });
     requestAnimationFrame(() => map.invalidateSize());
 
     return () => {
@@ -320,6 +321,14 @@ export function ADSBMap({
     for (const point of points) {
       const isNavaid = point.kind === "navaid";
       const isLandmark = point.kind === "landmark";
+      const popupHtml = `
+        <div style="min-width:160px">
+          <div style="font-weight:700;margin-bottom:4px">${escapeHtml(point.name)}</div>
+          <div>类型：${escapeHtml(formatStaticPointKind(point.kind))}</div>
+          ${point.note ? `<div>备注：${escapeHtml(point.note)}</div>` : ""}
+          <div>坐标：${Number(point.lat).toFixed(5)}, ${Number(point.lon).toFixed(5)}</div>
+        </div>
+      `;
       L.circleMarker([point.lat, point.lon], {
         radius: isLandmark ? 7 : 5,
         color: isNavaid ? "#a855f7" : isLandmark ? "#10b981" : "#38bdf8",
@@ -328,12 +337,7 @@ export function ADSBMap({
         opacity: 0.95,
         weight: 2,
       })
-        .bindTooltip(`${point.name}${point.note ? ` · ${point.note}` : ""}`, {
-          permanent: isNavaid,
-          direction: "top",
-          offset: [0, -6],
-          className: "text-xs",
-        })
+        .bindPopup(popupHtml)
         .addTo(layer);
     }
   }, [
@@ -374,17 +378,6 @@ export function ADSBMap({
     suspendFollowUntilRef.current = Date.now() + 450;
     map.panTo(latlng, { animate: true, duration: 0.45, easeLinearity: 0.25, noMoveStart: true });
   }, [selectedCurrentPoint, currentTime]);
-
-  const fitOnceRef = useRef(false);
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (fitOnceRef.current) return;
-    if (!boundsAll) return;
-
-    map.fitBounds(boundsAll, { padding: [24, 24] });
-    fitOnceRef.current = true;
-  }, [boundsAll]);
 
   useEffect(() => {
     const layer = markersLayerRef.current;
@@ -543,11 +536,7 @@ export function ADSBMap({
   const handleFitVisible = () => {
     const map = mapRef.current;
     if (!map) return;
-    const ll = filteredPoints
-      .map((p) => [p.latitude, p.longitude] as [number, number])
-      .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
-    if (ll.length === 0) return;
-    map.fitBounds(L.latLngBounds(ll.map(([a, b]) => L.latLng(a, b))), { padding: [24, 24] });
+    map.fitBounds(HONG_KONG_BOUNDS, { padding: [24, 24], animate: true });
   };
 
   const handleFocusSelected = () => {
@@ -560,8 +549,8 @@ export function ADSBMap({
 
   const handleResetView = () => {
     const map = mapRef.current;
-    if (!map || !boundsAll) return;
-    map.fitBounds(boundsAll, { padding: [24, 24] });
+    if (!map) return;
+    map.fitBounds(HONG_KONG_BOUNDS, { padding: [24, 24], animate: true });
   };
 
   return (
@@ -658,38 +647,38 @@ export function ADSBMap({
 
         <div className="absolute top-4 left-4 bg-black/45 backdrop-blur-sm rounded px-2 py-1 text-xs text-muted-foreground border border-border/30">
           <div className="font-mono">z={zoomLevel}</div>
-          <div>{currentPoints.length} targets</div>
-          <div>{filteredPoints.length} pts</div>
+          <div>{currentPoints.length} 个目标</div>
+          <div>{filteredPoints.length} 个点</div>
           {selectedCurrentPoint ? (
-            <div className="text-cyan-300 max-w-[11rem] truncate">SEL: {selectedCurrentPoint.callsign || selectedCurrentPoint.icao24}</div>
+            <div className="text-cyan-300 max-w-[11rem] truncate">已选：{selectedCurrentPoint.callsign || selectedCurrentPoint.icao24}</div>
           ) : null}
         </div>
 
         <div className="absolute bottom-4 left-4 z-[1200] rounded-lg border border-border/30 bg-black/55 px-3 py-2 text-xs text-white/90 backdrop-blur-sm">
-          <div className="mb-1 font-semibold">VSP/AIP overlay</div>
+          <div className="mb-1 font-semibold">VSP/AIP 叠加层</div>
           <div className="flex items-center gap-2">
             <span className="h-1.5 w-6 rounded-full bg-amber-500" />
-            <span>Runway</span>
+            <span>跑道</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
-            <span>Navaid</span>
+            <span>导航台</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-sky-500" />
-            <span>Waypoint</span>
+            <span>航路点</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-            <span>Airport point</span>
+            <span>机场点</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <span className="h-1.5 w-6 rounded-full bg-cyan-400" />
-            <span>Procedure path</span>
+            <span>程序路径</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-sky-500" />
-            <span>Aircraft / trail</span>
+            <span>航空器 / 航迹</span>
           </div>
         </div>
       </div>

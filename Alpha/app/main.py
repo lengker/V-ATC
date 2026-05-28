@@ -14,6 +14,7 @@ OPENAPI_TAGS = [
     {"name": "vsp", "description": "VSP 查询，包括机场、程序、跑道、频率和 Navaid。"},
     {"name": "system", "description": "系统配置、队列观测、失败/死信查询、导出与 consumer 管理。"},
     {"name": "integration", "description": "A-1/A-2/A-3/A-4 协商接入与治理接口。"},
+    {"name": "asr", "description": "语音识别（ASR），基于 SenseVoice 模型的音频转文字。"},
 ]
 
 

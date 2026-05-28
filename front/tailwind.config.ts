@@ -10,9 +10,27 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        body: ["Inter", "sans-serif"],
-        headline: ["Inter", "sans-serif"],
-        code: ['"Source Code Pro"', "monospace"],
+        body: [
+          '"Microsoft YaHei"',
+          '"PingFang SC"',
+          '"Noto Sans CJK SC"',
+          '"Source Han Sans SC"',
+          "sans-serif",
+        ],
+        headline: [
+          '"Microsoft YaHei"',
+          '"PingFang SC"',
+          '"Noto Sans CJK SC"',
+          '"Source Han Sans SC"',
+          "sans-serif",
+        ],
+        code: [
+          '"Microsoft YaHei"',
+          '"PingFang SC"',
+          '"Noto Sans CJK SC"',
+          '"Source Han Sans SC"',
+          "monospace",
+        ],
       },
       colors: {
         background: "hsl(var(--background))",

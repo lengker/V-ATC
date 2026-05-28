@@ -5,7 +5,7 @@ import { Component } from "@/components/ui/animated-characters-login-page";
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen grid place-items-center text-sm text-muted-foreground">Loading login...</div>}>
+    <Suspense fallback={<div className="min-h-screen grid place-items-center text-sm text-muted-foreground">正在加载登录页...</div>}>
       <Component />
     </Suspense>
   );

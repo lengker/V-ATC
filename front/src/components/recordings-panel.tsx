@@ -81,10 +81,10 @@ export function RecordingsPanel({
   };
 
   const tabs: { id: "Radio" | "Cabin" | "Starred" | "Mine"; label: string; icon: typeof Radio }[] = [
-    { id: "Radio", label: "Radio", icon: Radio },
-    { id: "Cabin", label: "Cabin", icon: Headphones },
-    { id: "Starred", label: "Starred", icon: Star },
-    { id: "Mine", label: "Mine", icon: User },
+    { id: "Radio", label: "电台", icon: Radio },
+    { id: "Cabin", label: "客舱", icon: Headphones },
+    { id: "Starred", label: "收藏", icon: Star },
+    { id: "Mine", label: "我的", icon: User },
   ];
 
   return (
@@ -167,7 +167,7 @@ export function RecordingsPanel({
                       toggleStar(r.id);
                     }}
                     className="text-muted-foreground hover:text-foreground"
-                    title="Star"
+                    title="收藏"
                   >
                     <Star className={cn("h-4 w-4", starredSet.has(r.id) ? "fill-yellow-400 text-yellow-400" : "")} />
                   </button>
@@ -175,7 +175,7 @@ export function RecordingsPanel({
                 </div>
               </div>
               <div className="mt-1 text-xs text-muted-foreground truncate">
-                {recordingMeta[r.id]?.channel ?? "Radio"} · {r.metadata?.icao ?? "ICAO -"} · {r.metadata?.frequency ?? "FREQ -"} · {r.metadata?.date ?? "DATE -"}
+                {recordingMeta[r.id]?.channel ?? "电台"} · {r.metadata?.icao ?? "ICAO -"} · {r.metadata?.frequency ?? "频率 -"} · {r.metadata?.date ?? "日期 -"}
               </div>
             </div>
           )}

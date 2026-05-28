@@ -69,7 +69,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const username = email.trim();
     const response = await authAPI.login(username, password);
     if (!response.success || !response.data) {
-      return { ok: false, error: response.error || "Login failed" };
+      return { ok: false, error: response.error || "登录失败" };
     }
 
     const backendUser = response.data.user;

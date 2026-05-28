@@ -146,53 +146,53 @@ export function AuxiliaryInfo({
   return (
     <Card className="h-full rounded-3xl border-border/70 efb-panel efb-glow">
       <CardHeader>
-        <CardTitle>Auxiliary Info</CardTitle>
+        <CardTitle>辅助信息</CardTitle>
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="vsp" className="w-full">
           <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="audio">Audio</TabsTrigger>
-            <TabsTrigger value="aircraft">Aircraft</TabsTrigger>
+            <TabsTrigger value="audio">音频</TabsTrigger>
+            <TabsTrigger value="aircraft">航空器</TabsTrigger>
             <TabsTrigger value="vsp">VSP/AIP</TabsTrigger>
           </TabsList>
 
           <TabsContent value="audio" className="space-y-4 mt-4">
             {audioData ? (
               <>
-                <InfoRow label="Audio ID" value={audioData.id} />
+                <InfoRow label="音频编号" value={audioData.id} />
                 {audioData.metadata?.icao ? <InfoRow label="ICAO" value={audioData.metadata.icao} /> : null}
-                {audioData.metadata?.date ? <InfoRow label="Date" value={audioData.metadata.date} /> : null}
+                {audioData.metadata?.date ? <InfoRow label="日期" value={audioData.metadata.date} /> : null}
                 {audioData.metadata?.frequency ? (
-                  <InfoRow label="Frequency" value={audioData.metadata.frequency} />
+                  <InfoRow label="频率" value={audioData.metadata.frequency} />
                 ) : null}
-                <InfoRow label="Duration" value={formatTime(audioData.duration)} />
-                <InfoRow label="Timestamp count" value={audioData.timestamps.length} />
+                <InfoRow label="时长" value={formatTime(audioData.duration)} />
+                <InfoRow label="时间戳数量" value={audioData.timestamps.length} />
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">No audio data.</p>
+              <p className="text-sm text-muted-foreground">暂无音频数据。</p>
             )}
           </TabsContent>
 
           <TabsContent value="aircraft" className="space-y-4 mt-4">
             {currentAircraftData ? (
               <>
-                <InfoRow label="Callsign" value={currentAircraftData.callsign || "N/A"} />
+                <InfoRow label="呼号" value={currentAircraftData.callsign || "暂无"} />
                 <InfoRow label="ICAO24" value={currentAircraftData.icao24} />
                 <InfoRow
-                  label="Position"
+                  label="位置"
                   value={`${currentAircraftData.latitude.toFixed(4)}, ${currentAircraftData.longitude.toFixed(4)}`}
                 />
-                <InfoRow label="Altitude" value={`${currentAircraftData.altitude} ft`} />
-                <InfoRow label="Speed" value={`${currentAircraftData.speed} kts`} />
-                <InfoRow label="Heading" value={`${currentAircraftData.heading} deg`} />
+                <InfoRow label="高度" value={`${currentAircraftData.altitude} 英尺`} />
+                <InfoRow label="速度" value={`${currentAircraftData.speed} 节`} />
+                <InfoRow label="航向" value={`${currentAircraftData.heading} 度`} />
                 {currentAircraftData.verticalRate !== undefined ? (
-                  <InfoRow label="Vertical rate" value={`${currentAircraftData.verticalRate} ft/min`} />
+                  <InfoRow label="垂直速度" value={`${currentAircraftData.verticalRate} 英尺/分钟`} />
                 ) : null}
-                <InfoRow label="Timestamp" value={formatTime(currentAircraftData.timestamp)} />
+                <InfoRow label="时间戳" value={formatTime(currentAircraftData.timestamp)} />
               </>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {selectedAircraft ? "No aircraft data at the current time." : "Select an aircraft."}
+                {selectedAircraft ? "当前时间暂无航空器数据。" : "请选择航空器。"}
               </p>
             )}
           </TabsContent>
@@ -201,17 +201,17 @@ export function AuxiliaryInfo({
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search VSP: airport, runway, frequency, navaid, airline"
+              placeholder="搜索 VSP：机场、跑道、频率、导航台、航司"
               className="h-10 bg-background/40 border-border/60"
             />
             <ScrollArea className="h-[420px] pr-2">
               {vspLoading ? (
-                <p className="text-sm text-muted-foreground">Loading VSP data...</p>
+                <p className="text-sm text-muted-foreground">正在加载 VSP 数据...</p>
               ) : vspError ? (
                 <p className="text-sm text-destructive">{vspError}</p>
               ) : (
                 <div className="space-y-4">
-                  <VspSection title={`Airports / Runways (${filtered.airports.length + filtered.runways.length})`}>
+                  <VspSection title={`机场 / 跑道（${filtered.airports.length + filtered.runways.length}）`}>
                     {filtered.airports.map((x) => (
                       <VspCard
                         key={x.airport_id}
@@ -219,7 +219,7 @@ export function AuxiliaryInfo({
                         meta={`${x.icao_code}${x.iata_code ? ` / ${x.iata_code}` : ""}`}
                         detail={joinParts([
                           `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
-                          x.elevation_ft != null ? `${x.elevation_ft} ft` : null,
+                          x.elevation_ft != null ? `${x.elevation_ft} 英尺` : null,
                           x.city_name,
                           x.country_name,
                         ])}
@@ -228,11 +228,11 @@ export function AuxiliaryInfo({
                     {filtered.runways.map((x) => (
                       <VspCard
                         key={x.runway_id}
-                        title={`Runway ${x.runway_designator}`}
+                        title={`跑道 ${x.runway_designator}`}
                         meta={`${x.runway_length_m ?? "-"} x ${x.runway_width_m ?? "-"} m`}
                         detail={joinParts([
-                          x.surface_type ?? "Surface -",
-                          x.bearing_deg != null ? `${x.bearing_deg} deg` : null,
+                          x.surface_type ?? "道面 -",
+                          x.bearing_deg != null ? `${x.bearing_deg} 度` : null,
                           x.threshold_lat != null && x.threshold_lng != null
                             ? `THR ${x.threshold_lat.toFixed(5)}, ${x.threshold_lng.toFixed(5)}`
                             : null,
@@ -241,11 +241,11 @@ export function AuxiliaryInfo({
                     ))}
                   </VspSection>
 
-                  <VspSection title={`Frequencies / Navaids / Waypoints (${filtered.frequencies.length + filtered.navaids.length + filtered.waypoints.length})`}>
+                  <VspSection title={`频率 / 导航台 / 航路点（${filtered.frequencies.length + filtered.navaids.length + filtered.waypoints.length}）`}>
                     {filtered.frequencies.map((x) => (
                       <VspCard
                         key={x.frequency_id}
-                        title={x.callsign ?? x.service_designator ?? "Frequency"}
+                        title={x.callsign ?? x.service_designator ?? "频率"}
                         meta={x.frequency}
                         detail={joinParts([x.service_designator, x.hours_of_operation, x.remarks])}
                         metaClassName="text-primary font-semibold"
@@ -255,9 +255,9 @@ export function AuxiliaryInfo({
                       <VspCard
                         key={x.navaid_id}
                         title={x.ident}
-                        meta={x.navaid_type ?? "Navaid"}
+                        meta={x.navaid_type ?? "导航台"}
                         detail={joinParts([
-                          x.frequency ?? "Frequency -",
+                          x.frequency ?? "频率 -",
                           `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
                           x.remarks,
                         ])}
@@ -267,7 +267,7 @@ export function AuxiliaryInfo({
                       <VspCard
                         key={x.waypoint_id}
                         title={x.name}
-                        meta={x.type ?? "Waypoint"}
+                        meta={x.type ?? "航路点"}
                         detail={joinParts([
                           x.description,
                           `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
@@ -283,17 +283,17 @@ export function AuxiliaryInfo({
                         title={`${x.procedure_type.toUpperCase()} ${x.procedure_name}`}
                         meta={x.procedure_code}
                         detail={joinParts([
-                          x.runway ? `Runway ${x.runway}` : null,
+                          x.runway ? `跑道 ${x.runway}` : null,
                           x.waypoint_sequence_json,
                         ])}
                       />
                     ))}
                     {filtered.procedures.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">No procedure records returned by the backend.</p>
+                      <p className="text-xs text-muted-foreground">后端未返回程序记录。</p>
                     ) : null}
                   </VspSection>
 
-                  <VspSection title={`Airlines / Callsigns (${filtered.airlines.length})`}>
+                  <VspSection title={`航司 / 呼号（${filtered.airlines.length}）`}>
                     {filtered.airlines.map((x) => {
                       const icao = parseAirlineIcao(x.extra_json);
                       return (
@@ -302,7 +302,7 @@ export function AuxiliaryInfo({
                           title={x.airline_name}
                           meta={`${x.airline_code}${icao ? ` / ${icao}` : ""}`}
                           detail={joinParts([
-                            `Callsign: ${x.airline_short_name ?? "-"}`,
+                            `呼号：${x.airline_short_name ?? "-"}`,
                             x.country_name,
                           ])}
                         />

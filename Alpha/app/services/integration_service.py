@@ -62,7 +62,6 @@ class IntegrationService:
         result.vad_segments = dumps_json(payload.vad_segments)
         result.engine = payload.engine
         result.transcript = payload.transcript
-        result.confidence = payload.confidence
         result.start_time = payload.start_time
         result.end_time = payload.end_time
         self.db.commit()
