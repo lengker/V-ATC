@@ -129,6 +129,9 @@ async def recognize_existing_atc_audio(
         request: Request,
         audio_id: int,
         source_url: str,
+        file_path: str | None = None,
+        file_name: str | None = None,
+        replace_existing: bool = True,
         db: Session = Depends(get_db)
 ):
     """
@@ -175,7 +178,10 @@ async def recognize_existing_atc_audio(
             results = speech_handler.process_existing_audio_record(
                 db=db,
                 audio_id=audio_id,
-                source_url=source_url
+                source_url=source_url,
+                file_path=file_path,
+                file_name=file_name,
+                replace_existing=replace_existing,
             )
         except SQLAlchemyError as e:
             logger.error(f"数据库操作失败: {str(e)}")

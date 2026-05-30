@@ -1,11 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import "leaflet/dist/leaflet.css";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import { ADSBData } from "@/types";
-import { formatTime } from "@/lib/utils";
-import { buildAdsbTrackIndex, queryAdsbTrailPoints, queryCurrentAdsbPoints } from "@/lib/adsb-interpolation";
+import {
+  buildAdsbTrackIndex,
+  dedupeAdsbPointsByFlight,
+  formatVerticalRateFpm,
+  queryAdsbTrailPoints,
+  queryCurrentAdsbPoints,
+} from "@/lib/adsb-interpolation";
+import {
+  buildLiveTrailLatLngs,
+  queryLivePlaybackPoints,
+  sampleAircraftAtWallTime,
+  trimTrailBehindTip,
+} from "@/lib/adsb-playback";
 import type { VhhhStaticLayers } from "@/mock/vhhh-static";
+import type { LayerTogglesState } from "@/components/layer-toggles";
+import { buildDetourLiveAdsb, DETOUR_ICAO24, getDetourSnapshotAt, getDetourTrailLatLngs } from "@/lib/detour-aircraft";
 import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -17,10 +31,17 @@ interface ADSBMapProps {
   currentTime?: number;
   selectedAircraft?: string;
   onAircraftSelect?: (icao24: string) => void;
-  toggles?: {
-    trails?: boolean;
-    routes?: boolean;
-  };
+  toggles?: Partial<LayerTogglesState>;
+  liveAdsbStatus?: {
+    aircraft: number;
+    error?: string;
+    updatedAt?: number;
+    stale?: boolean;
+    lastDataAt?: number;
+    activeWithinMinutes?: number;
+  } | null;
+  /** 父组件地图轮询计数，确保航迹折线随数据刷新 */
+  mapRefreshRevision?: number;
 }
 
 function clampHeading(deg: unknown) {
@@ -64,30 +85,46 @@ export function ADSBMap({
   selectedAircraft,
   onAircraftSelect,
   toggles,
+  liveAdsbStatus = null,
+  mapRefreshRevision = 0,
 }: ADSBMapProps) {
   const mapHostRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const trailsLayerRef = useRef<L.LayerGroup | null>(null);
-  const staticRoutesLayerRef = useRef<L.LayerGroup | null>(null);
+  const staticLayersRef = useRef<L.LayerGroup | null>(null);
 
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const markerFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
   const trailPolylinesRef = useRef<Map<string, L.Polyline>>(new Map());
+  const trailLatLngsRef = useRef<Map<string, [number, number][]>>(new Map());
+  const liveTrailIdsRef = useRef<Set<string>>(new Set());
+  const liveTrackIndexRef = useRef<ReturnType<typeof buildAdsbTrackIndex>>({ tracks: new Map() });
+  const trackIndexRef = useRef<ReturnType<typeof buildAdsbTrackIndex>>({ tracks: new Map() });
+  const currentTimeRef = useRef(currentTime);
+  const lastMarkerStyleRef = useRef<Map<string, string>>(new Map());
+  const smoothRafRef = useRef<number>(0);
 
   const suspendFollowUntilRef = useRef<number>(0);
+  const mapAliveRef = useRef(false);
 
   const onAircraftSelectRef = useRef(onAircraftSelect);
   onAircraftSelectRef.current = onAircraftSelect;
 
   const [hoveredAircraft, setHoveredAircraft] = useState<ADSBData | null>(null);
+  const [smoothSelectedPoint, setSmoothSelectedPoint] = useState<ADSBData | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(12);
   const [mapReady, setMapReady] = useState(false);
 
   const show = {
+    runways: toggles?.runways ?? true,
+    taxiways: toggles?.taxiways ?? true,
+    waypoints: toggles?.waypoints ?? true,
+    landmarks: toggles?.landmarks ?? true,
     trails: toggles?.trails ?? true,
     routes: toggles?.routes ?? true,
+    obstacles: toggles?.obstacles ?? true,
   };
 
   const normalizedVisibleSet = useMemo(() => {
@@ -97,8 +134,22 @@ export function ADSBMap({
     return s;
   }, [visibleAircraftSet]);
 
-  const saneAdsb = useMemo(() => {
-    return adsbData.filter(
+  const isAircraftVisible = useCallback(
+    (icao24: string) => {
+      if (String(icao24).toLowerCase() === DETOUR_ICAO24) return true;
+      if (!normalizedVisibleSet || normalizedVisibleSet.size === 0) return true;
+      return normalizedVisibleSet.has(String(icao24).toLowerCase());
+    },
+    [normalizedVisibleSet]
+  );
+
+  const dedupeOpts = useMemo(
+    () => ({ minMoveMeters: 120, maxPointsPerFlight: 160 }),
+    []
+  );
+
+  const { liveAdsb, timelineAdsb, rawPointCount } = useMemo(() => {
+    const sane = adsbData.filter(
       (p) =>
         Number.isFinite(p.latitude) &&
         Number.isFinite(p.longitude) &&
@@ -106,48 +157,226 @@ export function ADSBMap({
         Math.abs(p.longitude) <= 180 &&
         Number.isFinite(p.timestamp)
     );
-  }, [adsbData]);
+    const withoutDetour = sane.filter((p) => p.icao24 !== DETOUR_ICAO24);
+    const liveRaw = withoutDetour.filter((p) => p.live);
+    const timelineRaw = withoutDetour.filter((p) => !p.live);
+    const hadDetour = sane.some((p) => p.icao24 === DETOUR_ICAO24);
+    const detourTrack = hadDetour ? buildDetourLiveAdsb() : [];
+    return {
+      liveAdsb: [...dedupeAdsbPointsByFlight(liveRaw, dedupeOpts), ...detourTrack],
+      timelineAdsb: dedupeAdsbPointsByFlight(timelineRaw, dedupeOpts),
+      rawPointCount: sane.length,
+    };
+  }, [adsbData, dedupeOpts]);
+
+  const saneAdsb = useMemo(() => [...liveAdsb, ...timelineAdsb], [liveAdsb, timelineAdsb]);
 
   const boundsAll = useMemo(() => {
     const llAll = saneAdsb
+      .filter((p) => isAircraftVisible(p.icao24))
       .map((p) => [p.latitude, p.longitude] as [number, number])
       .filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon));
 
     return llAll.length ? L.latLngBounds(llAll.map(([a, b]) => L.latLng(a, b))) : null;
-  }, [saneAdsb]);
+  }, [isAircraftVisible, saneAdsb]);
 
-  const trackIndex = useMemo(() => {
-    const isVisible = (icao24: string) => {
-      return (
-        !normalizedVisibleSet ||
-        normalizedVisibleSet.size === 0 ||
-        normalizedVisibleSet.has(String(icao24).toLowerCase())
-      );
-    };
-
-    return buildAdsbTrackIndex(saneAdsb, isVisible);
-  }, [normalizedVisibleSet, saneAdsb]);
-
-  const currentPoints = useMemo(
-    () => queryCurrentAdsbPoints(trackIndex, currentTime),
-    [currentTime, trackIndex]
+  const trackIndex = useMemo(
+    () => buildAdsbTrackIndex(timelineAdsb, isAircraftVisible, dedupeOpts),
+    [dedupeOpts, isAircraftVisible, timelineAdsb]
   );
+
+  const liveTrackIndex = useMemo(
+    () => buildAdsbTrackIndex(liveAdsb, isAircraftVisible, dedupeOpts),
+    [dedupeOpts, isAircraftVisible, liveAdsb]
+  );
+
+  const currentPoints = useMemo(() => {
+    const timeline = queryCurrentAdsbPoints(trackIndex, currentTime);
+    const wallSec = Date.now() / 1000;
+    const liveNow =
+      liveAdsb.length > 0
+        ? queryLivePlaybackPoints(liveTrackIndex, wallSec, { maxExtrapolateSec: 120 })
+        : [];
+    const byIcao = new Map<string, ADSBData>();
+    for (const p of timeline) byIcao.set(p.icao24, p);
+    for (const p of liveNow) {
+      if (p.icao24 === DETOUR_ICAO24) continue;
+      byIcao.set(p.icao24, p);
+    }
+    if (liveAdsb.some((p) => p.icao24 === DETOUR_ICAO24)) {
+      byIcao.set(DETOUR_ICAO24, getDetourSnapshotAt(wallSec));
+    }
+    return [...byIcao.values()];
+  }, [currentTime, liveAdsb, liveTrackIndex, trackIndex, mapRefreshRevision]);
 
   const trailRenderTime = Math.floor((currentTime || 0) * 2) / 2;
-  const filteredPoints = useMemo(
-    () => queryAdsbTrailPoints(trackIndex, trailRenderTime),
-    [trackIndex, trailRenderTime]
-  );
+  const filteredPoints = useMemo(() => {
+    return queryAdsbTrailPoints(trackIndex, trailRenderTime);
+  }, [trackIndex, trailRenderTime, mapRefreshRevision]);
 
-  const selectedCurrentPoint = useMemo(
-    () => currentPoints.find((p) => p.icao24 === selectedAircraft),
-    [currentPoints, selectedAircraft]
-  );
+  useEffect(() => {
+    liveTrackIndexRef.current = liveTrackIndex;
+    trackIndexRef.current = trackIndex;
+    currentTimeRef.current = currentTime;
+  }, [liveTrackIndex, trackIndex, currentTime]);
+
+  const selectedCurrentPoint = useMemo(() => {
+    if (smoothSelectedPoint?.icao24 === selectedAircraft) return smoothSelectedPoint;
+    return currentPoints.find((p) => p.icao24 === selectedAircraft) ?? null;
+  }, [currentPoints, selectedAircraft, smoothSelectedPoint]);
+
+  useEffect(() => {
+    if (!mapReady || !mapAliveRef.current) return;
+
+    let frame = 0;
+    const loop = () => {
+      if (!mapAliveRef.current) return;
+
+      const wallSec = Date.now() / 1000;
+      const animated = new Map<string, ADSBData>();
+
+      for (const p of queryCurrentAdsbPoints(trackIndexRef.current, currentTimeRef.current)) {
+        animated.set(p.icao24, p);
+      }
+
+      for (const [id, arr] of liveTrackIndexRef.current.tracks) {
+        if (id === DETOUR_ICAO24) {
+          animated.set(id, getDetourSnapshotAt(wallSec));
+          continue;
+        }
+        const p = sampleAircraftAtWallTime(arr, wallSec, { maxExtrapolateSec: 120 });
+        if (p) animated.set(id, p);
+      }
+
+      if (selectedAircraft) {
+        const sel = animated.get(selectedAircraft);
+        if (sel && frame % 2 === 0) setSmoothSelectedPoint(sel);
+      } else if (frame % 15 === 0) {
+        setSmoothSelectedPoint((prev) => (prev ? null : prev));
+      }
+
+      for (const [id, p] of animated) {
+        const marker = markersRef.current.get(id);
+        if (!marker) continue;
+        try {
+          marker.setLatLng([p.latitude, p.longitude]);
+        } catch {
+          continue;
+        }
+        const isSelected = id === selectedAircraft;
+        const styleKey = `${Math.round(p.heading)}-${isSelected}`;
+        if (lastMarkerStyleRef.current.get(id) !== styleKey) {
+          marker.setIcon(buildAircraftDivIcon(p, isSelected));
+          marker.setZIndexOffset(isSelected ? 1000 : 0);
+          lastMarkerStyleRef.current.set(id, styleKey);
+        }
+      }
+
+      if (show.trails) {
+        for (const id of liveTrailIdsRef.current) {
+          const line = trailPolylinesRef.current.get(id);
+          if (!line) continue;
+
+          if (id === DETOUR_ICAO24) {
+            const latlngs = getDetourTrailLatLngs(wallSec);
+            if (latlngs.length < 2) continue;
+            try {
+              line.setLatLngs(latlngs);
+            } catch {
+              // ignore
+            }
+            continue;
+          }
+
+          const arr = liveTrackIndexRef.current.tracks.get(id);
+          if (!arr || arr.length < 2) continue;
+          const latlngs = buildLiveTrailLatLngs(arr, wallSec, {
+            maxExtrapolateSec: 120,
+            maxPoints: 200,
+          });
+          if (latlngs.length < 2) continue;
+          try {
+            line.setLatLngs(latlngs);
+          } catch {
+            // ignore
+          }
+        }
+
+        for (const [id, base] of trailLatLngsRef.current) {
+          if (liveTrailIdsRef.current.has(id)) continue;
+          const tip = animated.get(id);
+          const line = trailPolylinesRef.current.get(id);
+          if (!tip || !line || base.length < 2) continue;
+          try {
+            const tipLl: [number, number] = [tip.latitude, tip.longitude];
+            const trimmed = trimTrailBehindTip(
+              [...base.slice(0, -1), tipLl],
+              tipLl
+            );
+            line.setLatLngs(trimmed.length >= 2 ? trimmed : trimmed);
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      const map = mapRef.current;
+      const follow = selectedAircraft ? animated.get(selectedAircraft) : null;
+      if (map && follow && Date.now() >= suspendFollowUntilRef.current) {
+        const host = mapHostRef.current;
+        if (host) {
+          const rect = host.getBoundingClientRect();
+          const w = rect.width;
+          const h = rect.height;
+          if (w > 0 && h > 0) {
+            const MARGIN_PX = 90;
+            const latlng = L.latLng(follow.latitude, follow.longitude);
+            const pt = map.latLngToContainerPoint(latlng);
+            const inSafeX = pt.x >= MARGIN_PX && pt.x <= w - MARGIN_PX;
+            const inSafeY = pt.y >= MARGIN_PX && pt.y <= h - MARGIN_PX;
+            if (!inSafeX || !inSafeY) {
+              suspendFollowUntilRef.current = Date.now() + 450;
+              try {
+                map.panTo(latlng, { animate: true, duration: 0.45, easeLinearity: 0.25, noMoveStart: true });
+              } catch {
+                // ignore
+              }
+            }
+          }
+        }
+      }
+
+      frame++;
+      smoothRafRef.current = requestAnimationFrame(loop);
+    };
+
+    smoothRafRef.current = requestAnimationFrame(loop);
+    return () => {
+      cancelAnimationFrame(smoothRafRef.current);
+      smoothRafRef.current = 0;
+    };
+  }, [mapReady, selectedAircraft, show.trails]);
 
   useEffect(() => {
     const host = mapHostRef.current;
     if (!host) return;
     if (mapRef.current) return;
+
+    mapAliveRef.current = true;
+
+    const safeInvalidateSize = () => {
+      const map = mapRef.current;
+      if (!mapAliveRef.current || !map) return;
+      const container = map.getContainer();
+      if (!container?.isConnected) return;
+      // Leaflet 在卸载/HMR 过程中 _mapPane 可能尚未就绪
+      if (!(map as unknown as { _mapPane?: HTMLElement })._mapPane) return;
+      try {
+        map.invalidateSize();
+      } catch {
+        // ignore teardown races
+      }
+    };
 
     // Defensive cleanup for HMR/StrictMode
     if ((host as any)._leaflet_id) {
@@ -158,7 +387,8 @@ export function ADSBMap({
     const map = L.map(host, {
       zoomControl: false,
       attributionControl: true,
-      preferCanvas: true,
+      // preferCanvas 在频繁 setLatLngs / 组件卸载时易触发 CanvasRenderer._clear 读 undefined.save
+      preferCanvas: false,
     });
 
     mapRef.current = map;
@@ -171,9 +401,9 @@ export function ADSBMap({
 
     baseLayerRef.current = base;
 
-    markersLayerRef.current = L.layerGroup().addTo(map);
+    staticLayersRef.current = L.layerGroup().addTo(map);
     trailsLayerRef.current = L.layerGroup().addTo(map);
-    staticRoutesLayerRef.current = L.layerGroup().addTo(map);
+    markersLayerRef.current = L.layerGroup().addTo(map);
     setMapReady(true);
 
     const onZoomEnd = () => setZoomLevel(map.getZoom());
@@ -193,15 +423,20 @@ export function ADSBMap({
     map.on("zoomstart", onZoomStart);
     map.on("movestart", onMoveStart);
 
-    const ro = new ResizeObserver(() => map.invalidateSize());
-    ro.observe(host);
+    let ro: ResizeObserver | null = null;
+    map.whenReady(() => {
+      safeInvalidateSize();
+      ro = new ResizeObserver(() => safeInvalidateSize());
+      ro.observe(host);
+    });
 
     // fallback view
     map.setView([22.308, 113.918], 12);
-    requestAnimationFrame(() => map.invalidateSize());
+    requestAnimationFrame(() => safeInvalidateSize());
 
     return () => {
-      ro.disconnect();
+      mapAliveRef.current = false;
+      ro?.disconnect();
       setMapReady(false);
       map.off("zoomend", onZoomEnd);
 
@@ -216,13 +451,13 @@ export function ADSBMap({
       for (const pl of trailPolylinesRef.current.values()) pl.remove();
       trailPolylinesRef.current.clear();
 
+      staticLayersRef.current?.remove();
       trailsLayerRef.current?.remove();
-      staticRoutesLayerRef.current?.remove();
       markersLayerRef.current?.remove();
       baseLayerRef.current?.remove();
 
+      staticLayersRef.current = null;
       trailsLayerRef.current = null;
-      staticRoutesLayerRef.current = null;
       markersLayerRef.current = null;
       baseLayerRef.current = null;
 
@@ -236,47 +471,19 @@ export function ADSBMap({
     };
   }, []);
 
-  // Smart viewport follow: keep selected aircraft inside a safe margin.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (!selectedCurrentPoint) return;
-
-    // If user is interacting or we just moved the map, don't fight.
-    if (Date.now() < suspendFollowUntilRef.current) return;
-
-    const host = mapHostRef.current;
-    if (!host) return;
-
-    const rect = host.getBoundingClientRect();
-    const w = rect.width;
-    const h = rect.height;
-    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return;
-
-    const MARGIN_PX = 90;
-    const latlng = L.latLng(selectedCurrentPoint.latitude, selectedCurrentPoint.longitude);
-    const p = map.latLngToContainerPoint(latlng);
-
-    const inSafeX = p.x >= MARGIN_PX && p.x <= w - MARGIN_PX;
-    const inSafeY = p.y >= MARGIN_PX && p.y <= h - MARGIN_PX;
-    if (inSafeX && inSafeY) return;
-
-    suspendFollowUntilRef.current = Date.now() + 450;
-    map.panTo(latlng, { animate: true, duration: 0.45, easeLinearity: 0.25, noMoveStart: true });
-  }, [selectedCurrentPoint, currentTime]);
-
   const fitOnceRef = useRef(false);
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    if (!mapAliveRef.current || !map) return;
     if (fitOnceRef.current) return;
-    if (!boundsAll) return;
+    if (!boundsAll || saneAdsb.length < 2) return;
 
     map.fitBounds(boundsAll, { padding: [24, 24] });
     fitOnceRef.current = true;
-  }, [boundsAll]);
+  }, [boundsAll, saneAdsb.length]);
 
   useEffect(() => {
+    if (!mapAliveRef.current || !mapRef.current) return;
     const layer = markersLayerRef.current;
     if (!layer) return;
 
@@ -331,9 +538,12 @@ export function ADSBMap({
       const existing = markersRef.current.get(p.icao24);
       if (existing) {
         cancelFadeOutIfAny(p.icao24, existing);
-        existing.setLatLng([lat, lon]);
-        existing.setIcon(icon);
         existing.setZIndexOffset(isSelected ? 1000 : 0);
+        const styleKey = `${Math.round(p.heading)}-${isSelected}`;
+        if (lastMarkerStyleRef.current.get(p.icao24) !== styleKey) {
+          existing.setIcon(icon);
+          lastMarkerStyleRef.current.set(p.icao24, styleKey);
+        }
         continue;
       }
 
@@ -352,12 +562,17 @@ export function ADSBMap({
       cancelFadeOutIfAny(p.icao24, marker);
       marker.setZIndexOffset(isSelected ? 1000 : 0);
       markersRef.current.set(p.icao24, marker);
+      lastMarkerStyleRef.current.set(
+        p.icao24,
+        `${Math.round(p.heading)}-${p.icao24 === selectedAircraft}`
+      );
     }
 
     setHoveredAircraft((prev) => (prev ? currentPoints.find((x) => x.icao24 === prev.icao24) ?? prev : prev));
-  }, [currentPoints, selectedAircraft]);
+  }, [currentPoints, selectedAircraft, mapRefreshRevision]);
 
   useEffect(() => {
+    if (!mapAliveRef.current || !mapRef.current) return;
     const layer = trailsLayerRef.current;
     if (!layer) return;
 
@@ -365,12 +580,14 @@ export function ADSBMap({
     if (!show.trails) {
       for (const pl of trailPolylinesRef.current.values()) pl.remove();
       trailPolylinesRef.current.clear();
+      trailLatLngsRef.current.clear();
       return;
     }
 
     // Build per-aircraft track points (sorted)
     const byAircraft = new Map<string, ADSBData[]>();
     for (const p of filteredPoints) {
+      if (liveTrailIdsRef.current.has(p.icao24)) continue;
       const arr = byAircraft.get(p.icao24) ?? [];
       arr.push(p);
       byAircraft.set(p.icao24, arr);
@@ -384,29 +601,37 @@ export function ADSBMap({
       if (!nextIds.has(id)) {
         trailPolylinesRef.current.get(id)?.remove();
         trailPolylinesRef.current.delete(id);
+        trailLatLngsRef.current.delete(id);
       }
     }
 
-    const MAX_POINTS_PER_TRAIL = 220;
+    const MAX_POINTS_PER_TRAIL = 2000;
 
     for (const [icao24, pts] of byAircraft.entries()) {
       if (pts.length < 2) continue;
 
       const isSelected = icao24 === selectedAircraft;
+      const isLiveTrail = pts.some((p) => p.live);
       const color = isSelected ? "#ef4444" : "#3b82f6";
       const weight = isSelected ? 3 : 2;
       const opacity = isSelected ? 0.82 : 0.55;
 
-      const step = Math.max(1, Math.ceil(pts.length / MAX_POINTS_PER_TRAIL));
+      const cap = isLiveTrail ? 200 : MAX_POINTS_PER_TRAIL;
+      const step = Math.max(1, Math.ceil(pts.length / cap));
       const latlngs: L.LatLngExpression[] = [];
       for (let i = 0; i < pts.length; i += step) {
         latlngs.push([pts[i].latitude, pts[i].longitude]);
       }
       const last = pts[pts.length - 1];
-      const lastLatLng = latlngs[latlngs.length - 1] as [number, number] | undefined;
-      if (!lastLatLng || lastLatLng[0] !== last.latitude || lastLatLng[1] !== last.longitude) {
-        latlngs.push([last.latitude, last.longitude]);
-      }
+      const tipLl: [number, number] = [last.latitude, last.longitude];
+      const trimmed = trimTrailBehindTip(
+        latlngs.map((ll) => {
+          const t = ll as [number, number];
+          return [t[0], t[1]] as [number, number];
+        }),
+        tipLl
+      );
+      if (trimmed.length < 2) continue;
 
       let line = trailPolylinesRef.current.get(icao24);
       if (!line) {
@@ -422,21 +647,86 @@ export function ADSBMap({
         trailPolylinesRef.current.set(icao24, line);
       }
 
-      line.setLatLngs(latlngs);
-      line.setStyle({ color, opacity, weight });
+      const tuples = trimmed;
+      trailLatLngsRef.current.set(icao24, tuples);
+
+      try {
+        line.setLatLngs(tuples);
+        line.setStyle({ color, opacity, weight });
+      } catch {
+        // 地图卸载/HMR 竞态时忽略
+      }
     }
-  }, [filteredPoints, selectedAircraft, show.trails]);
+  }, [filteredPoints, selectedAircraft, show.trails, mapRefreshRevision]);
 
   useEffect(() => {
-    const layer = staticRoutesLayerRef.current;
+    if (!mapAliveRef.current || !mapRef.current) return;
+    const layer = trailsLayerRef.current;
     if (!layer) return;
+
+    const nextLiveIds = new Set<string>();
+    if (show.trails && liveAdsb.length > 0) {
+      for (const [icao24, arr] of liveTrackIndex.tracks) {
+        if (arr.length >= 2) nextLiveIds.add(icao24);
+      }
+    }
+
+    for (const id of liveTrailIdsRef.current) {
+      if (nextLiveIds.has(id)) continue;
+      liveTrailIdsRef.current.delete(id);
+      const line = trailPolylinesRef.current.get(id);
+      if (line && !filteredPoints.some((p) => p.icao24 === id)) {
+        line.remove();
+        trailPolylinesRef.current.delete(id);
+        trailLatLngsRef.current.delete(id);
+      }
+    }
+
+    if (!show.trails || liveAdsb.length === 0) {
+      for (const id of [...liveTrailIdsRef.current]) {
+        const line = trailPolylinesRef.current.get(id);
+        if (line) {
+          line.remove();
+          trailPolylinesRef.current.delete(id);
+          trailLatLngsRef.current.delete(id);
+        }
+      }
+      liveTrailIdsRef.current.clear();
+      return;
+    }
+
+    for (const icao24 of nextLiveIds) {
+      liveTrailIdsRef.current.add(icao24);
+      if (trailPolylinesRef.current.has(icao24)) continue;
+      const arr = liveTrackIndex.tracks.get(icao24);
+      if (!arr || arr.length < 2) continue;
+
+      const isSelected = icao24 === selectedAircraft;
+      const color = isSelected ? "#ef4444" : "#3b82f6";
+      const weight = isSelected ? 3 : 2;
+      const opacity = isSelected ? 0.82 : 0.55;
+
+      const line = L.polyline([], {
+        color,
+        opacity,
+        weight,
+        lineCap: "round",
+        lineJoin: "round",
+        interactive: false,
+        bubblingMouseEvents: false,
+      }).addTo(layer);
+      trailPolylinesRef.current.set(icao24, line);
+    }
+  }, [filteredPoints, liveAdsb.length, liveTrackIndex, selectedAircraft, show.trails, mapRefreshRevision]);
+
+  useEffect(() => {
+    const layer = staticLayersRef.current;
+    if (!layer || !mapReady) return;
     layer.clearLayers();
-    if (!show.routes) return;
-    const lines = staticLayers?.routeLines;
-    if (!lines?.length) return;
-    for (const route of lines) {
+
+    const toLatLngs = (points: Array<{ lat: number; lon: number }>) => {
       const latlngs: L.LatLngExpression[] = [];
-      for (const p of route.points) {
+      for (const p of points) {
         if (
           Number.isFinite(p.lat) &&
           Number.isFinite(p.lon) &&
@@ -446,18 +736,126 @@ export function ADSBMap({
           latlngs.push([p.lat, p.lon]);
         }
       }
-      if (latlngs.length < 2) continue;
-      const color =
-        route.kind === "detour" ? "#eab308" : route.kind === "missed" ? "#a855f7" : "#22d3ee";
-      L.polyline(latlngs, {
-        color,
-        weight: 2,
-        opacity: 0.78,
-        dashArray: route.kind === "planned" ? undefined : "8 6",
-        interactive: false,
-      }).addTo(layer);
+      return latlngs;
+    };
+
+    if (show.obstacles) {
+      for (const z of staticLayers?.obstacleZones ?? []) {
+        const latlngs = toLatLngs(z.polygon);
+        if (latlngs.length < 3) continue;
+        const fill =
+          z.kind === "weather"
+            ? "rgba(249, 115, 22, 0.22)"
+            : z.kind === "nfz"
+              ? "rgba(239, 68, 68, 0.18)"
+              : "rgba(120, 113, 108, 0.2)";
+        const stroke =
+          z.kind === "weather"
+            ? "rgba(251, 146, 60, 0.85)"
+            : z.kind === "nfz"
+              ? "rgba(248, 113, 113, 0.9)"
+              : "rgba(168, 162, 158, 0.75)";
+        L.polygon(latlngs, {
+          color: stroke,
+          fillColor: fill,
+          fillOpacity: 1,
+          weight: 1.5,
+          dashArray: "6 4",
+          interactive: false,
+        })
+          .bindTooltip(z.name, { permanent: false, direction: "center", className: "text-xs" })
+          .addTo(layer);
+      }
     }
-  }, [staticLayers, show.routes, mapReady]);
+
+    if (show.runways) {
+      for (const rw of staticLayers?.runways ?? []) {
+        const latlngs = toLatLngs(rw.points);
+        if (latlngs.length < 2) continue;
+        L.polyline(latlngs, {
+          color: "#fde68a",
+          weight: 6,
+          opacity: 0.92,
+          lineCap: "round",
+          interactive: false,
+        }).addTo(layer);
+      }
+    }
+
+    if (show.taxiways) {
+      for (const twy of staticLayers?.taxiways ?? []) {
+        const latlngs = toLatLngs(twy.points);
+        if (latlngs.length < 2) continue;
+        L.polyline(latlngs, {
+          color: "#38bdf8",
+          weight: 3,
+          opacity: 0.82,
+          dashArray: "10 6",
+          lineCap: "round",
+          interactive: false,
+        }).addTo(layer);
+      }
+    }
+
+    if (show.routes) {
+      for (const route of staticLayers?.routeLines ?? []) {
+        const latlngs = toLatLngs(route.points);
+        if (latlngs.length < 2) continue;
+        const color =
+          route.kind === "detour" ? "#eab308" : route.kind === "missed" ? "#a855f7" : "#22d3ee";
+        L.polyline(latlngs, {
+          color,
+          weight: route.kind === "detour" ? 3 : 2,
+          opacity: 0.85,
+          dashArray: route.kind === "planned" ? undefined : "8 6",
+          interactive: false,
+        })
+          .bindTooltip(route.name, { permanent: false, direction: "top", className: "text-xs" })
+          .addTo(layer);
+      }
+    }
+
+    if (show.waypoints) {
+      for (const wp of staticLayers?.waypoints ?? []) {
+        if (!Number.isFinite(wp.lat) || !Number.isFinite(wp.lon)) continue;
+        L.circleMarker([wp.lat, wp.lon], {
+          radius: 7,
+          color: "#22c55e",
+          fillColor: "#22c55e",
+          fillOpacity: 0.75,
+          weight: 2,
+          interactive: false,
+        })
+          .bindTooltip(wp.name, { permanent: true, direction: "right", offset: [8, 0], className: "font-semibold text-xs" })
+          .addTo(layer);
+      }
+    }
+
+    if (show.landmarks) {
+      for (const lm of staticLayers?.landmarks ?? []) {
+        if (!Number.isFinite(lm.lat) || !Number.isFinite(lm.lon)) continue;
+        L.circleMarker([lm.lat, lm.lon], {
+          radius: 8,
+          color: "#fbbf24",
+          fillColor: "#fbbf24",
+          fillOpacity: 0.85,
+          weight: 2,
+          interactive: false,
+        })
+          .bindTooltip(lm.name, { permanent: true, direction: "right", offset: [8, 0], className: "font-semibold text-xs" })
+          .addTo(layer);
+      }
+    }
+  }, [
+    mapReady,
+    staticLayers,
+    show.runways,
+    show.taxiways,
+    show.waypoints,
+    show.landmarks,
+    show.routes,
+    show.obstacles,
+  ]);
 
   const handleZoomIn = () => mapRef.current?.zoomIn();
   const handleZoomOut = () => mapRef.current?.zoomOut();
@@ -491,12 +889,30 @@ export function ADSBMap({
       <div className="px-3 py-2 border-b flex items-center justify-between text-xs">
         <div className="flex items-center gap-3">
           <span className="font-semibold text-foreground">🗺️ ADSB Leaflet 地图</span>
-          <span className="text-muted-foreground hidden sm:inline">动态点位 · 渐变尾迹</span>
-          <span className="text-muted-foreground">t={formatTime(currentTime || 0)}</span>
+          <span className="text-muted-foreground">
+            {liveAdsb.length > 0
+              ? `${new Set(liveAdsb.map((p) => p.icao24)).size} 架在线`
+              : liveAdsbStatus?.stale
+                ? "数据已冻结"
+                : ""}{" "}
+            {saneAdsb.length > 0 ? `${saneAdsb.length} 点` : ""}
+            {rawPointCount > saneAdsb.length
+              ? `（已去重 ${rawPointCount - saneAdsb.length}）`
+              : ""}
+          </span>
         </div>
       </div>
 
       <div className="flex-1 relative overflow-hidden bg-gradient-to-br from-slate-900 to-slate-800">
+        {(liveAdsbStatus?.stale || (liveAdsb.length === 0 && liveAdsbStatus?.error)) ? (
+          <div className="absolute inset-x-4 top-4 z-[1100] rounded-lg border border-amber-500/40 bg-amber-950/80 px-3 py-2 text-xs text-amber-100">
+            {liveAdsbStatus?.error ||
+              "航迹已冻结：数据库里还是旧飞机位置，因为 OpenSky 暂时不让拉新数据。"}
+            <div className="mt-1 text-[10px] opacity-80">
+              处理：关掉所有「a1_live_collector」窗口，只留 1 个；等 3–5 分钟；看窗口里是否出现 opensky= 成功行。
+            </div>
+          </div>
+        ) : null}
         <div className="absolute top-4 right-4 flex flex-col gap-1 z-[1200] pointer-events-auto bg-black/40 backdrop-blur-sm rounded-lg p-1">
           <Button
             variant="ghost"
@@ -568,7 +984,9 @@ export function ADSBMap({
                 </div>
                 <div className="text-muted-foreground/80">
                   <span className="text-xs">爬升率</span>
-                  <div className="text-cyan-300 font-mono">{hoveredAircraft.verticalRate || "—"} f/m</div>
+                  <div className="text-cyan-300 font-mono">
+                    {formatVerticalRateFpm(hoveredAircraft.verticalRate)} f/m
+                  </div>
                 </div>
               </div>
               <div className="text-muted-foreground/70 text-xs border-t border-primary/30 pt-1.5 font-mono">

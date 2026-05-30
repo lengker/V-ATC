@@ -15,7 +15,16 @@
 - A-3 集成：处理请求、状态查询、失败重试、标注同步。
 - A-5 集成：轨迹查询、标注者查询、标注同步、跨模块报告。
 
-## 最新进展
+## 架构概览
+
+- `app/api`：对外 HTTP 接口，负责接收采集、查询、调度控制请求。
+- `app/services/ingestion_scheduler.py`：调度主入口，串联实时采集、历史归档、保存和重试逻辑。
+- `app/services/liveatc_client.py`：LiveATC 解析与下载核心，负责页面解析、候选归档推导、浏览器上下文取流、Cookie 处理和回退。
+- `app/services/storage_service.py`：磁盘空间检查、容量控制和清理。
+- `app/services/ingestion_service.py`：把音频字节写入磁盘并登记数据库元数据。
+- `data/audio/`：真实音频落盘目录，按 realtime / historical 和日期分层。
+
+## 当前实现
 
 当前仓库对 LiveATC 下载已经补充了多条回退路径，按优先级大致如下：
 
@@ -24,10 +33,18 @@
 - Playwright 持久化 profile 或 storage_state，优先使用真实浏览器会话。
 - 浏览器辅助导出 Cookie，允许在真实浏览器中手工完成验证后保存会话。
 - 浏览器鼠标和键盘模拟脚本，尝试更接近人工操作流程。
-- Playwright request context 下载，尽量复用浏览器上下文中的会话状态。
-- 代理池回退，作为网络层的可选补充，不是默认主路径。
+- CloakBrowser 官方入口：安装 `cloakbrowser` 后会自动下载 stealth Chromium，A2 直接使用；仅在需要本地 binary 或下载失败时设置 `CLOAKBROWSER_BINARY_PATH`。
 
-对于当前环境，直接 replay Cookie 到 HTTP 客户端并不总是足够，原因通常是 Cloudflare 需要完整的浏览器上下文。现在的做法是尽量把下载动作放到真实浏览器上下文内完成，再把结果回传到现有保存逻辑。
+当前历史归档的主路径已经切换为浏览器优先：
+
+- 先打开 `archive.php?m=...`。
+- 使用隐藏字段 `#archiveDate` 提交 `date=YYYYMMDD`，并同步 `#archiveDateDisplay` 的 flatpickr 显示值。
+- 严格选择 `select[name='time']` 中实际存在的半小时档位。
+- 跳转到签名 mp3 后，在同一浏览器上下文里用 `fetch(...).arrayBuffer()` 取回字节，再写入本地音频目录。
+
+如果目标时间不在下拉框里，当前实现会直接跳过该候选，不会静默退回到第一项。
+
+Playwright request context 下载仍保留为回退，代理池也仍然保留，但都不是默认主路径。
 
 ## IP 池和代理配置
 
@@ -47,14 +64,16 @@
 
 为了让浏览器回退真正可用，下面这些本机配置会直接影响成功率：
 
-- Chrome 安装位置和 channel 可用性。
-- 本地 Chrome profile 的访问权限，尤其是 `Profile 3` 这类目录。
-- 是否存在正在运行的 Chrome 进程占用同一 profile。
-- Playwright 浏览器是否已安装。
+- CloakBrowser 已安装（`pip install cloakbrowser`），首次使用会自动下载 binary。
+- 如需自定义本地 binary 或下载失败，可设置 `CLOAKBROWSER_BINARY_PATH`。
+- 若使用浏览器辅助导出 Cookie（Playwright/系统 Chrome），确保目标 profile 未被占用。
+- Playwright 仅用于辅助脚本；CloakBrowser 本身不需要 `playwright install chromium`。
 - 本机时间、时区和网络连通性。
 - 是否有扩展、企业策略或防火墙影响 Cloudflare 页面。
 
-相关脚本已经增加了 profile clone、storage_state 导出和模拟鼠标键盘的辅助路径，便于把人工验证后的浏览器状态保存下来继续使用。
+历史归档页面现在是 headed 浏览器优先，因此在服务器或本机上运行时，建议保留可见浏览器上下文，至少在首次验证时不要强制无头模式。相关脚本已经增加了 profile clone、storage_state 导出和模拟鼠标键盘的辅助路径，便于把人工验证后的浏览器状态保存下来继续使用。若启用 CloakBrowser，保持官方默认即可，避免额外的二进制探测逻辑。
+
+- `a2_browser_headless`：浏览器是否无头运行，默认 `true`。
 
 ## 安装与启动
 
@@ -85,7 +104,7 @@ LiveATC 和 `archive.liveatc.net` 可能返回 Cloudflare 403 或挑战页。项
 | `A2_LIVEATC_DOWNLOAD_GAP_MIN_SECONDS` | `3` | 历史文件之间最短等待 |
 | `A2_LIVEATC_DOWNLOAD_GAP_MAX_SECONDS` | `20` | 历史文件之间最长等待 |
 
-历史归档被 403 时，建议先用浏览器人工打开 LiveATC 页面，通过正常页面验证后复制 Cookie，并配置：
+历史归档仍然可能遇到 403，但当前实现会优先使用浏览器上下文内的页面跳转和流式取流，不再依赖单独把签名 URL 丢给普通 HTTP 客户端。Cookie 配置仍然保留作为兜底选项：
 
 ```powershell
 $env:A2_HTTP_COOKIE="你的 Cookie 字符串"
@@ -138,6 +157,12 @@ data/audio/realtime/YYYYMMDD/vhhh_YYYYMMDDTHHMMSSZ.mp3
 data/audio/historical/YYYYMMDD/VHHH5-App-Dep-Dir-Zone-Mon-DD-YYYY-HHMMZ.mp3
 ```
 
+示例文件：
+
+```text
+data/audio/historical/20260526/VHHH5-App-Dep-Dir-Zone-May-26-2026-1130Z.mp3
+```
+
 数据库默认文件：
 
 ```text
@@ -146,7 +171,7 @@ a2_voice.db
 
 每个成功保存的语音文件会在 `voice_files` 表中登记 `file_name`、`file_path`、`icao_code`、`start_time_utc`、`end_time_utc`、`file_size`、`source_url`、`status`、`duration_ms` 和 `a3_process_status`。
 
-`data/`、`*.db`、`.env` 和本地 Cookie 目录都已加入 `.gitignore`。
+`data/`、`*.db`、`.env` 和本地 Cookie 目录都已加入 `.gitignore`，所以你在 Git 里看不到下载文件是正常的，但它们会保留在本地磁盘上。
 
 ## 调度 API
 
@@ -170,7 +195,9 @@ POST /api/v1/ingestion/scheduler/trigger/historical
 
 ## A-3 和 A-5 模块集成
 
-A-2 模块支持与 A-3 预处理模块和 A-5 数据库模块集成。详情见 [A3_A5_INTEGRATION.md](A3_A5_INTEGRATION.md)。
+更完整的对接、部署、数据库和 API 说明请见 [MODULE_INTEGRATION_DEPLOYMENT.md](MODULE_INTEGRATION_DEPLOYMENT.md)。
+
+A-2 模块支持与 A-3 预处理模块和 A-5 数据库模块集成。
 
 A-3 集成接口：
 
@@ -215,7 +242,23 @@ GET  http://127.0.0.1:8000/api/v1/ingestion/scheduler/status
 本次实测结果：
 
 - 实时下载成功，生成 `data/liveatc_verification/audio/realtime/20260511/vhhh_20260511T042548Z.mp3`。
-- 历史下载能生成候选 URL，但当前环境直接访问 `archive.liveatc.net` 返回 `403`，需要配置浏览器人工获取的 `A2_HTTP_COOKIE` 或 `A2_HTTP_COOKIE_FILE` 后重试。
+- 历史下载已通过浏览器上下文成功落盘，示例文件：`data/audio/historical/20260526/VHHH5-App-Dep-Dir-Zone-May-26-2026-1130Z.mp3`，文件大小 7,664,520 字节。
+- 另外也验证过 `2026/5/25 12:00-12:30` 对应的历史音频可正常下载，说明当前归档链路能稳定处理具体半小时档位。
+
+## 部署说明
+
+当前模块已经可以满足课程 A-2 的历史/实时采集主流程，但直接部署到服务器前仍建议确认这些前提：
+
+- 服务器允许一个真实浏览器上下文运行，或能提供与当前 CloakBrowser 配置兼容的 headed 环境。
+- `data/`、数据库文件和本地浏览器 profile 目录都使用持久化磁盘，而不是临时目录。
+- 如果服务器网络环境更严格，仍然可能需要配置代理、Cookie 或本地浏览器 profile。
+- 先做一次 `POST /api/v1/ingestion/scheduler/trigger/historical` 的冒烟测试，再切换到自动调度。
+
+推荐的服务器部署检查顺序是：
+
+1. 确认 `.env` 中的 `DB_URL`、`A2_AUDIO_STORAGE`、`A2_ICAO_CODE` 和浏览器相关配置正确。
+2. 先手动调用一次历史触发接口，确认能在 `data/audio/historical/YYYYMMDD/` 下看到真实 mp3。
+3. 再启动自动调度，观察 `GET /api/v1/ingestion/scheduler/status` 的 `last_historical_downloaded` 和 `last_error`。
 
 ## 独立下载脚本
 
@@ -268,5 +311,5 @@ pytest tests/ -v -m "not network and not e2e and not longrun"
 
 - [ ] 接入 A-1 航迹数据实时同步，自动匹配 `track_id`。
 - [ ] A-4 前端界面对接，支持音频流播放、轨迹展示和标注编辑。
-- [ ] 实现 Broadcastify 官方 API 适配器（推荐优先）
-- [ ] 支持适配器链式回退（多源尝试）
+- [ ] 实现 Broadcastify 官方 API 适配器（推荐优先）。
+- [ ] 支持适配器链式回退（多源尝试）。

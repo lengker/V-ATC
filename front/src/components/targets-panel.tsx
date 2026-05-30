@@ -1,12 +1,22 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ADSBData } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { VirtualList } from "@/components/ui/virtual-list";
+import { cn } from "@/lib/utils";
+
+function latestByIcao(adsbData: ADSBData[]): Map<string, ADSBData> {
+  const map = new Map<string, ADSBData>();
+  for (const p of adsbData) {
+    const prev = map.get(p.icao24);
+    if (!prev || prev.timestamp < p.timestamp) map.set(p.icao24, p);
+  }
+  return map;
+}
 
 export function TargetsPanel({
   adsbData,
@@ -14,34 +24,59 @@ export function TargetsPanel({
   onVisibleSetChange,
   selectedAircraft,
   onSelectAircraft,
+  externalFilterQuery,
 }: {
   adsbData: ADSBData[];
   visibleSet: Set<string>;
   onVisibleSetChange: (next: Set<string>) => void;
   selectedAircraft?: string;
   onSelectAircraft: (icao24: string) => void;
+  /** 顶栏全局搜索命中目标时同步筛选框 */
+  externalFilterQuery?: string;
 }) {
   const [q, setQ] = useState("");
+
+  useEffect(() => {
+    if (externalFilterQuery !== undefined) setQ(externalFilterQuery);
+  }, [externalFilterQuery]);
   const [minAlt, setMinAlt] = useState<string>("");
   const [maxAlt, setMaxAlt] = useState<string>("");
 
+  const latestMap = useMemo(() => latestByIcao(adsbData), [adsbData]);
+
+  const selectedTarget = useMemo(() => {
+    if (!selectedAircraft) return null;
+    return latestMap.get(selectedAircraft) ?? null;
+  }, [latestMap, selectedAircraft]);
+
   const targets = useMemo(() => {
-    const latestByAircraft = new Map<string, ADSBData>();
-    for (const p of adsbData) {
-      const prev = latestByAircraft.get(p.icao24);
-      if (!prev || prev.timestamp < p.timestamp) latestByAircraft.set(p.icao24, p);
-    }
-    const arr = Array.from(latestByAircraft.values()).sort((a, b) => a.icao24.localeCompare(b.icao24));
+    const arr = Array.from(latestMap.values());
     const min = minAlt.trim() ? Number(minAlt) : Number.NEGATIVE_INFINITY;
     const max = maxAlt.trim() ? Number(maxAlt) : Number.POSITIVE_INFINITY;
-    const altFiltered = arr.filter((x) => x.altitude >= min && x.altitude <= max);
+    let filtered = arr.filter((x) => x.altitude >= min && x.altitude <= max);
 
-    if (!q.trim()) return altFiltered;
-    const t = q.trim().toLowerCase();
-    return altFiltered.filter(
-      (x) => (x.callsign ?? "").toLowerCase().includes(t) || x.icao24.toLowerCase().includes(t)
-    );
-  }, [adsbData, q, minAlt, maxAlt]);
+    if (q.trim()) {
+      const t = q.trim().toLowerCase();
+      filtered = filtered.filter(
+        (x) =>
+          (x.callsign ?? "").toLowerCase().includes(t) ||
+          x.icao24.toLowerCase().includes(t)
+      );
+    }
+
+    const sel = selectedAircraft?.toLowerCase();
+    return [...filtered].sort((a, b) => {
+      const aPin = sel && a.icao24.toLowerCase() === sel ? 0 : 1;
+      const bPin = sel && b.icao24.toLowerCase() === sel ? 0 : 1;
+      if (aPin !== bPin) return aPin - bPin;
+      const aVis = visibleSet.has(a.icao24) ? 0 : 1;
+      const bVis = visibleSet.has(b.icao24) ? 0 : 1;
+      if (aVis !== bVis) return aVis - bVis;
+      const labelA = (a.callsign || a.icao24).toLowerCase();
+      const labelB = (b.callsign || b.icao24).toLowerCase();
+      return labelA.localeCompare(labelB);
+    });
+  }, [latestMap, q, minAlt, maxAlt, selectedAircraft, visibleSet]);
 
   const toggle = (icao24: string, checked: boolean) => {
     const next = new Set(visibleSet);
@@ -68,6 +103,63 @@ export function TargetsPanel({
         <CardTitle className="text-base">Targets</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {selectedTarget ? (
+          <div className="rounded-2xl border border-primary/70 bg-primary/10 p-3 shadow-sm shadow-primary/10">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                当前选中
+              </span>
+              <span className="text-[10px] text-muted-foreground">
+                {visibleSet.has(selectedTarget.icao24) ? "地图上显示" : "未勾选显示"}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="w-full text-left"
+              onClick={() => onSelectAircraft(selectedTarget.icao24)}
+            >
+              <div className="text-base font-semibold leading-tight">
+                {selectedTarget.callsign || selectedTarget.icao24}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">{selectedTarget.icao24}</div>
+            </button>
+            <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+              <div>
+                <dt className="text-muted-foreground">高度</dt>
+                <dd className="font-medium tabular-nums">{Math.round(selectedTarget.altitude)} ft</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">速度</dt>
+                <dd className="font-medium tabular-nums">{Math.round(selectedTarget.speed)} kts</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">航向</dt>
+                <dd className="font-medium tabular-nums">
+                  {Number.isFinite(selectedTarget.heading)
+                    ? `${selectedTarget.heading.toFixed(1)}°`
+                    : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">位置</dt>
+                <dd className="font-medium tabular-nums">
+                  {selectedTarget.latitude.toFixed(4)}, {selectedTarget.longitude.toFixed(4)}
+                </dd>
+              </div>
+            </dl>
+            <div className="mt-3 flex items-center gap-2">
+              <Checkbox
+                checked={visibleSet.has(selectedTarget.icao24)}
+                onCheckedChange={(v) => toggle(selectedTarget.icao24, Boolean(v))}
+              />
+              <span className="text-xs text-muted-foreground">在地图上显示该目标</span>
+            </div>
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-border/60 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+            点击地图上的飞机图标，此处将显示该目标详情并置顶到列表
+          </p>
+        )}
         <Input
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -113,7 +205,12 @@ export function TargetsPanel({
             const active = selectedAircraft === t.icao24;
             return (
               <div
-                className={`rounded-xl border p-2 ${active ? "border-primary bg-primary/10" : "border-border/60 bg-background/20"}`}
+                className={cn(
+                  "rounded-xl border p-2",
+                  active
+                    ? "border-primary bg-primary/10 ring-1 ring-primary/30"
+                    : "border-border/60 bg-background/20"
+                )}
               >
                 <div className="flex items-center gap-2">
                   <Checkbox checked={checked} onCheckedChange={(v) => toggle(t.icao24, Boolean(v))} />

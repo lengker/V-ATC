@@ -18,7 +18,7 @@ _utc = utc_datetime
 
 
 class _StreamResponse:
-    def __init__(self, chunks: list[bytes], status_code: int = 200):
+    def __init__(self, chunks: list[bytes | Exception], status_code: int = 200):
         self._chunks = chunks
         self.status_code = status_code
 
@@ -36,6 +36,8 @@ class _StreamResponse:
 
     async def aiter_bytes(self, chunk_size: int = 8192):
         for chunk in self._chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
             yield chunk
 
 
@@ -205,6 +207,7 @@ async def test_capture_realtime_stream_success(mock_db, svc, tmp_audio_storage):
     assert row.start_time_utc == capture_start
     assert row.end_time_utc == capture_end
     assert len(list(realtime_dir.glob("*.mp3"))) == 1
+    assert list(realtime_dir.glob("*.part")) == []
     mock_db.commit.assert_awaited_once()
 
 
@@ -227,3 +230,51 @@ async def test_capture_realtime_stream_zero_bytes_returns_none(svc, tmp_audio_st
     realtime_dir = tmp_audio_storage / "realtime" / capture_start.strftime("%Y%m%d")
     assert row is None
     assert list(realtime_dir.glob("*.mp3")) == []
+    assert list(realtime_dir.glob("*.part")) == []
+
+
+@pytest.mark.asyncio
+async def test_capture_realtime_stream_cleans_temp_file_on_stream_error(svc, mock_db, tmp_audio_storage):
+    stream_response = _StreamResponse([b"abc", RuntimeError("stream interrupted")])
+    client_ctx = _AsyncClientContext(stream_response)
+    capture_start = _utc(2026, 4, 20, 12, 2, 0)
+
+    with patch("app.services.ingestion_service.httpx.AsyncClient", return_value=client_ctx), patch.object(
+        svc, "utc_now", return_value=capture_start
+    ):
+        with pytest.raises(RuntimeError, match="stream interrupted"):
+            await svc.capture_realtime_stream(
+                stream_url="https://d.liveatc.net/vhhh5",
+                timeout_seconds=30,
+                max_bytes=1024,
+            )
+
+    realtime_dir = tmp_audio_storage / "realtime" / capture_start.strftime("%Y%m%d")
+    assert list(realtime_dir.glob("*.mp3")) == []
+    assert list(realtime_dir.glob("*.part")) == []
+    mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_capture_realtime_stream_truncates_last_chunk_to_max_bytes(mock_db, svc, tmp_audio_storage):
+    stream_response = _StreamResponse([b"abcdef"])
+    client_ctx = _AsyncClientContext(stream_response)
+    capture_start = _utc(2026, 4, 20, 12, 3, 0)
+    capture_end = _utc(2026, 4, 20, 12, 3, 1)
+
+    with patch("app.services.ingestion_service.httpx.AsyncClient", return_value=client_ctx), patch.object(
+        svc, "utc_now", side_effect=[capture_start, capture_end]
+    ):
+        row = await svc.capture_realtime_stream(
+            stream_url="https://d.liveatc.net/vhhh5",
+            timeout_seconds=30,
+            max_bytes=3,
+        )
+
+    realtime_dir = tmp_audio_storage / "realtime" / capture_start.strftime("%Y%m%d")
+    files = list(realtime_dir.glob("*.mp3"))
+    assert row is not None
+    assert row.file_size == 3
+    assert len(files) == 1
+    assert files[0].read_bytes() == b"abc"
+    assert list(realtime_dir.glob("*.part")) == []

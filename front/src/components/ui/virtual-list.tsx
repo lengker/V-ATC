@@ -24,6 +24,9 @@ export type VirtualListProps<T> = {
   getKey?: (item: T, index: number) => React.Key;
   renderItem: (item: T, index: number) => React.ReactNode;
   empty?: React.ReactNode;
+  /** 变化时滚动到指定行（如当前选中项置顶后滚到顶部） */
+  scrollToIndex?: number;
+  scrollTrigger?: string | number;
 };
 
 function resolveEstimate(
@@ -48,6 +51,8 @@ export function VirtualList<T>({
   getKey,
   renderItem,
   empty,
+  scrollToIndex,
+  scrollTrigger,
 }: VirtualListProps<T>) {
   const viewportRef = React.useRef<React.ElementRef<typeof ScrollAreaPrimitive.Viewport> | null>(null);
   const estimate = React.useMemo(() => resolveEstimate(estimateSizePx), [estimateSizePx]);
@@ -64,6 +69,14 @@ export function VirtualList<T>({
   });
 
   const virtualItems = rowVirtualizer.getVirtualItems();
+
+  React.useEffect(() => {
+    if (scrollToIndex === undefined || items.length === 0) return;
+    const idx = Math.min(Math.max(0, scrollToIndex), items.length - 1);
+    rowVirtualizer.scrollToIndex(idx, { align: "start" });
+    // rowVirtualizer 引用每帧可能变化，仅随 scrollTrigger 触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollTrigger, scrollToIndex, items.length]);
 
   return (
     <ScrollAreaPrimitive.Root className={cn("relative overflow-hidden", className)}>

@@ -198,6 +198,13 @@ cython_debug/
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
+
+# CloakBrowser test artifacts
+.cloakbrowser-cache/
+.cloakbrowser-profile-*/
+cloakbrowser-profile-*/
+cloakbrowser-profile*/
+cloakbrowser-profile-official/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
@@ -241,8 +248,7 @@ liveatc-downloader/*.mp3
 *Cookie*.txt
 
 # smoke test scripts
-scripts/
-scripts/*
+scripts/liveatc*
 
 # other modules' codes and docs for integration
 outside/

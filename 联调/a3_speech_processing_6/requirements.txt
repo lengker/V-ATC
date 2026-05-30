@@ -10,8 +10,8 @@ alembic>=1.11.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
-# 数据处理
-numpy>=1.24.0
+# 数据处理（Windows 上 NumPy 2.x 与 numba/librosa 不兼容，联调请保持 numpy<2）
+numpy>=1.24.0,<2
 
 # 音频处理
 librosa>=0.10.0
@@ -32,8 +32,10 @@ sqlalchemy
 pymysql
 pydantic-settings
 
-# ASR 算法依赖 (新增)
-sherpa-onnx
+# ASR（Windows 联调推荐 whisper；sensevoice 需 sherpa-onnx + 模型）
+openai-whisper>=20231117
+faster-whisper>=1.0.0
+sherpa-onnx>=1.13.2
 soundfile
 librosa
 numpy

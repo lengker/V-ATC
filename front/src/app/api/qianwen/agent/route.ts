@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { vspAip } from "@/mock/vsp-aip";
-import type { ADSBData, AudioData, VoiceTimestamp } from "@/types";
+import type { AgentWorkspaceSnapshot } from "@/lib/agent-workspace-context";
+import type { AudioData, VoiceTimestamp } from "@/types";
 
 type AgentMode =
   | "rewrite_annotation"
@@ -21,7 +22,8 @@ type AgentRequest = {
   selectedTimestamp?: VoiceTimestamp | null;
   // 把当前可见上下文（可选）传给模型，提升建议质量
   transcriptText?: string;
-  aircraftData?: ADSBData[]; // 可选：如果你后续把更多上下文接进来
+  /** 前端工作区只读快照：录音列表、当前转写全文、地图目标等 */
+  workspace?: AgentWorkspaceSnapshot;
 };
 
 function safeJsonParse<T = unknown>(text: string): { ok: true; value: T } | { ok: false; error: string } {
@@ -51,16 +53,26 @@ function buildSystemPrompt() {
 
   return [
     "你是专为“ATC 地空通话语音标注系统（A-4 模块）”服务的智能体。",
-    "你的任务是：根据用户提供的当前时间戳文本/上下文，生成可直接用于界面标注编辑的建议。",
+    "你会收到一份「前端工作区快照 workspace」（JSON），其中包含：录音列表、当前选中录音的完整转写、播放头位置、地图目标与选中飞机等。",
+    "你必须基于 workspace 中的真实数据回答用户的总结、查询、对比类问题；不得编造快照中不存在的录音、航段或飞机。",
+    "若用户问「有哪些录音」「总结当前通话」「当前选中段是什么」等，请直接引用 workspace 中的字段。",
+    "你的任务是：根据用户命令与 workspace，生成可直接用于界面标注编辑的建议，或清晰的中文总结。",
     "",
     "输出要求：只输出严格 JSON（不要包裹在代码块里）。JSON 结构如下：",
     "{",
     '  "reply": string,',
     '  "suggestedText"?: string,',
+    '  "segmentPatches"?: Array<{ "id": string, "text": string }>,',
     '  "confidence"?: number,',
     '  "keywords"?: string[],',
     '  "notes"?: string',
     "}",
+    "",
+    "改写/润色规则（用户要求修改转写时必须遵守）：",
+    "- 禁止只输出分析报告、原因说明或「建议用户去听录音」而不给可写入文本；",
+    "- 改单段：填 suggestedText（该段完整改写后的文本）；",
+    "- 改多段或全文：填 segmentPatches，数组长度与 workspace.activeRecording.transcript 段数一致，每段 id 必须与快照中 id 完全一致，text 为改正/润色后的该段全文；",
+    "- reply 仅 1～3 句说明已改什么，不要重复贴全文。",
     "",
     "你可以参考下面的 VSP/AIP（用于提示可能的程序/地标/航司简字映射；不要编造不在列表中的数据）：",
     `- 常用地标：${landmarks}`,
@@ -72,6 +84,12 @@ function buildSystemPrompt() {
     "2) 若原文疑似口误/ASR 漏字，给出更像真实 ATC 逐字稿的改写；",
     "3) 如果无法给出可靠建议，就不要给 suggestedText（或给一个空/简单提示）。",
   ].join("\n");
+}
+
+function userWantsTranscriptRewrite(command: string, mode: AgentMode): boolean {
+  if (mode === "rewrite_annotation") return true;
+  const c = command.toLowerCase();
+  return /修改|改写|纠正|润色|语法|错别字|转写|文本|没有错误|帮我改/.test(c);
 }
 
 function parseDotEnvLike(raw: string): Record<string, string> {
@@ -99,6 +117,65 @@ function resolveFrontRootFromHere() {
   // So front root is: ../../../../../ from this file's directory
   const hereDir = path.dirname(fileURLToPath(import.meta.url));
   return path.resolve(hereDir, "../../../../../");
+}
+
+function buildModeHint(mode: AgentMode, userCommand: string): string {
+  const rewrite = userWantsTranscriptRewrite(userCommand, mode);
+  if (rewrite) {
+    return [
+      "用户模式=改写转写（必须产出可写入字段，禁止只分析）：",
+      "- 根据 workspace.activeRecording.transcript 逐段改正文法/ASR 错误，保持 ATC 语义；",
+      "- 若仅改 selectedTimestamp 一段：用 suggestedText；",
+      "- 若改全文或多段：必须用 segmentPatches（每段 id+text，覆盖 transcript 中每一段）；",
+      "- 不要拒绝改写，不要要求用户去听录音。",
+    ].join("\n");
+  }
+  switch (mode) {
+    case "summarize_segment":
+      return "用户模式=总结当前段：重点总结 selectedTimestamp 与播放头附近内容，可引用 activeRecording.transcript。";
+    case "summarize_transcript":
+      return "用户模式=总结整段录音：概括 activeRecording 全部转写要点，列出关键通话主题与说话人。";
+    case "suggest_next":
+      return "用户模式=建议下一段：根据 workspace 判断下一值得标注的时间范围或内容。";
+    case "rewrite_annotation":
+      return "用户模式=改写标注：优化 selectedTimestamp 文本，输出 suggestedText。";
+    default:
+      return "用户模式=自定义：按 userCommand 处理，需要时结合 workspace 全文。";
+  }
+}
+
+function buildUserContext(body: AgentRequest): string {
+  const mode: AgentMode = body.mode ?? "custom";
+  const selectedTimestamp = body.selectedTimestamp ?? null;
+  const userCommand = body.userCommand ?? "";
+
+  const parts = [
+    buildModeHint(mode, userCommand),
+    `mode=${mode}`,
+    `audioId=${body.audio?.id ?? "N/A"}`,
+    `currentTime=${typeof body.currentTime === "number" ? body.currentTime : "N/A"}s`,
+    `selectedAircraft=${body.selectedAircraft ?? "N/A"}`,
+    "",
+    "selectedTimestamp:",
+    selectedTimestamp
+      ? `- id: ${selectedTimestamp.id}\n- startTime: ${selectedTimestamp.startTime}s\n- endTime: ${selectedTimestamp.endTime}s\n- speaker: ${selectedTimestamp.speaker ?? "N/A"}\n- text: ${selectedTimestamp.text}`
+      : "- null",
+    "",
+    `transcriptText=${body.transcriptText ?? selectedTimestamp?.text ?? ""}`,
+  ];
+
+  if (body.workspace) {
+    parts.push(
+      "",
+      "## workspace（前端只读快照，请据此读取与总结）",
+      JSON.stringify(body.workspace, null, 2)
+    );
+  } else {
+    parts.push("", "## workspace", "（未提供 — 仅能使用上方 selectedTimestamp / transcriptText）");
+  }
+
+  parts.push("", "userCommand:", body.userCommand ? body.userCommand : "生成一条用于标注编辑的建议。");
+  return parts.join("\n");
 }
 
 function readQianwenConfigFromEnvFile(): {
@@ -161,27 +238,8 @@ export async function POST(req: Request) {
       fileCfg.baseUrl ||
       "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation";
 
-    const mode: AgentMode = body.mode ?? "custom";
-    const selectedTimestamp = body.selectedTimestamp ?? null;
-
     const systemPrompt = buildSystemPrompt();
-
-    const userContext = [
-      `mode=${mode}`,
-      `audioId=${body.audio?.id ?? "N/A"}`,
-      `currentTime=${typeof body.currentTime === "number" ? body.currentTime : "N/A"}s`,
-      `selectedAircraft=${body.selectedAircraft ?? "N/A"}`,
-      "",
-      "selectedTimestamp:",
-      selectedTimestamp
-        ? `- id: ${selectedTimestamp.id}\n- startTime: ${selectedTimestamp.startTime}s\n- endTime: ${selectedTimestamp.endTime}s\n- speaker: ${selectedTimestamp.speaker ?? "N/A"}\n- text: ${selectedTimestamp.text}`
-        : "- null",
-      "",
-      `transcriptText=${body.transcriptText ?? selectedTimestamp?.text ?? ""}`,
-      "",
-      "userCommand:",
-      body.userCommand ? body.userCommand : "生成一条用于标注编辑的建议。",
-    ].join("\n");
+    const userContext = buildUserContext(body);
 
     // DashScope /generation 常见参数：model + input.prompt
     const payload = {
@@ -244,6 +302,21 @@ export async function POST(req: Request) {
     const value = (parsed.ok ? parsed.value : {}) ?? {};
     const reply = typeof value.reply === "string" ? value.reply : rawText;
     const suggestedText = typeof value.suggestedText === "string" && value.suggestedText.trim() ? value.suggestedText : undefined;
+    const segmentPatches = Array.isArray(value.segmentPatches)
+      ? value.segmentPatches
+          .filter(
+            (p: unknown) =>
+              p &&
+              typeof p === "object" &&
+              typeof (p as { id?: unknown }).id === "string" &&
+              typeof (p as { text?: unknown }).text === "string" &&
+              String((p as { text: string }).text).trim()
+          )
+          .map((p: { id: string; text: string }) => ({
+            id: String(p.id),
+            text: String(p.text).trim(),
+          }))
+      : undefined;
     const confidence = typeof value.confidence === "number" ? value.confidence : undefined;
     const keywords = Array.isArray(value.keywords) ? value.keywords.filter((x: any) => typeof x === "string") : undefined;
     const notes = typeof value.notes === "string" ? value.notes : undefined;
@@ -252,6 +325,7 @@ export async function POST(req: Request) {
       ok: true,
       reply,
       suggestedText,
+      segmentPatches: segmentPatches?.length ? segmentPatches : undefined,
       confidence,
       keywords,
       notes,

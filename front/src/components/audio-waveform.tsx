@@ -39,6 +39,8 @@ import { usePlaybackOptional } from "@/context/PlaybackContext";
 
 export type AudioWaveformHandle = {
   seekTo: (time: number) => void;
+  /** 跳转到指定时间并开始播放 */
+  playFrom: (time: number) => void;
   playSegment: (startTime: number, endTime: number) => void;
   getDuration: () => number;
   togglePlayPause: () => void;
@@ -60,6 +62,7 @@ interface AudioWaveformProps {
   onTimestampClick?: (timestamp: VoiceTimestamp) => void;
   /** When provided, boundary dragging will update the timestamps list in real-time. */
   onTimestampsChange?: (next: VoiceTimestamp[]) => void;
+  onPlayStateChange?: (playing: boolean) => void;
   /** Extra classes on the root wrapper (e.g. padding from parent card). */
   className?: string;
 }
@@ -382,6 +385,7 @@ export const AudioWaveform = memo(
       onTimeUpdate,
       onTimestampClick,
       onTimestampsChange,
+      onPlayStateChange,
       className,
     },
     ref
@@ -392,10 +396,13 @@ export const AudioWaveform = memo(
   const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const seekingUntilRef = useRef<number>(0);
   const segmentEndRef = useRef<number | null>(null);
+  const lastImperativeSeekRef = useRef<number>(-1);
   const playback = usePlaybackOptional();
   const setPlaybackCurrentTime = playback?.setCurrentTime;
   const setPlaybackAudioDuration = playback?.setAudioDuration;
   const timelineMaxFromCtx = playback?.timelineMax ?? 0;
+  const timelineMaxRef = useRef(timelineMaxFromCtx);
+  timelineMaxRef.current = timelineMaxFromCtx;
   const rafRef = useRef<number | null>(null);
   const lastEmitRef = useRef<number>(-1);
   const lastNonZeroVolumeRef = useRef<number>(1);
@@ -431,6 +438,35 @@ export const AudioWaveform = memo(
     return Math.max(d, duration, expectedDuration, 0);
   }, [duration, expectedDuration]);
 
+  /** 命令式跳转：先暂停再 seek，避免播放中被旧 currentTime 拉回 */
+  const imperativeSeek = useCallback(
+    (time: number, opts?: { play?: boolean; segmentEnd?: number | null }) => {
+      const ws = wavesurferRef.current;
+      const liveDuration = getLiveDuration();
+      const next = Math.max(0, Math.min(time, liveDuration > 0 ? liveDuration : time));
+
+      setPlaybackCurrentTime?.(next, "ui");
+      onTimeUpdate?.(next);
+      lastEmitRef.current = next;
+      lastImperativeSeekRef.current = next;
+      seekingUntilRef.current = Date.now() + 1200;
+      segmentEndRef.current = opts?.segmentEnd ?? null;
+
+      if (!ws || liveDuration <= 0 || audioError) return;
+
+      try {
+        ws.pause();
+        ws.seekTo(Math.max(0, Math.min(1, next / liveDuration)));
+        if (opts?.play !== false) {
+          void ws.play();
+        }
+      } catch (e) {
+        console.warn("imperativeSeek failed:", e);
+      }
+    },
+    [audioError, getLiveDuration, onTimeUpdate, setPlaybackCurrentTime]
+  );
+
   const emitTimeUpdate = useCallback(
     (time: number) => {
       setPlaybackCurrentTime?.(time, "waveform");
@@ -438,8 +474,23 @@ export const AudioWaveform = memo(
     },
     [onTimeUpdate, setPlaybackCurrentTime]
   );
+  const emitTimeUpdateRef = useRef(emitTimeUpdate);
+  const timestampsRef = useRef(timestamps);
+  const expectedDurationRef = useRef(expectedDuration);
+  const setPlaybackAudioDurationRef = useRef(setPlaybackAudioDuration);
+  emitTimeUpdateRef.current = emitTimeUpdate;
+  timestampsRef.current = timestamps;
+  expectedDurationRef.current = expectedDuration;
+  setPlaybackAudioDurationRef.current = setPlaybackAudioDuration;
 
-  // 初始化 WaveSurfer
+  const onPlayStateChangeRef = useRef(onPlayStateChange);
+  onPlayStateChangeRef.current = onPlayStateChange;
+
+  useEffect(() => {
+    onPlayStateChangeRef.current?.(isPlaying);
+  }, [isPlaying]);
+
+  // 仅 audioUrl 变化时重建 WaveSurfer（其余经 ref 读取，避免后台同步打断播放）
   useEffect(() => {
     if (!waveformRef.current) return;
 
@@ -478,8 +529,9 @@ export const AudioWaveform = memo(
       console.error("WaveSurfer error:", error);
       setAudioError("音频加载失败，请检查网络连接或音频 URL");
       setIsLoading(false);
-      if (timestamps.length > 0) {
-        const maxTime = Math.max(...timestamps.map((ts) => ts.endTime));
+      const ts = timestampsRef.current;
+      if (ts.length > 0) {
+        const maxTime = Math.max(...ts.map((t) => t.endTime));
         setDuration(maxTime || 60);
       } else {
         setDuration(60);
@@ -489,9 +541,9 @@ export const AudioWaveform = memo(
     // 音频准备完毕
     wavesurfer.on("ready", () => {
       const d = wavesurfer.getDuration();
-      const next = Math.max(d, expectedDuration, 0);
+      const next = Math.max(d, expectedDurationRef.current, 0);
       setDuration(next);
-      setPlaybackAudioDuration?.(next);
+      setPlaybackAudioDurationRef.current?.(next);
       setIsLoading(false);
       setAudioError(null);
       applyFitZoom();
@@ -514,9 +566,10 @@ export const AudioWaveform = memo(
     // 时间更新事件
     const handleTimeUpdate = (time: number) => {
       // 某些音频源会先返回错误/过小 duration；播放中如果时间超过 duration，动态抬高 UI 的 duration
-      if (time > duration) {
-        setDuration((prev) => Math.max(prev, time, expectedDuration));
-      }
+      setDuration((prev) => {
+        if (time <= prev) return prev;
+        return Math.max(prev, time, expectedDurationRef.current);
+      });
       if (segmentEndRef.current != null && time >= segmentEndRef.current) {
         try {
           wavesurfer.pause();
@@ -525,7 +578,7 @@ export const AudioWaveform = memo(
         }
         segmentEndRef.current = null;
       }
-      emitTimeUpdate(time);
+      emitTimeUpdateRef.current(time);
     };
 
     wavesurfer.on("timeupdate", handleTimeUpdate);
@@ -544,7 +597,14 @@ export const AudioWaveform = memo(
       const shouldUseMockAudio = rawUrl.length === 0;
 
       if (shouldUseMockAudio) {
-        const mockDurationSec = Math.max(timelineMaxFromCtx, expectedDuration, 1);
+        const mockDurationSec = Math.max(
+          timelineMaxRef.current,
+          expectedDurationRef.current,
+          timestampsRef.current.length > 0
+            ? Math.max(...timestampsRef.current.map((t) => t.endTime))
+            : 0,
+          1
+        );
         const blob = createMockWavBlob({ durationSec: mockDurationSec });
         const maybePromise = wavesurfer.loadBlob(blob) as unknown;
         if (
@@ -571,8 +631,9 @@ export const AudioWaveform = memo(
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
       console.error("Error loading audio:", error);
-      if (timestamps.length > 0) {
-        const maxTime = Math.max(...timestamps.map((ts) => ts.endTime));
+      const ts = timestampsRef.current;
+      if (ts.length > 0) {
+        const maxTime = Math.max(...ts.map((t) => t.endTime));
         setDuration(maxTime || 60);
       } else {
         setDuration(60);
@@ -604,7 +665,8 @@ export const AudioWaveform = memo(
         rafRef.current = null;
       }
     };
-  }, [audioUrl, emitTimeUpdate, expectedDuration, setPlaybackAudioDuration, timelineMaxFromCtx, timestamps]);
+    // audioUrl 是唯一重建条件；开发热更新时勿改依赖项个数
+  }, [audioUrl]);
 
   // 播放时用 rAF 轮询 currentTime，确保进度条/时间稳定前进
   useEffect(() => {
@@ -640,10 +702,10 @@ export const AudioWaveform = memo(
     };
   }, [isPlaying, emitTimeUpdate]);
 
-  // 外部时间变化时，同步 wavesurfer 播放头（解决 TimeRover/列表点击后波形不同步）
+  // 外部时间变化时，同步 wavesurfer 播放头（仅暂停时；播放中由波形自身驱动，避免把跳转拉回去）
   useEffect(() => {
     const ws = wavesurferRef.current;
-    if (!ws || audioError) return;
+    if (!ws || audioError || isPlaying) return;
     if (Date.now() < seekingUntilRef.current) return;
 
     const liveDuration = getLiveDuration();
@@ -652,11 +714,14 @@ export const AudioWaveform = memo(
     try {
       const wsTime = ws.getCurrentTime();
       if (Math.abs(wsTime - next) < 0.15) return;
+      if (lastImperativeSeekRef.current >= 0 && Math.abs(wsTime - lastImperativeSeekRef.current) < 0.25) {
+        return;
+      }
       ws.seekTo(Math.max(0, Math.min(1, next / liveDuration)));
     } catch (e) {
       console.warn("Failed to sync external time:", e);
     }
-  }, [deferredCurrentTime, audioError, getLiveDuration]);
+  }, [deferredCurrentTime, audioError, getLiveDuration, isPlaying]);
 
   // 同步倍速播放
   useEffect(() => {
@@ -729,25 +794,13 @@ export const AudioWaveform = memo(
 
   const handleTimestampClick = useCallback(
     (timestamp: VoiceTimestamp) => {
-      if (wavesurferRef.current && duration > 0 && !audioError) {
-        try {
-          const liveDuration = getLiveDuration();
-          if (liveDuration > 0) {
-            wavesurferRef.current.seekTo(Math.max(0, Math.min(1, timestamp.startTime / liveDuration)));
-          }
-          seekingUntilRef.current = Date.now() + 150;
-          setPlaybackCurrentTime?.(timestamp.startTime, "ui");
-          onTimeUpdate?.(timestamp.startTime);
-          onTimestampClick?.(timestamp);
-        } catch (error) {
-          console.error("Seek error:", error);
-        }
-      } else {
-        // 即使音频加载失败，也允许点击时间戳来更新 UI
-        onTimestampClick?.(timestamp);
-      }
+      imperativeSeek(timestamp.startTime, {
+        play: true,
+        segmentEnd: timestamp.endTime,
+      });
+      onTimestampClick?.(timestamp);
     },
-    [duration, audioError, onTimeUpdate, onTimestampClick, setPlaybackCurrentTime, getLiveDuration]
+    [imperativeSeek, onTimestampClick]
   );
 
   const handleSeek = useCallback(
@@ -835,44 +888,16 @@ export const AudioWaveform = memo(
     ref,
     () => ({
       seekTo: (time: number) => {
-        const ws = wavesurferRef.current;
-        if (!ws || duration <= 0 || audioError) {
-          setPlaybackCurrentTime?.(time, "ui");
-          onTimeUpdate?.(time);
-          return;
-        }
-        const liveDuration = getLiveDuration();
-        const next = Math.max(0, Math.min(time, liveDuration));
-        try {
-          seekingUntilRef.current = Date.now() + 150;
-          ws.seekTo(liveDuration > 0 ? Math.max(0, Math.min(1, next / liveDuration)) : 0);
-          setPlaybackCurrentTime?.(next, "ui");
-          onTimeUpdate?.(next);
-        } catch (e) {
-          console.warn("imperative seek failed:", e);
-        }
+        imperativeSeek(time, { play: false });
+      },
+      playFrom: (time: number) => {
+        imperativeSeek(time, { play: true, segmentEnd: null });
       },
       playSegment: (startTime: number, endTime: number) => {
-        const ws = wavesurferRef.current;
-        if (!ws || duration <= 0 || audioError) {
-          setPlaybackCurrentTime?.(startTime, "ui");
-          onTimeUpdate?.(startTime);
-          return;
-        }
         const liveDuration = getLiveDuration();
-        const s = Math.max(0, Math.min(startTime, liveDuration));
-        const e = Math.max(s, Math.min(endTime, liveDuration));
-        segmentEndRef.current = e;
-        try {
-          seekingUntilRef.current = Date.now() + 150;
-          ws.seekTo(liveDuration > 0 ? Math.max(0, Math.min(1, s / liveDuration)) : 0);
-          setPlaybackCurrentTime?.(s, "ui");
-          onTimeUpdate?.(s);
-          ws.play();
-        } catch (err) {
-          console.warn("playSegment failed:", err);
-          segmentEndRef.current = null;
-        }
+        const s = Math.max(0, Math.min(startTime, liveDuration > 0 ? liveDuration : startTime));
+        const e = Math.max(s, Math.min(endTime, liveDuration > 0 ? liveDuration : endTime));
+        imperativeSeek(s, { play: true, segmentEnd: e });
       },
       getDuration: () => getLiveDuration(),
       togglePlayPause: () => {
@@ -921,6 +946,7 @@ export const AudioWaveform = memo(
       deferredCurrentTime,
       duration,
       getLiveDuration,
+      imperativeSeek,
       onTimeUpdate,
       setPlaybackCurrentTime,
       togglePlayPause,
@@ -1164,5 +1190,6 @@ export const AudioWaveform = memo(
       </details>
     </div>
   );
-  })
+  }),
+  (prev, next) => prev.audioUrl === next.audioUrl
 );

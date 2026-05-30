@@ -26,13 +26,14 @@ class Settings(BaseSettings):
     a2_realtime_capture_max_bytes: int = 2 * 1024 * 1024
     a2_realtime_half_hour_seconds: int = 30 * 60
     a2_realtime_interval_seconds: int = 30 * 60
-    a2_historical_interval_seconds: int = 60 * 60
+    a2_historical_interval_seconds: int = 30 * 60
     a2_scheduler_interval_jitter_seconds: int = 5 * 60
     a2_liveatc_human_delay_min_seconds: float = 5.0
     a2_liveatc_human_delay_max_seconds: float = 45.0
     a2_liveatc_download_gap_min_seconds: float = 3.0
     a2_liveatc_download_gap_max_seconds: float = 20.0
-    a2_historical_max_files_per_run: int = 5
+    a2_historical_max_files_per_run: int = 1
+    a2_historical_strict_mp3_validation: bool = True
     a2_auto_start_scheduler: bool = True
     a2_http_user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -55,15 +56,19 @@ class Settings(BaseSettings):
     a2_proxy_health_probe_attempts: int = 3
     a2_proxy_fail_cooldown_seconds: int = 120
     a2_browser_bootstrap_wait_seconds: float = 20.0
-    a2_browser_headless: bool = False
+    a2_browser_headless: bool = True
     a2_browser_channel: str = "chrome"
     # Optional persistent Playwright profile directory (if set, Playwright will launch a
     # persistent context using this directory so cookies/storage persist between runs).
     a2_playwright_user_data_dir: str = ""
     # Optional storage state file path to load Playwright cookies/state from.
     a2_playwright_storage_state_file: str = ""
+    # Optional full browser archive flow. Enable after bootstrapping a trusted
+    # Playwright profile/storage state with a human-completed verification.
+    a2_liveatc_browser_archive_flow_enabled: bool = False
+    a2_liveatc_browser_flow_timeout_seconds: float = 90.0
     # Max concurrent downloads to avoid triggering server-side rate limits (0 = unlimited)
-    a2_max_concurrent_downloads: int = 3
+    a2_max_concurrent_downloads: int = 1
 
     # proxy.scdn.io API settings
     a2_proxy_api_enabled: bool = False
@@ -77,7 +82,7 @@ class Settings(BaseSettings):
     a3_service_base_url: str = "http://localhost:9000"
 
     api_token: str = "replace-with-secure-api-token"
-    a5_service_base_url: str = "http://127.0.0.1:8000"
+    a5_service_base_url: str = "http://localhost:8080"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 

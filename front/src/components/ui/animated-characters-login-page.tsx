@@ -472,7 +472,6 @@ export function Component() {
   };
 
   const heading = mode === "login" ? "欢迎回来" : "创建账号";
-  const sub = mode === "login" ? "使用文档 §7.3 对应接口登录" : "POST /users/register，禁止注册为 admin";
 
   return (
     <div className="min-h-screen grid md:grid-cols-2 bg-background">
@@ -514,8 +513,6 @@ export function Component() {
 
           <div className="text-center mb-8">
             <h1 className="text-5xl font-bold tracking-tight mb-3">{heading}</h1>
-            <p className="text-zinc-500 text-xl">{sub}</p>
-            <p className="text-xs text-zinc-400 mt-2">后端 API_BASE：{process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000"}</p>
           </div>
 
           {mode === "login" ? (
@@ -568,7 +565,7 @@ export function Component() {
                   <span>记住本会话</span>
                 </label>
                 <Link href="#" className="hover:underline text-muted-foreground">
-                  忘记密码（未接接口）
+                  忘记密码
                 </Link>
               </div>
 
@@ -577,7 +574,7 @@ export function Component() {
                 disabled={!validLogin || loading}
                 className="w-full h-14 rounded-2xl text-2xl bg-zinc-900 hover:bg-zinc-800 text-white"
               >
-                {loading ? "请求中…" : "登录（POST /users/login）"}
+                {loading ? "请求中…" : "登录"}
               </Button>
 
               {errorText ? (
@@ -659,7 +656,7 @@ export function Component() {
 
               <div className="space-y-2">
                 <Label htmlFor="regRole" className="text-2xl font-medium">
-                  角色（注册不可选 admin）
+                  角色
                 </Label>
                 <select
                   id="regRole"
@@ -677,7 +674,7 @@ export function Component() {
                 disabled={!validRegister || loading}
                 className="w-full h-14 rounded-2xl text-2xl bg-zinc-900 hover:bg-zinc-800 text-white"
               >
-                {loading ? "请求中…" : "注册（POST /users/register）并登录"}
+                {loading ? "请求中…" : "注册并登录"}
               </Button>
 
               {errorText ? (
@@ -700,7 +697,6 @@ export function Component() {
             </form>
           )}
 
-          <div className="mt-6 text-sm text-zinc-500">离线演示：offline@alpha.local / offline123</div>
         </div>
       </div>
     </div>

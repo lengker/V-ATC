@@ -48,6 +48,18 @@ async def register_realtime_file(payload: RealtimeRegisterRequest, db: AsyncSess
     return {"voice_file_id": row.id}
 
 
+@router.post("/historical/register", status_code=status.HTTP_201_CREATED)
+async def register_historical_file(payload: HistoricalRegisterRequest, db: AsyncSession = Depends(get_db)) -> dict[str, int]:
+    svc = LiveATCIngestionService(db)
+    row = await svc.register_historical_capture(
+        file_name=payload.file_name,
+        source_url=payload.source_url,
+        start_time_utc=payload.start_time_utc,
+        end_time_utc=payload.end_time_utc,
+    )
+    return {"voice_file_id": row.id}
+
+
 @router.post("/scheduler/start", response_model=SchedulerActionResponse)
 async def start_scheduler() -> SchedulerActionResponse:
     await liveatc_scheduler.start()
@@ -87,15 +99,3 @@ async def trigger_historical_once() -> dict[str, int | str | None]:
         "found": int(status_data.get("last_historical_found", 0) or 0),
         "skipped": int(status_data.get("last_historical_skipped", 0) or 0),
     }
-
-
-@router.post("/historical/register", status_code=status.HTTP_201_CREATED)
-async def register_historical_file(payload: HistoricalRegisterRequest, db: AsyncSession = Depends(get_db)) -> dict[str, int]:
-    svc = LiveATCIngestionService(db)
-    row = await svc.register_historical_capture(
-        file_name=payload.file_name,
-        source_url=payload.source_url,
-        start_time_utc=payload.start_time_utc,
-        end_time_utc=payload.end_time_utc,
-    )
-    return {"voice_file_id": row.id}

@@ -68,3 +68,14 @@ def create_annotation(db: Session, annotation_data: dict) -> LngAnnotations:
 def get_annotations_by_audio(db: Session, audio_id: int) -> List[LngAnnotations]:
     """根据音频ID获取标注列表"""
     return db.query(LngAnnotations).filter(LngAnnotations.audio_id == audio_id).all()
+
+
+def delete_annotations_for_audio(db: Session, audio_id: int) -> int:
+    """删除某条录音的全部标注（重新跑 ASR 前清理）。"""
+    count = (
+        db.query(LngAnnotations)
+        .filter(LngAnnotations.audio_id == audio_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return int(count or 0)

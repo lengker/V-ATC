@@ -1,125 +1,95 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { cn, formatTime } from "@/lib/utils";
-import { Pause, Play, StepBack, StepForward, Zap } from "lucide-react";
+import { Pause, Play, StepBack, StepForward } from "lucide-react";
 
+/**
+ * 全局播放头控制：拖动/点击滑块、步进、播放暂停均委托给左侧波形播放器。
+ */
 export function TimeRover({
   value,
   max,
-  onChange,
+  isPlaying = false,
+  onSeek,
+  onStep,
+  onTogglePlay,
   className,
 }: {
   value: number;
   max: number;
-  onChange: (t: number) => void;
+  isPlaying?: boolean;
+  /** 拖动或点击进度条 */
+  onSeek: (t: number) => void;
+  /** 前进/后退步进（秒） */
+  onStep?: (deltaSeconds: number) => void;
+  onTogglePlay?: () => void;
   className?: string;
 }) {
-  const [playing, setPlaying] = useState(false);
-  const [rate, setRate] = useState<0.5 | 1 | 2 | 4>(1);
-  const rafRef = useRef<number | null>(null);
-  const lastRef = useRef<number | null>(null);
-
   const step = useMemo(() => {
-    // 步进粒度：根据时长自适应
     if (max <= 60) return 1;
     if (max <= 10 * 60) return 2;
     return 5;
   }, [max]);
 
-  useEffect(() => {
-    if (!playing) {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-      lastRef.current = null;
-      return;
-    }
-
-    const loop = (ts: number) => {
-      if (lastRef.current == null) lastRef.current = ts;
-      const dt = (ts - lastRef.current) / 1000;
-      lastRef.current = ts;
-
-      const next = Math.min(max, value + dt * rate);
-      onChange(next);
-      if (next >= max) {
-        setPlaying(false);
-        return;
-      }
-      rafRef.current = requestAnimationFrame(loop);
-    };
-
-    rafRef.current = requestAnimationFrame(loop);
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-      lastRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, rate, max, value]);
-
   return (
     <div className={cn("rounded-2xl border border-border/60 bg-background/20 p-3", className)}>
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-semibold text-muted-foreground">Time Rover</div>
-        <div className="text-xs text-muted-foreground tabular-nums">
+      <div className="mb-2 flex items-center justify-between">
+        <div>
+          <div className="text-xs font-semibold text-muted-foreground">播放进度</div>
+          <div className="text-[10px] text-muted-foreground/80">与左侧波形同步，拖动可跳转</div>
+        </div>
+        <div className="text-xs tabular-nums text-muted-foreground">
           {formatTime(value)} / {formatTime(max)}
         </div>
       </div>
 
       <div className="flex items-center gap-2">
         <Button
+          type="button"
           variant="outline"
           size="icon"
           className="rounded-full bg-background/30"
-          onClick={() => onChange(Math.max(0, value - step))}
-          title={`- ${step}s`}
+          onClick={() => (onStep ? onStep(-step) : onSeek(Math.max(0, value - step)))}
+          title={`后退 ${step}s`}
         >
           <StepBack className="h-4 w-4" />
         </Button>
 
         <Button
+          type="button"
           variant="outline"
           size="icon"
           className="rounded-full bg-background/30"
-          onClick={() => setPlaying((p) => !p)}
-          title={playing ? "Pause" : "Play"}
+          onClick={() => onTogglePlay?.()}
+          disabled={!onTogglePlay}
+          title={isPlaying ? "暂停" : "播放"}
         >
-          {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+          {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
         </Button>
 
         <Button
+          type="button"
           variant="outline"
           size="icon"
           className="rounded-full bg-background/30"
-          onClick={() => onChange(Math.min(max, value + step))}
-          title={`+ ${step}s`}
+          onClick={() => (onStep ? onStep(step) : onSeek(Math.min(max, value + step)))}
+          title={`前进 ${step}s`}
         >
           <StepForward className="h-4 w-4" />
         </Button>
 
         <div className="flex-1 px-2">
           <Slider
-            value={[value]}
+            value={[Math.min(value, max)]}
             max={max}
-            step={0.1}
-            onValueChange={([v]) => onChange(v)}
+            step={0.05}
+            onValueChange={([v]) => onSeek(v)}
           />
         </div>
-
-        <Button
-          variant="outline"
-          className="rounded-full bg-background/30 h-9 px-3 text-xs"
-          onClick={() => setRate((r) => (r === 4 ? 0.5 : r === 2 ? 4 : r === 1 ? 2 : 1))}
-          title="Playback rate"
-        >
-          <Zap className="h-4 w-4 mr-2" />
-          {rate}x
-        </Button>
       </div>
     </div>
   );
 }
-

@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { downloadBlob } from "@/lib/exporters";
 import { clearTimestampOverrides, exportTimestampOverrides } from "@/lib/local-annotation-store";
+import { LayerToggles, type LayerTogglesState } from "@/components/layer-toggles";
 import {
   Activity,
   Map as MapIcon,
@@ -26,16 +27,35 @@ import {
   FileText,
 } from "lucide-react";
 
+export type EfbTopbarProps = {
+  title: string;
+  subtitle?: string;
+  className?: string;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  onSearchSubmit?: () => void;
+  onMapClick?: () => void;
+  onRadioClick?: () => void;
+  layerToggles?: LayerTogglesState;
+  onLayerTogglesChange?: (next: LayerTogglesState) => void;
+  onSettingsClick?: () => void;
+};
+
 export function EfbTopbar({
   title,
   subtitle,
   className,
-}: {
-  title: string;
-  subtitle?: string;
-  className?: string;
-}) {
+  searchValue,
+  onSearchChange,
+  onSearchSubmit,
+  onMapClick,
+  onRadioClick,
+  layerToggles,
+  onLayerTogglesChange,
+  onSettingsClick,
+}: EfbTopbarProps) {
   const { user, logout } = useAuth();
+
   return (
     <header className={cn("h-14 border-b border-border/70 efb-panel efb-glow", className)}>
       <div className="h-full px-4 flex items-center justify-between gap-3">
@@ -52,24 +72,73 @@ export function EfbTopbar({
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="hidden md:flex items-center gap-2 px-3 h-9 rounded-full border border-border/70 bg-background/30">
-            <Search className="h-4 w-4 text-muted-foreground" />
+          <form
+            className="flex items-center gap-2 px-3 h-9 rounded-full border border-border/70 bg-background/30 min-w-0 flex-1 max-w-[14rem] sm:max-w-[18rem] lg:max-w-[22rem]"
+            onSubmit={(e) => {
+              e.preventDefault();
+              onSearchSubmit?.();
+            }}
+          >
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
-              className="bg-transparent outline-none text-sm w-72 placeholder:text-muted-foreground/70"
+              className="bg-transparent outline-none text-sm w-full min-w-0 placeholder:text-muted-foreground/70"
               placeholder="搜索航班 / 呼号 / 音频ID…"
+              value={searchValue}
+              onChange={(e) => onSearchChange(e.target.value)}
+              aria-label="全局搜索"
             />
-          </div>
+          </form>
 
-          <Button variant="outline" size="icon" className="rounded-full bg-background/30">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="rounded-full bg-background/30"
+            title="滚动到地图并高亮"
+            onClick={onMapClick}
+          >
             <MapIcon className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="icon" className="rounded-full bg-background/30">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="rounded-full bg-background/30"
+            title="滚动到录音列表并高亮"
+            onClick={onRadioClick}
+          >
             <Mic className="h-4 w-4" />
           </Button>
-          <Button variant="outline" size="icon" className="rounded-full bg-background/30">
-            <SlidersHorizontal className="h-4 w-4" />
-          </Button>
-          <Button variant="outline" size="icon" className="rounded-full bg-background/30">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="rounded-full bg-background/30"
+                title="地图图层"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-72 p-3" onCloseAutoFocus={(e) => e.preventDefault()}>
+              {layerToggles && onLayerTogglesChange ? (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <LayerToggles value={layerToggles} onChange={onLayerTogglesChange} />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">图层控制未就绪</p>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="rounded-full bg-background/30"
+            title="滚动到设置与图层并高亮"
+            onClick={onSettingsClick}
+          >
             <Settings className="h-4 w-4" />
           </Button>
 
@@ -88,7 +157,6 @@ export function EfbTopbar({
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
-                  // 浏览器打印导出为 PDF（最稳妥，无额外依赖）
                   window.print();
                 }}
               >
@@ -99,13 +167,14 @@ export function EfbTopbar({
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
-                  // 通过 URL 上的 audioId 来定位缓存；没有就用 demo 的 id
                   const p = new URLSearchParams(window.location.search);
                   const audioId = p.get("audioId") || "demo-audio-001";
                   const payload = exportTimestampOverrides(audioId);
                   downloadBlob(
                     `alpha-local-overrides-${audioId}-${Date.now()}.json`,
-                    new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" })
+                    new Blob([JSON.stringify(payload, null, 2)], {
+                      type: "application/json;charset=utf-8",
+                    })
                   );
                 }}
               >
@@ -161,4 +230,3 @@ export function EfbTopbar({
     </header>
   );
 }
-

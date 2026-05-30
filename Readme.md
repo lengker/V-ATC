@@ -177,3 +177,9 @@
 - 删除语义不一致
   - 业务删除优先使用 `ext/delete-one` / `ext/delete-chain`
   - 避免直接用通用 `DELETE /tables/audio_records/{id}` 处理业务链删除
+
+# 启动
+```
+  cd "e:\软件项目管理\qt\联调"
+  .\start-all.ps1
+```

@@ -35,9 +35,10 @@
 
 如果要在本机稳定运行浏览器回退，建议确认以下内容：
 
-- Chrome 已安装并能被 Playwright 识别。
+- CloakBrowser 已按官方方式安装（首次使用自动下载 binary）。
+- 如需自定义本地 binary 或下载失败，可设置 `CLOAKBROWSER_BINARY_PATH`。
 - 目标 profile 没有被正在运行的 Chrome 占用。
-- Playwright 浏览器已经安装。
+- 如果要使用浏览器辅助导出 Cookie 脚本，Playwright 已安装。
 - 本地时钟、时区和网络连通正常。
 - 浏览器扩展和企业策略不会阻止验证页面。
 
@@ -60,6 +61,8 @@ pip install -r requirements.txt
 - `requests` - HTTP 请求
 - `beautifulsoup4` - HTML 解析
 - `cloudscraper` - 绕过 Cloudflare（可选）
+- `cloakbrowser` - 官方 stealth Chromium wrapper 和 binary 管理
+- `playwright` - 浏览器辅助脚本与 Cookie 导出
 
 ## 使用方法
 

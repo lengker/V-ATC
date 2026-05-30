@@ -766,7 +766,12 @@ export function ADSBMap({
                 </div>
                 <div className="text-muted-foreground/80">
                   <span className="text-xs">爬升率</span>
-                  <div className="text-cyan-300 font-mono">{hoveredAircraft.verticalRate || "—"} f/m</div>
+                  <div className="text-cyan-300 font-mono">
+                    {hoveredAircraft.verticalRate != null && Number.isFinite(hoveredAircraft.verticalRate)
+                      ? `${hoveredAircraft.verticalRate > 0 ? "+" : ""}${Math.round(hoveredAircraft.verticalRate)}`
+                      : "—"}{" "}
+                    f/m
+                  </div>
                 </div>
               </div>
               <div className="text-muted-foreground/70 text-xs border-t border-primary/30 pt-1.5 font-mono">

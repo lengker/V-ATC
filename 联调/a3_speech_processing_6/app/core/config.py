@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     MODEL_PATH: str = os.getenv("MODEL_PATH", "./models")
     SENSEVOICE_MODEL: str = os.getenv("SENSEVOICE_MODEL", "models/model.int8.onnx")
     SENSEVOICE_TOKENS: str = os.getenv("SENSEVOICE_TOKENS", "models/tokens.txt")
-    # 新增：ASR 引擎并发线程数
+    # ASR：win32 默认 whisper；Linux 可设 sensevoice
+    ASR_BACKEND: str = os.getenv("ASR_BACKEND", "whisper" if os.name == "nt" else "auto")
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")
     ASR_THREADS: int = int(os.getenv("ASR_THREADS", 2))
     # 存储路径配置
     STORAGE_PATH: str = os.getenv("STORAGE_PATH", "./storage")

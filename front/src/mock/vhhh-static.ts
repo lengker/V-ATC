@@ -51,49 +51,102 @@ export type VhhhStaticLayers = {
 };
 
 // 说明：
-// - 这里是“示意级”静态数据，只用于把前端 UI/交互跑通。
-// - 后续你们 A-5 模块接入正式 AIP/VSP 数据后，用真实数据替换即可。
+// - 跑道使用香港 AIP AD 2.12 公布门槛坐标（VHHH）。
+// - 滑行道为与跑道平行的场区示意线；完整 AIP 滑行道图可后续对接 A-5 / VSP。
+// 跑道/滑行道坐标来自香港 AIP AD 2.12（VHHH，2026）门槛坐标；滑行道为场区平行滑行道示意
+function dmsToDec(dms: string): { lat: number; lon: number } {
+  const latMatch = dms.match(/(\d{2})(\d{2})([\d.]+)N/);
+  const lonMatch = dms.match(/(\d{3})(\d{2})([\d.]+)E/);
+  if (!latMatch || !lonMatch) throw new Error(`bad dms: ${dms}`);
+  const lat = Number(latMatch[1]) + Number(latMatch[2]) / 60 + Number(latMatch[3]) / 3600;
+  const lon = Number(lonMatch[1]) + Number(lonMatch[2]) / 60 + Number(lonMatch[3]) / 3600;
+  return { lat, lon };
+}
+
+function bearingDeg(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const dLon = ((b.lon - a.lon) * Math.PI) / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+function offsetLine(
+  a: { lat: number; lon: number },
+  b: { lat: number; lon: number },
+  offsetM: number,
+  side: "left" | "right"
+): [{ lat: number; lon: number }, { lat: number; lon: number }] {
+  const brg = bearingDeg(a, b);
+  const perp = side === "left" ? brg - 90 : brg + 90;
+  const R = 6_371_000;
+  const perpRad = (perp * Math.PI) / 180;
+  const shift = (m: number, lat: number, lon: number) => {
+    const latRad = (lat * Math.PI) / 180;
+    const cosLat = Math.cos(latRad);
+    return {
+      lat: lat + (m / R) * Math.cos(perpRad) * (180 / Math.PI),
+      lon: lon + (cosLat > 1e-6 ? ((m / R) * Math.sin(perpRad) / cosLat) * (180 / Math.PI) : 0),
+    };
+  };
+  const a2 = shift(offsetM, a.lat, a.lon);
+  const b2 = shift(offsetM, b.lat, b.lon);
+  return [a2, b2];
+}
+
+const RWY_07L = dmsToDec("221917.72N1135256.26E");
+const RWY_25R = dmsToDec("221954.45N1135450.24E");
+const RWY_07C = dmsToDec("221840.58N1135356.64E");
+const RWY_25C = dmsToDec("221912.85N1135536.78E");
+const RWY_07R = dmsToDec("221748.03N1135357.99E");
+const RWY_25L = dmsToDec("221826.75N1135558.15E");
+
 export const vhhhStatic: VhhhStaticLayers = {
   runways: [
     {
       id: "07L-25R",
       name: "RWY 07L/25R",
       kind: "runway",
-      points: [
-        { lat: 22.3151, lon: 113.9363 },
-        { lat: 22.2962, lon: 113.9363 },
-      ],
-      note: "示意线（非精确）",
+      points: [RWY_07L, RWY_25R],
+      note: "AIP AD 2.12 门槛坐标",
+    },
+    {
+      id: "07C-25C",
+      name: "RWY 07C/25C",
+      kind: "runway",
+      points: [RWY_07C, RWY_25C],
+      note: "AIP AD 2.12 门槛坐标",
     },
     {
       id: "07R-25L",
       name: "RWY 07R/25L",
       kind: "runway",
-      points: [
-        { lat: 22.3149, lon: 113.9255 },
-        { lat: 22.2960, lon: 113.9255 },
-      ],
-      note: "示意线（非精确）",
+      points: [RWY_07R, RWY_25L],
+      note: "AIP AD 2.12 门槛坐标",
     },
   ],
   taxiways: [
     {
-      id: "TWY-A",
-      name: "TWY A",
+      id: "TWY-N",
+      name: "Parallel TWY (N)",
       kind: "taxiway",
-      points: [
-        { lat: 22.307, lon: 113.9265 },
-        { lat: 22.307, lon: 113.9355 },
-      ],
+      points: offsetLine(RWY_07L, RWY_25R, 280, "left"),
+      note: "北场平行滑行道示意",
     },
     {
-      id: "TWY-B",
-      name: "TWY B",
+      id: "TWY-M",
+      name: "Parallel TWY (Mid)",
       kind: "taxiway",
-      points: [
-        { lat: 22.305, lon: 113.9265 },
-        { lat: 22.305, lon: 113.9355 },
-      ],
+      points: offsetLine(RWY_07C, RWY_25C, 260, "right"),
+      note: "中场平行滑行道示意",
+    },
+    {
+      id: "TWY-S",
+      name: "Parallel TWY (S)",
+      kind: "taxiway",
+      points: offsetLine(RWY_07R, RWY_25L, 280, "right"),
+      note: "南场平行滑行道示意",
     },
   ],
   waypoints: [

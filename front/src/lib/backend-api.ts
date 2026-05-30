@@ -1,4 +1,7 @@
+import { dedupeAdsbPointsByFlight, enrichVerticalRates } from "@/lib/adsb-interpolation";
+import { mergeDetourLiveAdsb } from "@/lib/detour-aircraft";
 import { AudioData, ADSBData, VoiceTimestamp } from "@/types";
+import { formatRecordingCaptureTimeLocal, formatRecordingFileName } from "@/lib/recording-display";
 import type { RecordingMeta } from "@/mock/demo-data";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
@@ -76,13 +79,37 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+/** 标注相对时间（秒）；过滤误写入的 Unix 时间戳或毫秒 */
+function normalizeRelativeSeconds(raw: unknown, durationSec: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  if (n > 1e9) return 0;
+  if (n > 86_400 && n < 1e9) return Math.min(n / 1000, Math.max(durationSec, 60));
+  if (durationSec > 0 && n > durationSec * 20) return Math.min(n / 1000, durationSec);
+  return n;
+}
+
 function toUnixSeconds(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1e11 ? value / 1000 : value;
+  }
   const asNum = Number(value);
-  if (Number.isFinite(asNum)) return asNum;
+  if (Number.isFinite(asNum)) {
+    return asNum > 1e11 ? asNum / 1000 : asNum;
+  }
   const asDate = Date.parse(String(value ?? ""));
   if (Number.isFinite(asDate)) return asDate / 1000;
   return 0;
+}
+
+const VHHH_CENTER = { lat: 22.308, lon: 113.918 };
+const DEMO_FLIGHT_IDS = new Set(["VHHH-DEMO-CPA123", "A1-DEMO-001"]);
+
+function isNearVhhh(lat: unknown, lon: unknown, delta = 2.5): boolean {
+  const la = Number(lat);
+  const lo = Number(lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return false;
+  return Math.abs(la - VHHH_CENTER.lat) <= delta && Math.abs(lo - VHHH_CENTER.lon) <= delta;
 }
 
 function toRole(input: unknown): "admin" | "annotator" | "viewer" {
@@ -165,8 +192,267 @@ export async function queryArbitrary(payload: { reference: Record<string, unknow
   });
 }
 
-export async function listTableItems<T>(tableKey: TableKey, limit = 100, offset = 0) {
-  return requestJson<T[]>(`/tables/${tableKey}?limit=${limit}&offset=${offset}`);
+export async function listTableItems<T>(tableKey: TableKey, limit = 100, offset = 0, noCache = false) {
+  const bust = noCache ? `&_=${Date.now()}` : "";
+  return requestJson<T[]>(`/tables/${tableKey}?limit=${limit}&offset=${offset}${bust}`);
+}
+
+/** 分页拉全表（annotations 超过 1000 时，新转写不会出现在首页列表里） */
+export async function listAllTableItems<T>(
+  tableKey: TableKey,
+  pageSize = 1000,
+  noCache = false
+): Promise<T[]> {
+  const all: T[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const chunk = await listTableItems<T>(tableKey, pageSize, offset, noCache);
+    all.push(...chunk);
+    if (chunk.length < pageSize) break;
+  }
+  return all;
+}
+
+export type RefreshRecordingsResult = {
+  ok: number;
+  synced?: number;
+  updated?: number;
+  skipped?: number;
+  blocked?: number;
+  a2_total?: number;
+  a5_total?: number;
+  pending_audio_ids?: number[];
+  unblock?: { removed?: number; remaining?: number };
+  error?: string;
+  a2_trigger?: Record<string, unknown>;
+  via?: string;
+};
+
+/** 联调：触发 A2 下载 + 同步 A5（优先 A5，失败则走 Next 本地脚本） */
+/** 对无转写的录音跑 A3/Whisper ASR（写入 A5 annotations） */
+export async function triggerAsrForRecording(
+  audioId: string,
+  options?: { limit?: number }
+): Promise<{ ok?: number; annotations?: number; error?: string; details?: unknown[] }> {
+  const params = new URLSearchParams();
+  params.set("audio_id", audioId);
+  if (options?.limit != null) params.set("limit", String(options.limit));
+
+  const parseAsrResponse = async (response: Response) => {
+    const rawText = await response.text();
+    const data = rawText ? JSON.parse(rawText) : null;
+    if (!response.ok) {
+      const detailErr =
+        Array.isArray(data?.details) && data.details[0] && typeof data.details[0] === "object"
+          ? String((data.details[0] as { error?: string }).error || "")
+          : "";
+      const msg =
+        data?.detail?.message ||
+        data?.detail ||
+        detailErr ||
+        data?.error ||
+        data?.message ||
+        response.statusText ||
+        `HTTP ${response.status}`;
+      throw new Error(String(msg));
+    }
+    return data as { ok?: number; annotations?: number; error?: string; details?: unknown[] };
+  };
+
+  const token = readToken();
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/sync/a3-asr?${params}`, {
+      method: "POST",
+      headers,
+      body: "{}",
+      signal: AbortSignal.timeout(600_000),
+    });
+    if (response.status === 404) {
+      throw new Error("A5_SYNC_ASR_NOT_FOUND");
+    }
+    return await parseAsrResponse(response);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "";
+    if (msg !== "A5_SYNC_ASR_NOT_FOUND" && !msg.includes("404") && !msg.toLowerCase().includes("not found")) {
+      throw error;
+    }
+    // A5 未重启、无 /sync/a3-asr 时走 Next 本机脚本（与 refresh-recordings 相同）
+    const fallback = await fetch(`/api/a3-asr?${params}`, {
+      method: "POST",
+      signal: AbortSignal.timeout(600_000),
+    });
+    return await parseAsrResponse(fallback);
+  }
+}
+
+/** 拉取 A5 中 OpenSky 实时航迹全路径（按航班时间序，供完整尾迹） */
+export async function fetchLiveTracksFromApi(
+  hours = 4,
+  limit = 30_000
+): Promise<BackendTrack[]> {
+  try {
+    const bust = `&_=${Date.now()}`;
+    return await requestJson<BackendTrack[]>(
+      `/tracks/live?hours=${hours}&limit=${limit}${bust}`
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** 地图轮询专用：只拉实时航迹，避免每 10s 重载三表 */
+export async function fetchLiveAdsbForMap(
+  hours = 1,
+  limit = 50_000
+): Promise<{
+  adsbData: ADSBData[];
+  liveAircraftCount: number;
+  /** 实时库中最新点时间（Unix 秒），用于判断是否在增长 */
+  latestLiveAt: number | null;
+  activeWithinMinutes: number;
+}> {
+  const liveTrackRows = await fetchLiveTracksFromApi(hours, limit);
+  const liveAdsb = buildLiveAdsbPoints(liveTrackRows, {
+    activeWithinMinutes: LIVE_ACTIVE_MINUTES,
+    trailWithinMinutes: LIVE_TRAIL_MINUTES,
+  });
+  let latestLiveAt: number | null = null;
+  for (const t of liveTrackRows) {
+    const ts = toUnixSeconds(t.timestamp);
+    if (ts > 1_000_000_000 && (latestLiveAt == null || ts > latestLiveAt)) {
+      latestLiveAt = ts;
+    }
+  }
+  const merged = mergeDetourLiveAdsb(liveAdsb);
+  return {
+    adsbData: merged,
+    liveAircraftCount: new Set(merged.map((p) => p.icao24)).size,
+    latestLiveAt,
+    activeWithinMinutes: LIVE_ACTIVE_MINUTES,
+  };
+}
+
+/** 触发一轮 OpenSky 采集并同步 A5（需 A5 已重启含 /sync/a1-live-once） */
+export async function triggerA1LiveCollectOnce(): Promise<Record<string, unknown>> {
+  const token = readToken();
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${API_BASE_URL}/sync/a1-live-once`, {
+    method: "POST",
+    headers,
+    body: "{}",
+    signal: AbortSignal.timeout(90_000),
+  });
+  const rawText = await response.text();
+  const data = rawText ? JSON.parse(rawText) : null;
+  if (!response.ok) {
+    const msg =
+      data?.detail?.message ||
+      data?.detail ||
+      data?.message ||
+      response.statusText ||
+      `HTTP ${response.status}`;
+    throw new Error(String(msg));
+  }
+  return data as Record<string, unknown>;
+}
+
+/** 地图「在线」口径：该时间内仍有 ADS-B 回波的航班（非 4 小时历史累计） */
+const LIVE_ACTIVE_MINUTES = 25;
+/** 单架飞机尾迹最多展示最近多少分钟 */
+const LIVE_TRAIL_MINUTES = 45;
+
+function buildLiveAdsbPoints(
+  liveRows: BackendTrack[],
+  opts?: { activeWithinMinutes?: number; trailWithinMinutes?: number }
+): ADSBData[] {
+  const activeMin = opts?.activeWithinMinutes ?? LIVE_ACTIVE_MINUTES;
+  const trailMin = opts?.trailWithinMinutes ?? LIVE_TRAIL_MINUTES;
+  const nowSec = Date.now() / 1000;
+  const activeCutoff = nowSec - activeMin * 60;
+  const trailCutoff = nowSec - trailMin * 60;
+
+  const byFlight = new Map<string, BackendTrack[]>();
+  for (const t of liveRows) {
+    if (!isNearVhhh(t.tracks_latitude, t.tracks_longitude)) continue;
+    const fid = String(t.flight_id || "").trim() || `track-${t.track_id}`;
+    const list = byFlight.get(fid) ?? [];
+    list.push(t);
+    byFlight.set(fid, list);
+  }
+
+  const out: ADSBData[] = [];
+  for (const [flightId, rows] of byFlight.entries()) {
+    const sorted = [...rows].sort(
+      (a, b) =>
+        toUnixSeconds(a.timestamp) - toUnixSeconds(b.timestamp) ||
+        Number(a.track_id) - Number(b.track_id)
+    );
+    const lastTs = toUnixSeconds(sorted[sorted.length - 1].timestamp);
+    if (lastTs < activeCutoff) continue;
+
+    const trailRows = sorted.filter((t) => toUnixSeconds(t.timestamp) >= trailCutoff);
+    const toRender = trailRows.length > 0 ? trailRows : sorted.slice(-1);
+
+    toRender.forEach((t, idx) => {
+      const icao = flightId.toLowerCase();
+      const ts = toUnixSeconds(t.timestamp);
+      const verticalRate =
+        t.vertical_rate != null && Number.isFinite(Number(t.vertical_rate))
+          ? Number(t.vertical_rate)
+          : undefined;
+
+      out.push({
+        id: String(t.track_id),
+        timestamp: ts > 1_000_000_000 ? ts : idx,
+        icao24: icao,
+        callsign: flightId,
+        latitude: Number(t.tracks_latitude),
+        longitude: Number(t.tracks_longitude),
+        altitude: Number(t.altitude) || 0,
+        speed: Number(t.speed) || 0,
+        heading: Number(t.heading) || 0,
+        verticalRate,
+        live: true,
+      });
+    });
+  }
+  return enrichVerticalRates(
+    dedupeAdsbPointsByFlight(out, { minMoveMeters: 120, maxPointsPerFlight: 160 })
+  );
+}
+
+export async function refreshRecordingsFromA2(options?: {
+  full?: boolean;
+  /** false = 仅同步 A5，不触发 A2 下载 */
+  download?: boolean;
+  /** 0 = 不在同步阶段批量 ASR（由前端逐条 /sync/a3-asr） */
+  a3Limit?: number;
+}): Promise<RefreshRecordingsResult> {
+  const params = new URLSearchParams();
+  if (options?.full) params.set("full", "true");
+  if (options?.download === false) params.set("download", "false");
+  if (options?.a3Limit != null) params.set("a3_limit", String(options.a3Limit));
+  const q = params.toString() ? `?${params}` : "";
+  try {
+    return await requestJson<RefreshRecordingsResult>(`/sync/a2-to-a5${q}`, {
+      method: "POST",
+      body: "{}",
+    });
+  } catch {
+    const fallback = new URLSearchParams();
+    if (options?.full) fallback.set("full", "1");
+    if (options?.download === false) fallback.set("sync_only", "1");
+    if (options?.a3Limit === 0) fallback.set("no_a3", "1");
+    const res = await fetch(`/api/refresh-recordings${fallback.toString() ? `?${fallback}` : ""}`, {
+      method: "POST",
+    });
+    const data = (await res.json()) as RefreshRecordingsResult;
+    if (!res.ok) throw new Error(String(data.error || `refresh failed ${res.status}`));
+    return data;
+  }
 }
 
 export async function getTableItem<T>(tableKey: TableKey, itemId: string | number) {
@@ -211,6 +497,8 @@ type BackendTrack = {
   altitude?: number;
   speed?: number;
   heading?: number;
+  /** 爬升率 ft/min（OpenSky 或推算） */
+  vertical_rate?: number;
   departure_airport_code?: string;
   arrival_airport_code?: string;
   next_id?: number | string | null;
@@ -236,6 +524,73 @@ function expandLinkedTracks(allRows: BackendTrack[], seedIds: Set<number>): Back
     const prv = row.prev_id != null && row.prev_id !== "" ? Number(row.prev_id) : NaN;
     if (Number.isFinite(nxt)) stack.push(nxt);
     if (Number.isFinite(prv)) stack.push(prv);
+  }
+  return [...out.values()];
+}
+
+/** 地图航迹：链表扩展 + 同 flight_id 全点 + VHHH 录音优先香港附近航路 */
+function expandTracksForMap(
+  allRows: BackendTrack[],
+  seedIds: Set<number>,
+  options?: { preferVhhh?: boolean }
+): BackendTrack[] {
+  const linked = expandLinkedTracks(allRows, seedIds);
+  const out = new Map<number, BackendTrack>();
+  for (const t of linked) {
+    const id = Number(t.track_id);
+    if (Number.isFinite(id)) out.set(id, t);
+  }
+
+  const flightIds = new Set(
+    linked.map((t) => String(t.flight_id || "").trim()).filter(Boolean)
+  );
+  for (const row of allRows) {
+    const fid = String(row.flight_id || "").trim();
+    if (!fid || !flightIds.has(fid)) continue;
+    const id = Number(row.track_id);
+    if (Number.isFinite(id)) out.set(id, row);
+  }
+
+  let rows = [...out.values()];
+  if (options?.preferVhhh) {
+    const hk = rows.filter((t) => isNearVhhh(t.tracks_latitude, t.tracks_longitude));
+    if (hk.length >= 2) rows = hk;
+  }
+  return rows;
+}
+
+/** 按 track_id 从 API 拉整条 next/prev 链（不受 list limit=1000 分页影响） */
+async function fetchLinkedTrackChainFromApi(seedId: number): Promise<BackendTrack[]> {
+  const byId = new Map<number, BackendTrack>();
+  const stack = [seedId];
+
+  while (stack.length) {
+    const id = stack.pop()!;
+    if (!Number.isFinite(id) || byId.has(id)) continue;
+    try {
+      const row = await getTableItem<BackendTrack>("tracks", id);
+      if (!row?.track_id) continue;
+      const trackId = Number(row.track_id);
+      byId.set(trackId, row);
+      const nxt = row.next_id != null && row.next_id !== "" ? Number(row.next_id) : NaN;
+      const prv = row.prev_id != null && row.prev_id !== "" ? Number(row.prev_id) : NaN;
+      if (Number.isFinite(nxt)) stack.push(nxt);
+      if (Number.isFinite(prv)) stack.push(prv);
+    } catch {
+      // 单点缺失不影响其余链
+    }
+  }
+  return [...byId.values()];
+}
+
+async function fetchTracksForMapSeeds(seedIds: Iterable<number>): Promise<BackendTrack[]> {
+  const unique = [...new Set([...seedIds].filter((x) => Number.isFinite(x) && x > 0))];
+  if (!unique.length) return [];
+  const chains = await Promise.all(unique.map((id) => fetchLinkedTrackChainFromApi(id)));
+  const out = new Map<number, BackendTrack>();
+  for (const row of chains.flat()) {
+    const id = Number(row.track_id);
+    if (Number.isFinite(id)) out.set(id, row);
   }
   return [...out.values()];
 }
@@ -335,6 +690,28 @@ export const audioRecordsExtApi = {
     }),
 };
 
+export async function stampRecordingCaptureNow(audioId: string, durationSec: number) {
+  const id = Number(audioId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const durMs = Math.max(1000, Math.round(Math.max(1, durationSec) * 1000));
+  const end = new Date();
+  const start = new Date(end.getTime() - durMs);
+  const toIso = (d: Date) => d.toISOString();
+  await audioRecordsExtApi.update(id, {
+    start_time_utc: toIso(start),
+    end_time_utc: toIso(end),
+  });
+}
+
+/** 删除 A5 一条录音（含关联标注，不可恢复） */
+export async function deleteRecordingFromBackend(audioId: string) {
+  const id = Number(audioId);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error("仅可删除已同步到后端的录音（数字 ID）");
+  }
+  return audioRecordsExtApi.deleteOne(id);
+}
+
 export type AnnotationsExtCreatePayload = Record<string, unknown> & { audio_id: number };
 
 export const annotationsExtApi = {
@@ -379,27 +756,127 @@ export const annotationsExtApi = {
     }),
 };
 
-export async function fetchAnnotationBundle(): Promise<{
+/** 按 audio_id 从 A5 拉单条录音（含无转写项） */
+export async function fetchRecordingByAudioId(
+  audioId: string,
+  noCache = true
+): Promise<AudioData | null> {
+  try {
+    const row = await getTableItem<BackendAudioRecord>("audio_records", audioId);
+    const id = String(row.audio_id);
+    const fileName = String(row.file_name || "").trim();
+    const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+    const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
+    return {
+      id,
+      url: resolveBrowserAudioUrl(row.source_url),
+      duration: durationSec,
+      timestamps: [],
+      metadata: {
+        title:
+          formatRecordingCaptureTimeLocal(startTimeUtc) ||
+          formatRecordingFileName(fileName) ||
+          undefined,
+        fileName: fileName || undefined,
+        startTimeUtc,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** A5 中已同步但尚无 LNG_ANNOTATIONS 的录音（供「实时更新」挑选 ASR 目标） */
+export async function fetchPendingRecordingsForAsr(noCache = true): Promise<AudioData[]> {
+  const [audioRows, annotationRows] = await Promise.all([
+    listTableItems<BackendAudioRecord>("audio_records", 1000, 0, noCache),
+    listAllTableItems<BackendAnnotation>("annotations", 1000, noCache),
+  ]);
+  const withAnn = new Set<number>();
+  for (const a of annotationRows) {
+    const id = Number(a.audio_id);
+    if (Number.isFinite(id)) withAnn.add(id);
+  }
+  return audioRows
+    .filter((row) => !withAnn.has(Number(row.audio_id)))
+    .map((row) => {
+      const id = String(row.audio_id);
+      const fileName = String(row.file_name || "").trim();
+      const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+      const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
+      return {
+        id,
+        url: resolveBrowserAudioUrl(row.source_url),
+        duration: durationSec,
+        timestamps: [],
+        metadata: {
+          title:
+            formatRecordingCaptureTimeLocal(startTimeUtc) ||
+            formatRecordingFileName(fileName) ||
+            undefined,
+          fileName: fileName || undefined,
+          startTimeUtc,
+        },
+      };
+    });
+}
+
+export async function fetchAnnotationBundle(options?: {
+  noCache?: boolean;
+  /** 地图用：有实时数据时不回退 VHHH-DEMO 演示航迹 */
+  mapLiveOnly?: boolean;
+}): Promise<{
   recordings: AudioData[];
   adsbData: ADSBData[];
   recordingMeta: Record<string, RecordingMeta>;
+  liveAircraftCount: number;
 }> {
+  const noCache = options?.noCache ?? false;
+  const mapLiveOnly = options?.mapLiveOnly ?? false;
   // 与后端 GET /tables/{key}?limit= 上限（当前 le=1000）一致，避免 422
   const [audioRows, trackRows, annotationRows] = await Promise.all([
-    listTableItems<BackendAudioRecord>("audio_records", 1000, 0),
-    listTableItems<BackendTrack>("tracks", 1000, 0),
-    listTableItems<BackendAnnotation>("annotations", 1000, 0),
+    listTableItems<BackendAudioRecord>("audio_records", 1000, 0, noCache),
+    listTableItems<BackendTrack>("tracks", 1000, 0, noCache),
+    listAllTableItems<BackendAnnotation>("annotations", 1000, noCache),
   ]);
 
   const tracksById = new Map<number, BackendTrack>();
   for (const t of trackRows) tracksById.set(Number(t.track_id), t);
 
+  const relatedTrackIds = new Set(audioRows.map((r) => Number(r.track_id)).filter((x) => Number.isFinite(x)));
+  const chainTracks = await fetchTracksForMapSeeds(relatedTrackIds);
+  for (const t of chainTracks) tracksById.set(Number(t.track_id), t);
+
+  const preferVhhh = audioRows.some((r) =>
+    String(r.file_name || r.source_url || "").toLowerCase().includes("vhhh")
+  );
+  const mergedTrackRows = [...tracksById.values()];
+  const liveTrackRows = await fetchLiveTracksFromApi(1, 30_000);
+  const liveAdsb = buildLiveAdsbPoints(liveTrackRows, {
+    activeWithinMinutes: LIVE_ACTIVE_MINUTES,
+    trailWithinMinutes: LIVE_TRAIL_MINUTES,
+  });
+
+  let usableTracks =
+    relatedTrackIds.size > 0
+      ? expandTracksForMap(mergedTrackRows, relatedTrackIds, { preferVhhh })
+      : mergedTrackRows.filter((t) => isNearVhhh(t.tracks_latitude, t.tracks_longitude));
+
   const annotationsByAudioId = new Map<number, VoiceTimestamp[]>();
+  const durationByAudioId = new Map<number, number>();
+  for (const row of audioRows) {
+    durationByAudioId.set(
+      Number(row.audio_id),
+      Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000))
+    );
+  }
+
   for (const a of annotationRows) {
     const audioId = Number(a.audio_id);
-    const start = Number.isFinite(Number(a.relative_start)) ? Number(a.relative_start) : 0;
-    const endCandidate = Number(a.relative_end);
-    const end = Number.isFinite(endCandidate) ? endCandidate : Math.max(start + 1, start);
+    const durationSec = durationByAudioId.get(audioId) ?? 60;
+    const start = normalizeRelativeSeconds(a.relative_start, durationSec);
+    const endCandidate = normalizeRelativeSeconds(a.relative_end, durationSec);
+    const end = Number.isFinite(endCandidate) && endCandidate > start ? endCandidate : Math.max(start + 1, start);
     const ts: VoiceTimestamp = {
       id: String(a.annotation_id),
       startTime: start,
@@ -416,32 +893,51 @@ export async function fetchAnnotationBundle(): Promise<{
     list.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
   }
 
-  const recordings: AudioData[] = audioRows.map((row) => {
-    const id = String(row.audio_id);
-    const track = tracksById.get(Number(row.track_id));
-    return {
-      id,
-      url: resolveBrowserAudioUrl(row.source_url),
-      duration: Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000)),
-      timestamps: annotationsByAudioId.get(Number(row.audio_id)) || [],
-      metadata: {
-        icao: track?.departure_airport_code || track?.arrival_airport_code || track?.flight_id,
-        date: row.start_time_utc ? String(row.start_time_utc).slice(0, 10) : undefined,
-      },
-    };
-  });
-
-  const relatedTrackIds = new Set(audioRows.map((r) => Number(r.track_id)).filter((x) => Number.isFinite(x)));
-  const usableTracks =
-    relatedTrackIds.size > 0 ? expandLinkedTracks(trackRows, relatedTrackIds) : trackRows;
+  const recordings: AudioData[] = audioRows
+    .filter((row) => (annotationsByAudioId.get(Number(row.audio_id))?.length ?? 0) > 0)
+    .map((row) => {
+      const id = String(row.audio_id);
+      const track = tracksById.get(Number(row.track_id));
+      const fileName = String(row.file_name || "").trim();
+      const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+      const title =
+        formatRecordingCaptureTimeLocal(startTimeUtc) ||
+        formatRecordingFileName(fileName) ||
+        undefined;
+      const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
+      return {
+        id,
+        url: resolveBrowserAudioUrl(row.source_url),
+        duration: durationSec,
+        timestamps: (annotationsByAudioId.get(Number(row.audio_id)) || []).map((ts) => ({
+          ...ts,
+          startTime: normalizeRelativeSeconds(ts.startTime, durationSec),
+          endTime: normalizeRelativeSeconds(ts.endTime, durationSec),
+        })),
+        metadata: {
+          title,
+          fileName: fileName || undefined,
+          startTimeUtc,
+          icao: track?.departure_airport_code || track?.arrival_airport_code || track?.flight_id,
+          date: startTimeUtc ? String(startTimeUtc).slice(0, 10) : undefined,
+        },
+      };
+    });
 
   const parsedTimes = usableTracks
     .map((t) => toUnixSeconds(t.timestamp))
     .filter((x) => Number.isFinite(x));
   const baseTime = parsedTimes.length ? Math.min(...parsedTimes) : 0;
 
-  const adsbData: ADSBData[] = usableTracks
-    .filter((t) => Number.isFinite(Number(t.tracks_latitude)) && Number.isFinite(Number(t.tracks_longitude)))
+  const demoAdsb: ADSBData[] = usableTracks
+    .filter((t) => {
+      const fid = String(t.flight_id || "");
+      if (liveAdsb.length > 0 && DEMO_FLIGHT_IDS.has(fid)) return false;
+      return (
+        Number.isFinite(Number(t.tracks_latitude)) &&
+        Number.isFinite(Number(t.tracks_longitude))
+      );
+    })
     .map((t) => {
       const rawTs = toUnixSeconds(t.timestamp);
       const relTs = rawTs > 1000000000 ? rawTs - baseTime : rawTs;
@@ -456,19 +952,32 @@ export async function fetchAnnotationBundle(): Promise<{
         altitude: Number(t.altitude) || 0,
         speed: Number(t.speed) || 0,
         heading: Number(t.heading) || 0,
+        verticalRate:
+          t.vertical_rate != null && Number.isFinite(Number(t.vertical_rate))
+            ? Number(t.vertical_rate)
+            : undefined,
+        live: false,
       };
     });
 
+  const adsbMerged: ADSBData[] =
+    liveAdsb.length > 0
+      ? [...liveAdsb, ...(mapLiveOnly ? [] : demoAdsb)]
+      : mapLiveOnly
+        ? []
+        : demoAdsb;
+  const adsbData = mergeDetourLiveAdsb(enrichVerticalRates(adsbMerged));
+  const liveAircraftCount = new Set(adsbData.filter((p) => p.live).map((p) => p.icao24)).size;
+
   const recordingMeta: Record<string, RecordingMeta> = {};
-  for (const row of audioRows) {
-    const id = String(row.audio_id);
-    const fileName = String(row.file_name || "").toLowerCase();
-    recordingMeta[id] = {
+  for (const rec of recordings) {
+    const fileName = String(rec.metadata?.fileName || "").toLowerCase();
+    recordingMeta[rec.id] = {
       channel: fileName.includes("cabin") ? "Cabin" : "Radio",
       mine: false,
     };
   }
 
-  return { recordings, adsbData, recordingMeta };
+  return { recordings, adsbData, recordingMeta, liveAircraftCount };
 }
 

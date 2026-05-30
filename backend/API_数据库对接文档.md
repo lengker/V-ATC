@@ -574,3 +574,54 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 成功时 `data` 内含 `token`、`token_type`、`user_info`；后续请求头携带：`Authorization: Bearer <token>`。
+
+---
+
+## §15 附录：标注员工作台最小接口集（A4 前端对照）
+
+> **确认范围**：与 A5 后端对齐的「标注员工作台」联调最小集；前端实现见 `front/src/lib/backend-api.ts`、`front/src/lib/api.ts`。  
+> **原则**：前端 **只连 A5**；不存在 `/api/audio/*` 等 Next 占位路由。媒体文件通过 `source_url` 绝对 HTTP(S) 地址加载。
+
+### §15.1 按业务场景
+
+| 场景 | 前端入口 | A5 HTTP | 认证 | 说明 |
+|------|----------|---------|------|------|
+| 健康检查 | `getHealth()` | `GET /health` | 否 | 联调脚本 `health-check.ps1` 使用 |
+| 登录 | `loginWithBackend` | `POST /users/login` | 否 | 见 §7.3.2 |
+| 注册 | `registerWithBackend` | `POST /users/register` | 否 | 见 §7.3.1 |
+| 会话恢复 | `getCurrentUser` | `GET /users/me` | Bearer | 见 §7.3.3 |
+| 权限探测 | `checkPermission` | `GET /users/permissions/check/{role}` | Bearer | 可选；见 §7.3.4 |
+| **首页三表加载** | `fetchAnnotationBundle` | `GET /tables/audio_records?limit=1000&offset=0`<br>`GET /tables/tracks?limit=1000&offset=0`<br>`GET /tables/annotations?limit=1000&offset=0` | Bearer（若后端挂载） | 并行拉取后在前端 join；航迹沿 `prev_id`/`next_id` 扩展 |
+| 音频播放 | `resolveBrowserAudioUrl` | 直接 GET `source_url` | — | 须为浏览器可请求的绝对 URL；相对路径拼 `NEXT_PUBLIC_API_BASE_URL` |
+| **改标注** | `audioAPI.updateTimestamp` → `annotationsExtApi.update` | `POST /tables/annotations/ext/update/{annotation_id}` | Bearer | Body: `{ "values": { "relative_start", "relative_end", "annotation_text", ... } }`；见 §10.6 |
+| **增标注** | `annotationAPI.createAnnotation` → `annotationsExtApi.create` | `POST /tables/annotations/ext/create` | Bearer | 必填 `audio_id`；禁止传 `prev_id`/`next_id`；见 §10.1 |
+| **删标注** | `annotationAPI.deleteAnnotation` → `annotationsExtApi.deleteOne` | `POST /tables/annotations/ext/delete-one` | Bearer | Body: `{ "id": <annotation_id> }`；见 §10.2～§10.3 |
+
+### §15.2 前端类型 ↔ 库字段（读路径）
+
+| 前端类型 | 来源表 | 关键映射 |
+|----------|--------|----------|
+| `AudioData.id` | `audio_records.audio_id` | `String(audio_id)` |
+| `AudioData.url` | `audio_records.source_url` | 经 `resolveBrowserAudioUrl` |
+| `AudioData.duration` | `audio_records.duration_ms` | `÷ 1000` 秒 |
+| `VoiceTimestamp.id` | `annotations.annotation_id` | 写回时须为数字 id |
+| `VoiceTimestamp.startTime` | `annotations.relative_start` | |
+| `VoiceTimestamp.endTime` | `annotations.relative_end` | |
+| `VoiceTimestamp.text` | `annotations.annotation_text` 或 `asr_content` | |
+| `ADSBData.*` | `tracks` | 按录音关联 `track_id` 及链式邻居聚合 |
+
+### §15.3 明确不在最小集内（后续迭代）
+
+| 能力 | 说明 |
+|------|------|
+| `GET /api/audio/*`、`GET /api/adsb/*` | 早期前端占位，**A5 未实现**；已从联调路径移除 |
+| `POST /query/arbitrary` | 管理/报表用；工作台 MVP 未使用 |
+| `audio_records` / `tracks` ext 写接口 | 同步脚本（`sync_*.py`）使用；标注员 UI 只读 |
+| 时间轴 UI「删除/拆分/合并」全量 ext 同步 | 当前以 localStorage 草稿为主；删链需补调 `delete-one` / `create` |
+
+### §15.4 环境变量
+
+| 变量 | 默认值 | 用途 |
+|------|--------|------|
+| `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:8000` | 前端 REST 与媒体基址 |
+| `APP_AUTH_SECRET` | （A5 侧） | JWT 签发；见 §7.3.7 |

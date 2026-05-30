@@ -143,6 +143,42 @@ async def test_list_historical_links_generates_recent_archive_candidates(overrid
     assert all(item.file_name.startswith("VHHH5-App-Dep-Dir-Zone-") for item in links)
 
 
+@pytest.mark.asyncio
+async def test_list_historical_links_includes_browser_archive_flow_result(override_settings):
+    override_settings(
+        a2_liveatc_browser_archive_flow_enabled=True,
+        a2_liveatc_archive_file_prefixes="",
+    )
+    client = LiveATCHTTPClient()
+    http_client = AsyncMock()
+    http_client.get = AsyncMock(
+        side_effect=[
+            _Resp("blocked", status_code=403, url="https://www.liveatc.net/search/?icao=VHHH"),
+            _Resp("blocked", status_code=403, url="https://www.liveatc.net/archive.php?m=vhhh5"),
+            _Resp("index"),
+        ]
+    )
+    browser_link = client._recent_archive_candidates(station="vhhh5", archive_identifier="VHHH5-App-Dep-Dir-Zone")[0]
+
+    with patch.object(client, "_browser_archive_flow_link", return_value=browser_link) as mocked_browser_flow:
+        links = await client.list_historical_links(http_client, "VHHH")
+
+    assert browser_link.url in {item.url for item in links}
+    mocked_browser_flow.assert_called_once_with("VHHH")
+
+
+def test_historical_audio_link_from_html_extracts_download_link():
+    client = LiveATCHTTPClient()
+    html = '<html><body><a href="/archive/vhhh/VHHH5-App-Dep-Dir-Zone-May-11-2026-0330Z.mp3">Download</a></body></html>'
+
+    link = client._historical_audio_link_from_html(html, "https://www.liveatc.net/archive.php?m=vhhh5")
+
+    assert link is not None
+    assert link.url == "https://www.liveatc.net/archive/vhhh/VHHH5-App-Dep-Dir-Zone-May-11-2026-0330Z.mp3"
+    assert link.file_name == "VHHH5-App-Dep-Dir-Zone-May-11-2026-0330Z.mp3"
+    assert link.referer_url == "https://www.liveatc.net/archive.php?m=vhhh5"
+
+
 @pytest.mark.network
 @pytest.mark.asyncio
 async def test_resolve_realtime_stream_url_real_network(network_guard):

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
 import random
+import asyncio
+import html
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
@@ -14,6 +18,9 @@ import httpx
 from app.core.config import settings
 from app.services.proxy_provider import ProxyProvider
 
+_DEFAULT_CLOAKBROWSER_CACHE_DIR = Path(__file__).resolve().parents[2] / ".cloakbrowser-cache"
+os.environ["CLOAKBROWSER_CACHE_DIR"] = str(_DEFAULT_CLOAKBROWSER_CACHE_DIR)
+
 try:
     import cloudscraper
 except Exception:  # pragma: no cover - optional dependency
@@ -24,11 +31,22 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     sync_playwright = None
 
+try:
+    from cloakbrowser import launch as cloakbrowser_launch
+except Exception:  # pragma: no cover - optional dependency
+    cloakbrowser_launch = None
+
+try:
+    from cloakbrowser import launch_persistent_context as cloakbrowser_launch_persistent_context
+except Exception:  # pragma: no cover - optional dependency
+    cloakbrowser_launch_persistent_context = None
+
 @dataclass
 class HistoricalAudioLink:
     url: str
     file_name: str
     referer_url: str | None = None
+    browser_body: bytes | None = None
 
 
 class LiveATCHTTPClient:
@@ -88,6 +106,50 @@ class LiveATCHTTPClient:
         return candidates[0]
 
     @staticmethod
+    def _resolve_cookie() -> str | None:
+        cookie = settings.a2_http_cookie.strip()
+        if cookie:
+            return cookie
+        cookie_file = settings.a2_http_cookie_file.strip()
+        if not cookie_file:
+            return None
+        try:
+            value = Path(cookie_file).expanduser().read_text(encoding="utf-8").strip()
+            return value or None
+        except OSError:
+            return None
+
+    @staticmethod
+    def _ensure_cloakbrowser_binary_path() -> str | None:
+        configured = os.environ.get("CLOAKBROWSER_BINARY_PATH", "").strip()
+        return configured or None
+
+    @classmethod
+    def _launch_browser(cls, playwright):
+        proxy = cls._pick_static_proxy()
+        if cloakbrowser_launch is not None:
+            try:
+                cls._ensure_cloakbrowser_binary_path()
+                launch_kwargs: dict[str, object] = {"headless": False, "humanize": True}
+                if proxy:
+                    launch_kwargs["proxy"] = proxy
+                return cloakbrowser_launch(**launch_kwargs)
+            except Exception:
+                pass
+        return playwright.chromium.launch(
+            headless=settings.a2_browser_headless,
+            channel=settings.a2_browser_channel or None,
+            proxy={"server": proxy} if proxy else None,
+        )
+
+    @staticmethod
+    def _browser_profile_dir() -> Path:
+        configured = settings.a2_playwright_user_data_dir.strip()
+        if configured:
+            return Path(configured).expanduser()
+        return Path(".cloakbrowser-profile")
+
+    @staticmethod
     def _split_user_data_profile(path_value: str) -> tuple[str, str | None]:
         path = Path(path_value).expanduser()
         if path.name.lower().startswith("profile") or path.name.lower() == "default":
@@ -127,6 +189,44 @@ class LiveATCHTTPClient:
     @classmethod
     def _new_browser_context(cls, playwright):
         kwargs = cls._browser_context_kwargs()
+        profile_dir = cls._browser_profile_dir()
+        storage_state_file = settings.a2_playwright_storage_state_file.strip()
+        if storage_state_file:
+            browser = cls._launch_browser(playwright)
+            storage_state_path = Path(storage_state_file).expanduser()
+            if storage_state_path.exists():
+                kwargs["storage_state"] = str(storage_state_path)
+            context = browser.new_context(**kwargs)
+            cookie_header = cls._resolve_cookie()
+            if cookie_header:
+                cookies = cls._browser_cookies_from_header(cookie_header, domain=".liveatc.net")
+                if cookies:
+                    context.add_cookies(cookies)
+            return browser, context
+        if cloakbrowser_launch_persistent_context is not None:
+            clean_profile_dir = profile_dir.with_name(f"{profile_dir.name}-clean")
+            profile_candidates = [clean_profile_dir, profile_dir]
+            for candidate_profile_dir in profile_candidates:
+                try:
+                    cls._ensure_cloakbrowser_binary_path()
+                    launch_kwargs: dict[str, object] = {
+                        # CloakBrowser docs recommend headed mode for aggressive sites.
+                        "headless": False,
+                        "humanize": True,
+                        "args": ["--disable-http2"],
+                    }
+                    proxy = kwargs.get("proxy")
+                    if proxy:
+                        launch_kwargs["proxy"] = proxy
+                    context = cloakbrowser_launch_persistent_context(str(candidate_profile_dir), **launch_kwargs)
+                    cookie_header = cls._resolve_cookie()
+                    if cookie_header:
+                        cookies = cls._browser_cookies_from_header(cookie_header, domain=".liveatc.net")
+                        if cookies:
+                            context.add_cookies(cookies)
+                    return context
+                except Exception:
+                    continue
         if settings.a2_playwright_user_data_dir:
             user_data_dir, profile_directory = cls._split_user_data_profile(settings.a2_playwright_user_data_dir)
             launch_args = []
@@ -149,16 +249,7 @@ class LiveATCHTTPClient:
                 if cookies:
                     context.add_cookies(cookies)
             return context
-        browser = playwright.chromium.launch(
-            headless=settings.a2_browser_headless,
-            channel=settings.a2_browser_channel or None,
-            proxy=kwargs.get("proxy"),
-        )
-        storage_state_file = settings.a2_playwright_storage_state_file.strip()
-        if storage_state_file:
-            storage_state_path = Path(storage_state_file).expanduser()
-            if storage_state_path.exists():
-                kwargs["storage_state"] = str(storage_state_path)
+        browser = cls._launch_browser(playwright)
         context = browser.new_context(**kwargs)
         cookie_header = cls._resolve_cookie()
         if cookie_header:
@@ -195,8 +286,8 @@ class LiveATCHTTPClient:
         return []
 
     @classmethod
-    def _extract_hrefs(cls, html: str) -> list[str]:
-        return [m.group(1).strip() for m in cls.HREF_PATTERN.finditer(html)]
+    def _extract_hrefs(cls, html_text: str) -> list[str]:
+        return [html.unescape(m.group(1).strip()) for m in cls.HREF_PATTERN.finditer(html_text)]
 
     def _to_abs(self, href: str, source_url: str) -> str:
         if href.startswith("http://") or href.startswith("https://"):
@@ -270,25 +361,27 @@ class LiveATCHTTPClient:
                 context_result = LiveATCHTTPClient._new_browser_context(playwright)
                 if isinstance(context_result, tuple):
                     browser, context = context_result
-                    page = context.new_page()
                 else:
                     context = context_result
-                    page = context.pages[0] if context.pages else context.new_page()
+                    browser = context_result
+                page = context.new_page()
+                bootstrap_url = url
                 page.goto(
-                    settings.a2_liveatc_base_url,
+                    bootstrap_url,
                     wait_until="domcontentloaded",
                     timeout=45_000,
-                    referer=settings.a2_liveatc_base_url,
+                    referer=bootstrap_url,
                 )
                 page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 1.0) * 1000))
                 response = page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=45_000,
-                    referer=settings.a2_liveatc_base_url,
+                    referer=bootstrap_url,
                 )
                 text = page.content()
-                return (response.status if response is not None else 0), text, []
+                cookies = context.cookies()
+                return (response.status if response is not None else 0), text, cookies
         except Exception:
             return 0, "", []
         finally:
@@ -302,8 +395,12 @@ class LiveATCHTTPClient:
     def _browser_fetch_bytes(url: str, *, referer: str | None = None) -> tuple[int, bytes]:
         if sync_playwright is None:
             return 0, b""
+        def looks_like_html(chunk: bytes) -> bool:
+            sample = chunk.lstrip()[:128].lower()
+            return sample.startswith((b"<!doctype html", b"<html", b"<head", b"<body")) or b"<title>" in sample
+
         status, body, _ = LiveATCHTTPClient._browser_request_get(url, referer=referer)
-        if status and body:
+        if status and body and not looks_like_html(body):
             return status, body
         browser = None
         try:
@@ -311,11 +408,11 @@ class LiveATCHTTPClient:
                 context_result = LiveATCHTTPClient._new_browser_context(playwright)
                 if isinstance(context_result, tuple):
                     browser, context = context_result
-                    page = context.new_page()
                 else:
                     context = context_result
-                    page = context.pages[0] if context.pages else context.new_page()
-                bootstrap_url = referer or settings.a2_liveatc_base_url
+                    browser = context_result
+                page = context.new_page()
+                bootstrap_url = referer or url
                 page.goto(
                     bootstrap_url,
                     wait_until="domcontentloaded",
@@ -329,8 +426,34 @@ class LiveATCHTTPClient:
                     timeout=45_000,
                     referer=bootstrap_url,
                 )
-                body = response.body() if response is not None else b""
-                return (response.status if response is not None else 0), body
+                if response is not None:
+                    try:
+                        body = response.body()
+                        if body and not looks_like_html(body):
+                            return response.status, body
+                    except Exception:
+                        pass
+                encoded = page.evaluate(
+                    """
+                    async ({ url }) => {
+                      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+                      if (!response.ok) {
+                        throw new Error(`fetch failed: ${response.status}`);
+                      }
+                      const buffer = await response.arrayBuffer();
+                      const bytes = new Uint8Array(buffer);
+                      let binary = '';
+                      const chunkSize = 0x8000;
+                      for (let index = 0; index < bytes.length; index += chunkSize) {
+                        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+                      }
+                      return btoa(binary);
+                    }
+                    """,
+                    {"url": url},
+                )
+                if encoded:
+                    return 200, base64.b64decode(encoded)
         except Exception:
             return 0, b""
         finally:
@@ -352,9 +475,10 @@ class LiveATCHTTPClient:
                     browser, context = context_result
                 else:
                     context = context_result
+                    browser = context_result
                 bootstrap_url = referer or settings.a2_liveatc_base_url
                 try:
-                    page = context.pages[0] if context.pages else context.new_page()
+                    page = context.new_page()
                     page.goto(
                         bootstrap_url,
                         wait_until="domcontentloaded",
@@ -404,6 +528,11 @@ class LiveATCHTTPClient:
         floored_minute = (value.minute // 30) * 30
         return value.replace(minute=floored_minute, second=0, microsecond=0)
 
+    @staticmethod
+    def _archive_time_label(slot: datetime) -> str:
+        end = slot + timedelta(minutes=30)
+        return f"{slot.strftime('%H%M')}-{end.strftime('%H%M')}Z"
+
     def _recent_archive_candidates(
         self, *, station: str, archive_identifier: str, now: datetime | None = None
     ) -> list[HistoricalAudioLink]:
@@ -424,6 +553,128 @@ class LiveATCHTTPClient:
             )
         return candidates
 
+    def _browser_archive_flow_link(self, icao: str, *, now: datetime | None = None) -> HistoricalAudioLink | None:
+        if not settings.a2_liveatc_browser_archive_flow_enabled:
+            return None
+        slot = self._last_finished_half_hour(now)
+        target_date = slot.strftime("%Y%m%d")
+        target_time = self._archive_time_label(slot)
+        timeout_ms = int(max(settings.a2_liveatc_browser_flow_timeout_seconds, 15.0) * 1000)
+        context = None
+        try:
+            from cloakbrowser import launch_persistent_context as _launch_persistent_context
+
+            context = _launch_persistent_context(
+                r".\cloakbrowser-profile-clean",
+                headless=False,
+                humanize=True,
+                args=["--disable-http2"],
+            )
+            page = context.new_page()
+            mount = self.mount_ids[0] if self.mount_ids else icao.lower()
+            page.goto(f"{self.base_url}/archive.php?m={mount}", wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 20.0) * 1000))
+
+            page.evaluate(
+                """
+                ({ value }) => {
+                  const visible = document.querySelector('#archiveDateDisplay');
+                  if (visible && visible._flatpickr) {
+                    visible._flatpickr.setDate(value, true, 'Ymd');
+                    return;
+                  }
+                  const hidden = document.querySelector('#archiveDate');
+                  if (hidden) {
+                    hidden.value = value;
+                    hidden.dispatchEvent(new Event('input', { bubbles: true }));
+                    hidden.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  if (visible) {
+                    visible.value = value;
+                    visible.dispatchEvent(new Event('input', { bubbles: true }));
+                    visible.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                }
+                """,
+                {"value": target_date},
+            )
+
+            time_select = page.locator("select[name='time']")
+            if time_select.count() == 0:
+                return None
+            try:
+                time_select.first.select_option(label=target_time)
+            except Exception:
+                return None
+
+            submit = page.locator("input[type='submit'], button[type='submit'], button", has_text="Submit").first
+            if submit.count():
+                submit.click()
+            else:
+                page.keyboard.press("Enter")
+
+            deadline = max(timeout_ms, 30_000)
+            waited_ms = 0
+            while waited_ms <= deadline:
+                html = page.content()
+                link = self._historical_audio_link_from_html(html, page.url)
+                if link is not None:
+                    try:
+                        page.goto(link.url, wait_until="commit", timeout=45_000, referer=link.referer_url)
+                        encoded = page.evaluate(
+                            """
+                            async ({ url }) => {
+                              const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+                              if (!response.ok) {
+                                throw new Error(`fetch failed: ${response.status}`);
+                              }
+                              const buffer = await response.arrayBuffer();
+                              const bytes = new Uint8Array(buffer);
+                              let binary = '';
+                              const chunkSize = 0x8000;
+                              for (let index = 0; index < bytes.length; index += chunkSize) {
+                                binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+                              }
+                              return btoa(binary);
+                            }
+                            """,
+                            {"url": link.url},
+                        )
+                        if encoded:
+                            return HistoricalAudioLink(
+                                url=link.url,
+                                file_name=link.file_name,
+                                referer_url=link.referer_url,
+                                browser_body=base64.b64decode(encoded),
+                            )
+                    except Exception:
+                        return link
+                page.wait_for_timeout(1000)
+                waited_ms += 1000
+        except Exception:
+            return None
+        finally:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+        return None
+
+    def _historical_audio_link_from_html(self, html: str, page_url: str) -> HistoricalAudioLink | None:
+        for href in self._extract_hrefs(html):
+            absolute = self._to_abs(href, page_url)
+            if self.MP3_PATTERN.search(absolute):
+                file_name = absolute.split("/")[-1].split("?")[0] or "liveatc.mp3"
+                return HistoricalAudioLink(url=absolute, file_name=file_name, referer_url=page_url)
+        for file_name in {m.group(1) for m in self.MP3_FILE_PATTERN.finditer(html)}:
+            for mount in self.mount_ids:
+                if file_name.lower().startswith(mount.lower()):
+                    archive_dir = self._infer_archive_dir(station=mount, archive_identifier=file_name)
+                    absolute = f"{self.archive_base_urls[0]}/{archive_dir}/{quote(file_name, safe='-_.()')}"
+                    return HistoricalAudioLink(url=absolute, file_name=file_name, referer_url=page_url)
+        return None
+
     @staticmethod
     def _mount_from_archive_page_url(page_url: str) -> str:
         parsed = urlparse(page_url)
@@ -432,9 +683,9 @@ class LiveATCHTTPClient:
 
     async def ensure_public_session_cookie(self, client: httpx.AsyncClient, icao: str) -> bool:
         seed_urls = [
-            self.base_url,
-            self.build_search_url(icao),
             f"{self.base_url}/archive.php?m={self.mount_ids[0]}" if self.mount_ids else self.base_url,
+            self.build_search_url(icao),
+            self.base_url,
         ]
         for url in seed_urls:
             try:
@@ -630,6 +881,12 @@ class LiveATCHTTPClient:
         for mount in self.mount_ids:
             for base_url in self.archive_base_urls:
                 candidate_pages.append(f"{base_url}/{mount}/")
+        browser_flow_link = None
+        if settings.a2_liveatc_browser_archive_flow_enabled and sync_playwright is not None:
+            try:
+                browser_flow_link = await asyncio.to_thread(self._browser_archive_flow_link, icao)
+            except Exception:
+                browser_flow_link = None
         try:
             search_url, html = await self.get_search_page(client, icao)
             candidate_pages.append(search_url)
@@ -640,6 +897,8 @@ class LiveATCHTTPClient:
         except httpx.HTTPStatusError:
             pass
         links: dict[str, HistoricalAudioLink] = {}
+        if browser_flow_link is not None:
+            links[browser_flow_link.url] = browser_flow_link
         for page_url in candidate_pages:
             try:
                 resp = await client.get(page_url, follow_redirects=True, headers=self._browser_navigation_headers(referer=self.base_url))

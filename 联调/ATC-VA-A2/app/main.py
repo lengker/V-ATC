@@ -32,7 +32,6 @@ app.add_middleware(
 )
 app.include_router(api_router)
 
-# 联调：让前端/A5 可通过 HTTP 访问已落盘 mp3（source_url 形如 /media/realtime/...）
 _audio_root = Path(settings.a2_audio_storage).resolve()
 _audio_root.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=str(_audio_root)), name="a2-media")

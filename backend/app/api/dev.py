@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -22,10 +24,28 @@ from app.tables.registry import TABLE_MODULES
 
 router = APIRouter(prefix="/dev", tags=["dev"])
 
+_QT_ROOT = Path(__file__).resolve().parents[3]
+_LIAN_DIAO = _QT_ROOT / "联调"
+
 
 def _ensure_dev_mode() -> None:
     if not get_settings().is_dev:
         raise HTTPException(status_code=403, detail="Development endpoints are disabled.")
+
+
+@router.post("/sync/a2-to-a5")
+def sync_a2_to_a5() -> dict[str, object]:
+    """联调：将 A2 a2_voice.db 中录音同步到 A5，供前端轮询刷新列表。"""
+    _ensure_dev_mode()
+    sync_dir = str(_LIAN_DIAO)
+    if sync_dir not in sys.path:
+        sys.path.insert(0, sync_dir)
+    try:
+        from sync_a2_to_a5 import run_sync  # noqa: WPS433
+
+        return run_sync()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/reset/{table_key}")

@@ -1,6 +1,9 @@
 # app/main.py
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from app.api.v1 import recognize
 from app.api.v1 import export
@@ -37,6 +40,12 @@ app.add_middleware(
 app.include_router(recognize.router, prefix="/api/v1", tags=["Speech Recognition"])
 app.include_router(export.router, prefix="/api/v1/export", tags=["Data Export"])
 app.include_router(query.router, prefix="/api/v1/query", tags=["Data Query"])
+
+_a3_root = Path(__file__).resolve().parents[1]
+for _subdir in ("storage", "test_wavs", "quarantine_orphans"):
+    (_a3_root / _subdir).mkdir(parents=True, exist_ok=True)
+# 统一 /media/... → 项目根下相对路径（如 /media/test_wavs/en.wav）
+app.mount("/media", StaticFiles(directory=str(_a3_root)), name="media")
 
 @app.get("/")
 async def root():

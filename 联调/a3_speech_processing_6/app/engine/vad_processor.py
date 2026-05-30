@@ -9,6 +9,46 @@ import gc
 logger = logging.getLogger(__name__)
 
 
+def _resample_mono(y: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """不依赖 librosa 的线性重采样（兼容 NumPy 2.x）。"""
+    if orig_sr == target_sr:
+        return np.asarray(y, dtype=np.float32)
+    y = np.asarray(y, dtype=np.float32)
+    if y.ndim > 1:
+        y = np.mean(y, axis=1)
+    n = int(round(len(y) * target_sr / max(orig_sr, 1)))
+    if n <= 1 or len(y) <= 1:
+        return y
+    x_old = np.arange(len(y), dtype=np.float64)
+    x_new = np.linspace(0, len(y) - 1, num=n, dtype=np.float64)
+    return np.interp(x_new, x_old, y).astype(np.float32)
+
+
+def _load_audio_mono_16k(audio_path: str, expected_sr: int = 16000) -> tuple[np.ndarray, int]:
+    """优先 soundfile；mp3 失败时用 whisper.load_audio（ffmpeg），避免 librosa+NumPy2 崩溃。"""
+    try:
+        audio_data, sr = sf.read(audio_path, dtype="float32")
+    except (sf.LibsndfileError, OSError, RuntimeError) as e:
+        logger.warning(f"[VAD] soundfile 读取失败 ({e})，尝试 whisper.load_audio: {audio_path}")
+        try:
+            import whisper
+
+            audio_data = whisper.load_audio(audio_path)
+            return np.asarray(audio_data, dtype=np.float32), expected_sr
+        except Exception as le:
+            logger.error(f"[VAD] whisper.load_audio 失败: {le}")
+            raise AudioLoadError(f"音频文件格式不支持或已损坏: {audio_path}") from le
+    if audio_data is None or len(audio_data) == 0:
+        raise AudioLoadError("音频数据为空")
+    if len(audio_data.shape) > 1:
+        audio_data = np.mean(audio_data, axis=1)
+    if int(sr) != expected_sr:
+        logger.info(f"[VAD] 重采样 {sr}Hz -> {expected_sr}Hz（numpy）")
+        audio_data = _resample_mono(audio_data, int(sr), expected_sr)
+        sr = expected_sr
+    return np.asarray(audio_data, dtype=np.float32), int(sr)
+
+
 class VADError(Exception):
     """VAD处理异常基类"""
     pass
@@ -25,7 +65,7 @@ class AudioProcessingError(VADError):
 
 
 class VADEngine:
-    def __init__(self, top_db=20, min_duration=0.3,padding_sec=0.2):
+    def __init__(self, top_db=25, min_duration=0.25, padding_sec=0.25):
         """
         初始化静音剔除引擎
 
@@ -73,48 +113,9 @@ class VADEngine:
         sr = None
 
         try:
-            # 动作四：使用 soundfile 读取（比 librosa.load 省大概 40% 内存）
-            try:
-                audio_data, sr = sf.read(audio_path, dtype='float32')
-            except sf.LibsndfileError as e:
-                logger.error(f"[VAD] soundfile读取失败: {str(e)}")
-                raise AudioLoadError(f"音频文件格式不支持或已损坏: {str(e)}")
-            except Exception as e:
-                logger.error(f"[VAD] 读取音频文件失败: {str(e)}")
-                raise AudioLoadError(f"读取音频文件失败: {str(e)}")
+            audio_data, sr = _load_audio_mono_16k(audio_path, expected_sr)
+            non_silent_intervals = self._split_intervals(audio_data, sr)
 
-            # 验证音频数据
-            if audio_data is None or len(audio_data) == 0:
-                raise AudioLoadError("音频数据为空")
-
-            # 兜底：如果是双声道，转为单声道
-            if len(audio_data.shape) > 1:
-                try:
-                    audio_data = np.mean(audio_data, axis=1)
-                except Exception as e:
-                    raise AudioProcessingError(f"音频声道转换失败: {str(e)}")
-
-            # 兜底：如果采样率不是 SenseVoice 要求的 16000Hz，强制重采样
-            if sr != expected_sr:
-                logger.info(f"[VAD] 检测到采样率为 {sr}Hz，正在重采样至 {expected_sr}Hz...")
-                try:
-                    audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=expected_sr)
-                    sr = expected_sr
-                except Exception as e:
-                    raise AudioProcessingError(f"音频重采样失败: {str(e)}")
-
-            # 核心逻辑：计算能量边界
-            try:
-                non_silent_intervals = librosa.effects.split(
-                    audio_data,
-                    top_db=self.top_db,
-                    frame_length=2048,
-                    hop_length=512
-                )
-            except Exception as e:
-                raise AudioProcessingError(f"VAD分割失败: {str(e)}")
-
-            # 动作一：改用 yield 生成器，每次只在内存中保留一个小切片
             segment_count = 0
             # 在循环外，先把留白时间换算成采样点个数
             padding_samples = int(self.padding_sec * sr)
@@ -132,15 +133,27 @@ class VADEngine:
                 duration = end_time - start_time
 
                 if duration >= self.min_duration:
-                    # 抛出包含了 Padding 缓冲的内存切片
+                    segment_count += 1
                     yield {
                         "start_time": round(start_time, 2),
                         "end_time": round(end_time, 2),
                         "duration": round(duration, 2),
-                        "audio_data": audio_data[safe_start:safe_end]
+                        "confidence": 0.85,
+                        "audio_data": audio_data[safe_start:safe_end],
                     }
 
-            logger.info(f"[VAD] 共检测到 {segment_count} 个有效音频片段")
+            if segment_count == 0 and len(audio_data) > 0:
+                logger.warning("[VAD] 未切出片段，整段作为单条送入 ASR（LiveATC/低音量兜底）")
+                yield {
+                    "start_time": 0.0,
+                    "end_time": round(len(audio_data) / sr, 2),
+                    "duration": round(len(audio_data) / sr, 2),
+                    "confidence": 0.6,
+                    "audio_data": audio_data,
+                }
+                segment_count = 1
+
+            logger.info(f"[VAD] 共输出 {segment_count} 个有效音频片段")
 
         finally:
             # 遍历结束后，手动销毁几百 MB 的音频原数组，并强制触发垃圾回收
@@ -148,3 +161,56 @@ class VADEngine:
                 del audio_data
             gc.collect()
             logger.info(f"[VAD] VAD处理结束，底层内存已强制回收。")
+
+    def _split_intervals(self, audio_data: np.ndarray, sr: int) -> np.ndarray:
+        """LiveATC mp3 音量偏低时逐级放宽 top_db；librosa 不可用时用能量 VAD。"""
+        for top_db in (self.top_db, 30, 35, 40, 45):
+            try:
+                intervals = librosa.effects.split(
+                    audio_data,
+                    top_db=top_db,
+                    frame_length=2048,
+                    hop_length=512,
+                )
+            except Exception as e:
+                logger.warning(f"[VAD] librosa.split 失败 ({e})，改用 numpy 能量切分")
+                return self._split_intervals_numpy(audio_data, sr, top_db=top_db)
+            if len(intervals) > 0:
+                logger.info(f"[VAD] top_db={top_db} -> {len(intervals)} 段")
+                return intervals
+        return self._split_intervals_numpy(audio_data, sr, top_db=45)
+
+    def _split_intervals_numpy(
+        self, audio_data: np.ndarray, sr: int, *, top_db: float = 30
+    ) -> np.ndarray:
+        """纯 numpy 能量 VAD，不依赖 librosa/numba。"""
+        frame_length = 2048
+        hop_length = 512
+        y = np.asarray(audio_data, dtype=np.float32)
+        if y.size < frame_length:
+            return np.array([[0, len(y)]], dtype=int)
+        frames = []
+        for start in range(0, len(y) - frame_length + 1, hop_length):
+            chunk = y[start : start + frame_length]
+            rms = float(np.sqrt(np.mean(chunk * chunk) + 1e-12))
+            frames.append((start, rms))
+        if not frames:
+            return np.empty((0, 2), dtype=int)
+        ref = max(max(r for _, r in frames), 1e-8)
+        thresh = ref * (10 ** (-top_db / 20.0))
+        intervals: list[list[int]] = []
+        cur_start: int | None = None
+        for start, rms in frames:
+            idx = start
+            if rms >= thresh:
+                if cur_start is None:
+                    cur_start = idx
+            elif cur_start is not None:
+                intervals.append([cur_start, idx + frame_length])
+                cur_start = None
+        if cur_start is not None:
+            intervals.append([cur_start, len(y)])
+        if not intervals:
+            return np.empty((0, 2), dtype=int)
+        logger.info(f"[VAD] numpy 能量切分 top_db={top_db} -> {len(intervals)} 段")
+        return np.asarray(intervals, dtype=int)

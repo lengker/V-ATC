@@ -150,14 +150,15 @@ export function AuxiliaryInfo({
                     {currentAircraftData.heading}°
                   </div>
                 </div>
-                {currentAircraftData.verticalRate !== undefined && (
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">垂直速率</div>
-                    <div className="text-sm text-muted-foreground">
-                      {currentAircraftData.verticalRate} ft/min
-                    </div>
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">垂直速率</div>
+                  <div className="text-sm text-muted-foreground">
+                    {currentAircraftData.verticalRate != null &&
+                    Number.isFinite(currentAircraftData.verticalRate)
+                      ? `${currentAircraftData.verticalRate > 0 ? "+" : ""}${Math.round(currentAircraftData.verticalRate)} ft/min`
+                      : "—"}
                   </div>
-                )}
+                </div>
                 <div className="space-y-2">
                   <div className="text-sm font-medium">时间戳</div>
                   <div className="text-sm text-muted-foreground">

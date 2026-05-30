@@ -169,14 +169,153 @@ export type AdsbTrackIndex = {
   tracks: Map<string, ADSBData[]>;
 };
 
+/** 近似地面距离（米） */
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+export type DedupeAdsbOptions = {
+  /** 与上一点距离小于该值（米）且非末点则丢弃，去掉悬停重复点 */
+  minMoveMeters?: number;
+  /** 每条航迹最多保留点数（保留首、尾与均匀抽样） */
+  maxPointsPerFlight?: number;
+};
+
+/**
+ * 按航班号去重：去掉相同位置重复点，并限制单条尾迹长度。
+ */
+export function dedupeAdsbPointsByFlight(
+  points: ADSBData[],
+  options?: DedupeAdsbOptions
+): ADSBData[] {
+  const minMove = options?.minMoveMeters ?? 120;
+  const maxPts = options?.maxPointsPerFlight ?? 160;
+
+  const byFlight = new Map<string, ADSBData[]>();
+  for (const p of points) {
+    const key = String(p.icao24 || "").toLowerCase();
+    if (!key) continue;
+    const arr = byFlight.get(key) ?? [];
+    arr.push(p);
+    byFlight.set(key, arr);
+  }
+
+  const out: ADSBData[] = [];
+  for (const arr of byFlight.values()) {
+    const sorted = [...arr].sort((a, b) => a.timestamp - b.timestamp || String(a.id).localeCompare(String(b.id)));
+    if (sorted.length <= 1) {
+      out.push(...sorted);
+      continue;
+    }
+
+    const kept: ADSBData[] = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      const p = sorted[i];
+      const last = kept[kept.length - 1];
+      const isLast = i === sorted.length - 1;
+      const dist = haversineMeters(last.latitude, last.longitude, p.latitude, p.longitude);
+      const sameCoord =
+        Math.abs(p.latitude - last.latitude) < 1e-6 && Math.abs(p.longitude - last.longitude) < 1e-6;
+      if (!isLast && (sameCoord || dist < minMove)) continue;
+      kept.push(p);
+    }
+
+    const tail = sorted[sorted.length - 1];
+    if (kept[kept.length - 1].id !== tail.id) kept.push(tail);
+
+    if (kept.length <= maxPts) {
+      out.push(...kept);
+      continue;
+    }
+    // 均匀抽样，始终保留首尾
+    const sampled: ADSBData[] = [kept[0]];
+    const inner = kept.slice(1, -1);
+    const slots = maxPts - 2;
+    for (let k = 0; k < slots; k++) {
+      const idx = Math.min(inner.length - 1, Math.round(((k + 1) * inner.length) / (slots + 1)) - 1);
+      sampled.push(inner[idx]);
+    }
+    sampled.push(kept[kept.length - 1]);
+    out.push(...sampled);
+  }
+
+  return out;
+}
+
+/** OpenSky vertical_rate 为 m/s，入库为 ft/min */
+export const METERS_PER_SEC_TO_FPM = 196.8503937;
+
+/**
+ * 为航迹点补全爬升率 (ft/min)：优先保留已有值，否则用相邻点高度差推算。
+ */
+export function enrichVerticalRates(points: ADSBData[]): ADSBData[] {
+  if (points.length === 0) return points;
+
+  const byIcao = new Map<string, ADSBData[]>();
+  for (const p of points) {
+    const arr = byIcao.get(p.icao24) ?? [];
+    arr.push({ ...p });
+    byIcao.set(p.icao24, arr);
+  }
+
+  const out: ADSBData[] = [];
+  for (const arr of byIcao.values()) {
+    const sorted = arr.sort((a, b) => a.timestamp - b.timestamp);
+    for (let i = 0; i < sorted.length; i++) {
+      const p = sorted[i];
+      let vr = p.verticalRate;
+
+      if (vr === undefined || !Number.isFinite(vr)) {
+        if (i > 0) {
+          const prev = sorted[i - 1];
+          const dt = p.timestamp - prev.timestamp;
+          if (dt > 0 && dt <= 20 * 60) {
+            vr = ((p.altitude - prev.altitude) / dt) * 60;
+          }
+        }
+        if ((vr === undefined || !Number.isFinite(vr)) && i < sorted.length - 1) {
+          const next = sorted[i + 1];
+          const dt = next.timestamp - p.timestamp;
+          if (dt > 0 && dt <= 20 * 60) {
+            vr = ((next.altitude - p.altitude) / dt) * 60;
+          }
+        }
+      }
+
+      out.push(
+        vr !== undefined && Number.isFinite(vr)
+          ? { ...p, verticalRate: Math.round(vr * 10) / 10 }
+          : p
+      );
+    }
+  }
+  return out;
+}
+
+export function formatVerticalRateFpm(vr: number | undefined): string {
+  if (vr === undefined || !Number.isFinite(vr)) return "—";
+  const n = Math.round(vr);
+  if (n > 0) return `+${n}`;
+  return String(n);
+}
+
 export function buildAdsbTrackIndex(
   points: ADSBData[],
-  isVisibleAircraft?: (icao24: string) => boolean
+  isVisibleAircraft?: (icao24: string) => boolean,
+  dedupeOptions?: DedupeAdsbOptions
 ): AdsbTrackIndex {
-  const tracks = new Map<string, ADSBData[]>();
+  const filtered = isVisibleAircraft ? points.filter((p) => isVisibleAircraft(p.icao24)) : points;
+  const deduped = dedupeAdsbPointsByFlight(filtered, dedupeOptions);
 
-  for (const p of points) {
-    if (isVisibleAircraft && !isVisibleAircraft(p.icao24)) continue;
+  const tracks = new Map<string, ADSBData[]>();
+  for (const p of deduped) {
     const arr = tracks.get(p.icao24) ?? [];
     arr.push(p);
     tracks.set(p.icao24, arr);
@@ -189,7 +328,7 @@ export function buildAdsbTrackIndex(
   return { tracks };
 }
 
-function upperBoundByTime(points: ADSBData[], timestamp: number): number {
+export function upperBoundByTime(points: ADSBData[], timestamp: number): number {
   let lo = 0;
   let hi = points.length;
   while (lo < hi) {
@@ -234,6 +373,15 @@ export function queryCurrentAdsbPoints(index: AdsbTrackIndex, currentTime: numbe
     if (current) currentPoints.push(current);
   }
 
+  return currentPoints;
+}
+
+/** 每架飞机取最新一个点（用于 OpenSky 实时层，时间轴与录音无关） */
+export function queryLatestAdsbPoints(index: AdsbTrackIndex): ADSBData[] {
+  const currentPoints: ADSBData[] = [];
+  for (const [, arr] of index.tracks.entries()) {
+    if (arr.length > 0) currentPoints.push(arr[arr.length - 1]);
+  }
   return currentPoints;
 }
 

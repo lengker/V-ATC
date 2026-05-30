@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.engine.vad_processor import VADEngine
 from app.engine.sense_voice import ASREngine
-from app.db.crud import create_audio_record, create_annotation, get_audio_record
+from app.db.crud import (
+    create_audio_record,
+    create_annotation,
+    delete_annotations_for_audio,
+    get_audio_record,
+)
+from app.services.audio_path_resolver import resolve_local_audio_path
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +43,7 @@ class DatabaseOperationError(SpeechServiceError):
 class SpeechService:
     def __init__(self):
         try:
-            self.vad = VADEngine(top_db=20)
+            self.vad = VADEngine(top_db=25)
             self.asr = ASREngine()
             logger.info("✅ SpeechService 初始化成功")
         except Exception as e:
@@ -70,12 +76,25 @@ class SpeechService:
 
     def validate_asr_result(self, text: str, duration: float) -> bool:
         """[任务 3: 数据异常校验] 拦截底噪导致的脏数据"""
-        if not text or text.strip() == "":
+        t = (text or "").strip()
+        if not t:
             return False
-        # 逻辑：时间挺长但没识别出几个字，通常是电流声杂音
-        if duration > 2.0 and len(text.strip()) <= 2:
+        if duration <= 1.0:
+            return len(t) >= 1
+        if duration > 2.0 and len(t) <= 2:
             return False
         return True
+
+    def _normalize_segment_text(self, raw_text: str, duration: float) -> Optional[str]:
+        """英文清洗优先；清洗为空时回退原始 ASR 文本。"""
+        clean = self.clean_vhhh_text(raw_text)
+        if self.validate_asr_result(clean, duration):
+            return clean
+        fallback = (raw_text or "").strip()
+        if fallback and self.validate_asr_result(fallback, duration):
+            logger.info("[ASR] 清洗后为空，使用原始识别: %r", fallback[:80])
+            return fallback
+        return None
 
     def clean_vhhh_text(self, text: str) -> str:
         """
@@ -149,20 +168,15 @@ class SpeechService:
                     logger.error(f"❌ ASR识别失败 [片段 {i}]: {str(e)}")
                     continue
 
-                # 2. VHHH 纯英文清洗
-                clean_text = self.clean_vhhh_text(raw_text)
                 duration = seg["end_time"] - seg["start_time"]
-
-                # 3. 容错校验
-                if not self.validate_asr_result(clean_text, duration):
-                    logger.warning(f"⚠️ [拦截] 片段 {i} 判定为底噪或被清洗为空，直接丢弃: (原音:{raw_text})")
+                clean_text = self._normalize_segment_text(raw_text, duration)
+                if not clean_text:
+                    logger.warning(f"⚠️ [拦截] 片段 {i} 判定为底噪，丢弃: (原音:{raw_text!r})")
                     continue
 
-                # 4. 结构化解析
                 callsign = self.extract_callsign(clean_text)
                 flight_id = self.extract_flight_id(clean_text)
 
-                # 保存有效片段信息
                 valid_segments.append({
                     "segment": seg,
                     "clean_text": clean_text,
@@ -231,9 +245,9 @@ class SpeechService:
                 "asr_content": clean_text,
                 "vad_confidence": seg.get("confidence", 0.8),
                 "is_annotated": 0,  # 未标注
-                "annotation_text": None,
+                "annotation_text": clean_text,
                 "annotation_time": None,
-                "storage_tag": f"{flight_id}_{i}",
+                "storage_tag": f"asr_{flight_id}_{i}",
                 "next_id": None,  # 链表结构，初始为None
                 "prev_id": None,  # 链表结构，初始为None
             }
@@ -260,7 +274,16 @@ class SpeechService:
         return saved_results
 
 
-    def process_existing_audio_record(self, db: Session, audio_id: int, source_url: str) -> List[dict]:
+    def process_existing_audio_record(
+        self,
+        db: Session,
+        audio_id: int,
+        source_url: str,
+        *,
+        file_path: Optional[str] = None,
+        file_name: Optional[str] = None,
+        replace_existing: bool = True,
+    ) -> List[dict]:
         """
         处理数据库中已存在的音频记录
         从source_url获取音频数据，进行识别，仅创建新的标注记录
@@ -291,21 +314,27 @@ class SpeechService:
             logger.error(f"❌ 音频记录不存在: audio_id={audio_id}")
             return []
 
-        
-        # 本地文件路径直接读取，
-        audio_file_path = source_url
-        
-        # 验证本地文件
-        if not os.path.exists(audio_file_path):
-            logger.error(f"❌ 本地音频文件不存在: {audio_file_path}")
-            raise AudioProcessingError(f"本地音频文件不存在: {audio_file_path}")
-        
+        fp = file_path or getattr(audio_record, "file_path", None) or ""
+        fn = file_name or getattr(audio_record, "file_name", None) or ""
+        try:
+            audio_file_path, _ = resolve_local_audio_path(
+                source_url=source_url,
+                file_path=fp or None,
+                file_name=fn or None,
+            )
+        except FileNotFoundError as e:
+            logger.error(f"❌ 无法解析音频: {e}")
+            raise AudioProcessingError(str(e)) from e
+
         if os.path.getsize(audio_file_path) == 0:
-            logger.error(f"❌ 本地音频文件为空: {audio_file_path}")
             raise AudioProcessingError(f"本地音频文件为空: {audio_file_path}")
-        
-        logger.info(f"✅ 使用本地音频文件: {audio_file_path}")
-        need_cleanup = False
+
+        logger.info(f"✅ 使用音频文件: {audio_file_path}")
+
+        if replace_existing:
+            removed = delete_annotations_for_audio(db, audio_id)
+            if removed:
+                logger.info(f"已清除 audio_id={audio_id} 的 {removed} 条旧标注")
 
         saved_results = []
 
@@ -326,20 +355,16 @@ class SpeechService:
                     logger.error(f"❌ ASR识别失败 [片段 {i}]: {str(e)}")
                     continue
 
-                # 2. VHHH 纯英文清洗
-                clean_text = self.clean_vhhh_text(raw_text)
                 duration = seg["end_time"] - seg["start_time"]
-
-                # 3. 容错校验
-                if not self.validate_asr_result(clean_text, duration):
-                    logger.warning(f"⚠️ [拦截] 片段 {i} 判定为底噪或被清洗为空，直接丢弃: (原音:{raw_text})")
+                clean_text = self._normalize_segment_text(raw_text, duration)
+                if not clean_text:
+                    logger.warning(f"⚠️ [拦截] 片段 {i} 判定为底噪，丢弃: (原音:{raw_text!r})")
                     continue
 
-                # 4. 结构化解析
                 callsign = self.extract_callsign(clean_text)
                 flight_id = self.extract_flight_id(clean_text)
 
-                # 5. 创建标注记录（不创建新的音频记录）- 适配数据库模型
+                # 5. 创建标注记录（不创建新的音频记录）
                 current_time = datetime.utcnow()
                 annotation_data = {
                     "label_type": "ATC_COMMUNICATION",
@@ -352,9 +377,9 @@ class SpeechService:
                     "asr_content": clean_text,
                     "vad_confidence": seg.get("confidence", 0.8),
                     "is_annotated": 0,  # 未标注
-                    "annotation_text": None,
+                    "annotation_text": clean_text,
                     "annotation_time": None,
-                    "storage_tag": f"{flight_id}_{i}",
+                    "storage_tag": f"asr_{flight_id}_{i}",
                     "next_id": None,  # 链表结构，初始为None
                     "prev_id": None,  # 链表结构，初始为None
                 }

@@ -155,43 +155,61 @@ class LiveATCIngestionService:
         capture_seconds = timeout_seconds or settings.a2_realtime_capture_seconds
         bytes_limit = max_bytes or settings.a2_realtime_capture_max_bytes
         now_utc = self.utc_now()
-        storage_dir = Path(settings.a2_audio_storage) / "realtime" / now_utc.strftime("%Y%m%d")
+        now_local = now_utc.astimezone()
+        storage_dir = Path(settings.a2_audio_storage) / "realtime" / now_local.strftime("%Y%m%d")
         storage_dir.mkdir(parents=True, exist_ok=True)
-        file_name = f"{settings.a2_icao_code.lower()}_{now_utc.strftime('%Y%m%dT%H%M%SZ')}.mp3"
+        file_name = (
+            f"{settings.a2_icao_code.lower()}_"
+            f"{now_local.strftime('%Y%m%d_%H%M%S')}.mp3"
+        )
         output_path = storage_dir / file_name
+        temp_path = output_path.with_name(f"{output_path.name}.part")
 
         timeout = httpx.Timeout(connect=10.0, read=10.0, write=10.0, pool=10.0)
         start_ts = monotonic()
         written = 0
-        with output_path.open("wb") as f:
-            client_kwargs = {"timeout": timeout, "headers": request_headers}
-            if proxy:
-                client_kwargs["proxy"] = proxy
-            async with httpx.AsyncClient(**client_kwargs) as client:
-                async with client.stream("GET", stream_url, follow_redirects=True) as resp:
-                    resp.raise_for_status()
-                    async for chunk in resp.aiter_bytes(chunk_size=8192):
-                        if not chunk:
-                            await asyncio.sleep(0)
-                            continue
-                        f.write(chunk)
-                        written += len(chunk)
-                        elapsed = monotonic() - start_ts
-                        if written >= bytes_limit or elapsed >= capture_seconds:
-                            break
+        temp_path.unlink(missing_ok=True)
+        try:
+            with temp_path.open("wb") as f:
+                client_kwargs = {"timeout": timeout, "headers": request_headers}
+                if proxy:
+                    client_kwargs["proxy"] = proxy
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    async with client.stream("GET", stream_url, follow_redirects=True) as resp:
+                        resp.raise_for_status()
+                        async for chunk in resp.aiter_bytes(chunk_size=8192):
+                            if not chunk:
+                                await asyncio.sleep(0)
+                                continue
+                            remaining = bytes_limit - written
+                            if remaining <= 0:
+                                break
+                            data = chunk[:remaining]
+                            f.write(data)
+                            written += len(data)
+                            elapsed = monotonic() - start_ts
+                            if written >= bytes_limit or elapsed >= capture_seconds:
+                                break
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
 
         if written == 0:
-            output_path.unlink(missing_ok=True)
+            temp_path.unlink(missing_ok=True)
             return None
+        try:
+            temp_path.replace(output_path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
 
         end_utc = self.utc_now()
-        seg_start, seg_end = self.estimate_realtime_segment_bounds(now_utc, end_utc)
         duration_ms = max(int((end_utc - now_utc).total_seconds() * 1000), 0)
         return await self.register_realtime_capture(
             file_name=file_name,
             file_path=str(output_path),
-            start_time_utc=seg_start,
-            end_time_utc=seg_end,
+            start_time_utc=now_utc,
+            end_time_utc=end_utc,
             source_url=stream_url,
             file_size=written,
             duration_ms=duration_ms,

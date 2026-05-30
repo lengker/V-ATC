@@ -17,6 +17,7 @@ try:
 except Exception as exc:
     raise SystemExit("playwright is required to run this helper") from exc
 
+from app.core.config import settings
 from app.services.proxy_provider import ProxyProvider
 
 DEFAULT_STORAGE_PATH = Path('.').joinpath('.local', 'liveatc_storage.json')
@@ -82,7 +83,9 @@ def wait_for_clearance(context, timeout_seconds: int = 120) -> bool:
 
 
 def pick_static_proxy() -> str | None:
-    proxy_file = Path('liveatc-downloader').joinpath('proxy_pool.txt')
+    if not settings.a2_proxy_enabled:
+        return None
+    proxy_file = Path(settings.a2_proxy_file)
     if not proxy_file.exists():
         return None
     proxies = []
@@ -157,7 +160,7 @@ def main(headless: bool = False, user_data_dir: str | None = None, storage_state
             try:
                 print('cf_clearance did not appear; waiting for ENTER as a fallback...')
                 input()
-            except KeyboardInterrupt:
+            except (EOFError, KeyboardInterrupt):
                 pass
         if not saved:
             try:

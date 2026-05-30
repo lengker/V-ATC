@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 .next/
 out/
 dist/
@@ -8,4 +8,13 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+联调/.asr-venv/
 .DS_Store
+teamwork/
+code.zip
+
+# 大模型 / 缓存（本地保留，GitHub 单文件限 100MB）
+联调/a3_speech_processing_6/models/*.onnx
+联调/a3_speech_processing_6/models/_sv_test/
+联调/ATC-VA-A2/.cloakbrowser-cache/
+*.tar.bz2

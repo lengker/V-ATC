@@ -10,6 +10,8 @@ export interface ADSBData {
   speed: number;
   heading: number;
   verticalRate?: number;
+  /** OpenSky 实时层：不参与录音时间轴过滤，地图始终显示最新位置 */
+  live?: boolean;
 }
 
 // 语音时间戳数据类型
@@ -29,6 +31,12 @@ export interface AudioData {
   duration: number;
   timestamps: VoiceTimestamp[];
   metadata?: {
+    /** 列表主标题（由 file_name 解析） */
+    title?: string;
+    /** 原始文件名 */
+    fileName?: string;
+    /** A5 start_time_utc，用于列表显示为本地采集时间 */
+    startTimeUtc?: string;
     icao?: string;
     date?: string;
     frequency?: string;

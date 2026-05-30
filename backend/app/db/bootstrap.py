@@ -169,6 +169,9 @@ def _migrate_latlon_columns(conn: sqlite3.Connection) -> None:
                 conn.execute("ALTER TABLE LNG_TRACKS__new RENAME TO LNG_TRACKS;")
             finally:
                 conn.execute("PRAGMA foreign_keys = ON;")
+        cols = _table_columns(conn, "LNG_TRACKS")
+        if "vertical_rate" not in cols:
+            conn.execute("ALTER TABLE LNG_TRACKS ADD COLUMN vertical_rate REAL")
 
 
 def _descendants(table_key: str) -> set[str]:

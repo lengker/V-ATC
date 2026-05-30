@@ -1,14 +1,26 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VoiceTimestamp } from "@/types";
-import { cn, formatTime } from "@/lib/utils";
+import { cn, formatTime, recordingTimelineMax } from "@/lib/utils";
+import { useRecordingsSync } from "@/context/recordings-sync-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Check, Clapperboard, Combine, Minus, Pencil, Plus, Scissors, Sparkles, Trash2 } from "lucide-react";
+import {
+  Check,
+  Clapperboard,
+  Combine,
+  Loader2,
+  Minus,
+  Pencil,
+  Plus,
+  Scissors,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 
 const MIN_SEGMENT_SECONDS = 0.05;
 
@@ -28,24 +40,61 @@ function normalizeSegments(items: VoiceTimestamp[]) {
   return [...items].sort((a, b) => a.startTime - b.startTime);
 }
 
+function TranscriptGeneratingPanel({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-[min(520px,55vh)] flex-col items-center justify-center gap-5 px-6 py-16 text-center">
+      <div className="relative flex h-16 w-16 items-center justify-center">
+        <div className="absolute inset-0 animate-ping rounded-full bg-primary/15" />
+        <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/25">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      </div>
+      <div className="max-w-md space-y-2">
+        <p className="text-base font-medium text-foreground">{message}</p>
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          首次识别约需 30 秒～2 分钟，完成后将自动显示语音片段与时间轴。
+        </p>
+      </div>
+      <div className="flex w-full max-w-lg gap-2 px-4">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div
+            key={i}
+            className="h-1.5 flex-1 animate-pulse rounded-full bg-primary/30"
+            style={{ animationDelay: `${i * 120}ms` }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function TranscriptTimelineEditor({
   value,
   currentTime,
   timelineMax,
   onChange,
   onSeek,
+  onSegmentFocus,
   className,
+  isGenerating = false,
+  generatingMessage = "正在识别语音片段…",
 }: {
   value: VoiceTimestamp[];
   currentTime: number;
   timelineMax: number;
   onChange: (next: VoiceTimestamp[]) => void;
   onSeek?: (t: number) => void;
+  /** 用户点选某一段转写时通知父组件（供千问智能体「应用建议」等） */
+  onSegmentFocus?: (segment: VoiceTimestamp) => void;
   className?: string;
+  isGenerating?: boolean;
+  generatingMessage?: string;
 }) {
   const [editMode, setEditMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const timelineRef = useRef<HTMLDivElement>(null);
+  const segmentListRef = useRef<HTMLDivElement>(null);
+  const lastFollowedActiveIdRef = useRef<string | null>(null);
   const dragRef = useRef<{
     id: string;
     kind: "resize" | "move" | "playhead";
@@ -55,19 +104,56 @@ export function TranscriptTimelineEditor({
     baseEnd: number;
   } | null>(null);
 
+  const { onTranscribeSelected, syncing, pendingTranscriptCount } = useRecordingsSync();
   const sorted = useMemo(() => normalizeSegments(value), [value]);
-  const effectiveMax = Math.max(timelineMax || 0, ...sorted.map((t) => t.endTime), 1);
+  const effectiveMax = recordingTimelineMax(timelineMax || 0, sorted);
   const selectedList = useMemo(() => sorted.filter((t) => selectedIds.has(t.id)), [sorted, selectedIds]);
   const active = useMemo(
     () => sorted.find((t) => currentTime >= t.startTime && currentTime <= t.endTime) ?? null,
     [sorted, currentTime]
   );
 
+  /** 播放时自动滚动，使当前语音片段保持在可见区域 */
+  useEffect(() => {
+    if (!active?.id || editMode || dragRef.current) return;
+    if (lastFollowedActiveIdRef.current === active.id) return;
+    lastFollowedActiveIdRef.current = active.id;
+
+    requestAnimationFrame(() => {
+      const row = segmentListRef.current?.querySelector<HTMLElement>(
+        `[data-segment-id="${CSS.escape(active.id)}"]`
+      );
+      if (!row) return;
+      const viewport = row.closest("[data-radix-scroll-area-viewport]") as HTMLElement | null;
+      if (!viewport) {
+        row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+      const rowRect = row.getBoundingClientRect();
+      const viewRect = viewport.getBoundingClientRect();
+      const padding = 16;
+      if (rowRect.top < viewRect.top + padding) {
+        viewport.scrollTop += rowRect.top - viewRect.top - padding;
+      } else if (rowRect.bottom > viewRect.bottom - padding) {
+        viewport.scrollTop += rowRect.bottom - viewRect.bottom + padding;
+      }
+    });
+  }, [active?.id, editMode]);
+
+  useEffect(() => {
+    if (!active?.id) lastFollowedActiveIdRef.current = null;
+  }, [sorted.length, active?.id]);
+
   const emit = useCallback((next: VoiceTimestamp[]) => onChange(normalizeSegments(next)), [onChange]);
 
-  const selectOnly = useCallback((id: string) => {
-    setSelectedIds(new Set([id]));
-  }, []);
+  const selectOnly = useCallback(
+    (id: string) => {
+      setSelectedIds(new Set([id]));
+      const seg = sorted.find((t) => t.id === id);
+      if (seg) onSegmentFocus?.(seg);
+    },
+    [onSegmentFocus, sorted]
+  );
 
   const toggleSelect = useCallback((id: string, checked?: boolean) => {
     setSelectedIds((prev) => {
@@ -151,6 +237,20 @@ export function TranscriptTimelineEditor({
     setSelectedIds(new Set());
   }, [editMode, emit, selectedIds, sorted]);
 
+  const addFirstSegment = useCallback(() => {
+    const len = Math.max(MIN_SEGMENT_SECONDS * 4, Math.min(effectiveMax, 30));
+    const seg: VoiceTimestamp = {
+      id: safeUuid(),
+      startTime: 0,
+      endTime: len,
+      text: "",
+    };
+    emit([...sorted, seg]);
+    setEditMode(true);
+    setSelectedIds(new Set([seg.id]));
+    onSeek?.(0);
+  }, [effectiveMax, emit, onSeek, sorted]);
+
   const seekByClientX = useCallback(
     (clientX: number) => {
       const el = timelineRef.current;
@@ -224,6 +324,7 @@ export function TranscriptTimelineEditor({
 
   const canMerge = editMode && selectedList.length >= 2;
   const currentPct = clamp(currentTime / effectiveMax, 0, 1);
+  const showGenerating = isGenerating && sorted.length === 0;
 
   return (
     <Card className={cn("rounded-3xl border-border/70 efb-panel efb-glow overflow-hidden", className)}>
@@ -237,8 +338,12 @@ export function TranscriptTimelineEditor({
               <CardTitle className="text-base font-semibold tracking-tight">语音剪辑</CardTitle>
               <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1 rounded-full bg-background/50 px-2 py-0.5 ring-1 ring-border/50">
-                  <Sparkles className="h-3 w-3 text-primary" />
-                  {sorted.length} 段
+                  {showGenerating ? (
+                    <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                  ) : (
+                    <Sparkles className="h-3 w-3 text-primary" />
+                  )}
+                  {showGenerating ? "识别中…" : `${sorted.length} 段`}
                 </span>
                 <span>总时长 {formatTime(effectiveMax)}</span>
                 <span>{active ? `当前段 #${sorted.findIndex((x) => x.id === active.id) + 1}` : "指针未落在任一段内"}</span>
@@ -246,19 +351,29 @@ export function TranscriptTimelineEditor({
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant={editMode ? "default" : "outline"} size="sm" onClick={() => setEditMode((v) => !v)}>
+            <Button
+              variant={editMode ? "default" : "outline"}
+              size="sm"
+              onClick={() => setEditMode((v) => !v)}
+              disabled={showGenerating}
+            >
               {editMode ? <Check className="mr-2 h-4 w-4" /> : <Pencil className="mr-2 h-4 w-4" />}
               {editMode ? "完成" : "编辑"}
             </Button>
-            <Button variant="outline" size="sm" onClick={doSplitAtPlayhead} disabled={!editMode || !active}>
+            <Button variant="outline" size="sm" onClick={doSplitAtPlayhead} disabled={showGenerating || !editMode || !active}>
               <Scissors className="mr-2 h-4 w-4" />
               拆分
             </Button>
-            <Button variant="outline" size="sm" onClick={doMerge} disabled={!canMerge}>
+            <Button variant="outline" size="sm" onClick={doMerge} disabled={showGenerating || !canMerge}>
               <Combine className="mr-2 h-4 w-4" />
               合并
             </Button>
-            <Button variant="destructive" size="sm" onClick={doDelete} disabled={!editMode || selectedIds.size === 0}>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={doDelete}
+              disabled={showGenerating || !editMode || selectedIds.size === 0}
+            >
               <Trash2 className="mr-2 h-4 w-4" />
               删除
             </Button>
@@ -267,13 +382,22 @@ export function TranscriptTimelineEditor({
 
         <div
           ref={timelineRef}
-          className="relative h-11 overflow-hidden rounded-2xl border border-border/50 bg-gradient-to-b from-background/30 to-muted/10 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.05)]"
-          onPointerDown={(e) => seekByClientX(e.clientX)}
+          className={cn(
+            "relative h-11 overflow-hidden rounded-2xl border border-border/50 bg-gradient-to-b from-background/30 to-muted/10 shadow-[inset_0_1px_0_hsl(var(--foreground)/0.05)]",
+            showGenerating && "pointer-events-none opacity-40"
+          )}
+          onPointerDown={(e) => !showGenerating && seekByClientX(e.clientX)}
           onPointerMove={onTimelinePointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
         >
-          {sorted.map((t) => {
+          {showGenerating ? (
+            <div className="absolute inset-0 flex items-center px-3">
+              <div className="h-2 w-full animate-pulse rounded-full bg-primary/20" />
+            </div>
+          ) : null}
+          {!showGenerating
+            ? sorted.map((t) => {
             const left = clamp(t.startTime / effectiveMax, 0, 1);
             const right = clamp(t.endTime / effectiveMax, 0, 1);
             const selected = selectedIds.has(t.id);
@@ -326,8 +450,10 @@ export function TranscriptTimelineEditor({
                 />
               </div>
             );
-          })}
+          })
+            : null}
 
+          {!showGenerating ? (
           <div
             className="absolute bottom-0 top-0 z-20 w-8 -translate-x-1/2 cursor-ew-resize"
             style={{ left: `${currentPct * 100}%` }}
@@ -348,22 +474,57 @@ export function TranscriptTimelineEditor({
             </div>
             <div className="absolute bottom-0 left-1/2 top-5 w-[2px] -translate-x-1/2 rounded-full bg-primary shadow-[0_0_12px_hsl(var(--primary)/0.85)]" />
           </div>
+          ) : null}
         </div>
       </CardHeader>
 
       <CardContent className="pt-5">
+        {showGenerating ? (
+          <TranscriptGeneratingPanel message={generatingMessage} />
+        ) : (
+        <>
         <ScrollArea className="h-[min(520px,55vh)] pr-2">
-          <div className="space-y-3">
+          <div ref={segmentListRef} className="space-y-3">
+            {sorted.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border/60 bg-muted/10 px-4 py-10 text-center text-sm text-muted-foreground">
+                <p className="font-medium text-foreground/90">暂无语音片段（尚未 ASR 转写）</p>
+                <p className="mt-2 text-xs leading-relaxed max-w-lg mx-auto">
+                  已有录音不会自动出字，每条需单独跑一次 ASR。当前列表约 {pendingTranscriptCount}{" "}
+                  条尚无转写；选中一条后点下方按钮，或左侧「立即更新」（会顺带同步 A2）。
+                </p>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={syncing}
+                    onClick={() => onTranscribeSelected?.()}
+                  >
+                    {syncing ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="mr-2 h-4 w-4" />
+                    )}
+                    {syncing ? "识别中…" : "转写当前选中录音"}
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={addFirstSegment}>
+                    <Plus className="mr-2 h-4 w-4" />
+                    手动添加一段
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             {sorted.map((t) => {
               const selected = selectedIds.has(t.id);
               const isActive = active?.id === t.id;
               return (
                 <div
                   key={t.id}
+                  data-segment-id={t.id}
                   className={cn(
-                    "rounded-2xl border p-3 transition-colors duration-150",
+                    "relative rounded-2xl border p-3 transition-colors duration-150",
                     selected ? "border-primary/80 bg-primary/10" : "border-border/60 bg-background/10",
-                    isActive && "ring-2 ring-primary/40"
+                    isActive && "ring-2 ring-primary/40",
+                    !editMode && "cursor-pointer hover:border-primary/50"
                   )}
                   onClick={() => {
                     if (editMode) toggleSelect(t.id);
@@ -373,6 +534,11 @@ export function TranscriptTimelineEditor({
                     }
                   }}
                 >
+                  {isActive ? (
+                    <span className="absolute right-3 top-3 z-10 rounded-md bg-primary px-2 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground shadow-[0_2px_8px_hsl(var(--primary)/0.35)]">
+                      当前播放
+                    </span>
+                  ) : null}
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
@@ -447,6 +613,8 @@ export function TranscriptTimelineEditor({
             <li>按住 Alt 点击时间轴片段内部，可以直接在点击位置拆分为两段。</li>
           </ul>
         </div>
+        </>
+        )}
       </CardContent>
     </Card>
   );

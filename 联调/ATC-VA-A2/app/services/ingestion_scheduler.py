@@ -11,7 +11,7 @@ import httpx
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.ingestion_service import LiveATCIngestionService
-from app.services.liveatc_client import LiveATCHTTPClient
+from app.services.liveatc_client import HistoricalAudioLink, LiveATCHTTPClient
 from app.services.proxy_provider import proxy_provider
 from app.services.storage_service import StorageManagerService
 
@@ -84,9 +84,37 @@ class LiveATCScheduler:
         }
 
     @staticmethod
+    def _same_file_name(left: str, right: str) -> bool:
+        return Path(left).name == Path(right).name
+
+    async def _refresh_historical_link(
+        self, client: httpx.AsyncClient, fallback: HistoricalAudioLink, icao_code: str
+    ) -> HistoricalAudioLink:
+        try:
+            links = await self.client.list_historical_links(client, icao_code)
+        except Exception:
+            return fallback
+        for link in links:
+            if self._same_file_name(link.file_name, fallback.file_name):
+                return HistoricalAudioLink(
+                    url=link.url,
+                    file_name=link.file_name,
+                    referer_url=link.referer_url or fallback.referer_url,
+                    browser_body=link.browser_body or fallback.browser_body,
+                )
+        return fallback
+
+    @staticmethod
     def _looks_like_html(chunk: bytes) -> bool:
         sample = chunk.lstrip()[:128].lower()
         return sample.startswith((b"<!doctype html", b"<html", b"<head", b"<body")) or b"<title>" in sample
+
+    @staticmethod
+    def _looks_like_mp3(chunk: bytes) -> bool:
+        sample = chunk.lstrip()[:16]
+        if sample.startswith(b"ID3"):
+            return True
+        return len(sample) >= 2 and sample[0] == 0xFF and (sample[1] & 0xE0) == 0xE0
 
     @staticmethod
     def _raise_for_invalid_audio_headers(resp: httpx.Response) -> None:
@@ -104,11 +132,15 @@ class LiveATCScheduler:
                 first_chunk = False
                 if self._looks_like_html(chunk):
                     raise HistoricalAudioDownloadError("archive response looks like an HTML challenge page")
+                if settings.a2_historical_strict_mp3_validation and not self._looks_like_mp3(chunk):
+                    raise HistoricalAudioDownloadError("archive response does not look like an MP3 payload")
             yield chunk
 
     async def _validated_memory_byte_iter(self, body: bytes) -> AsyncIterator[bytes]:
         if self._looks_like_html(body):
             raise HistoricalAudioDownloadError("archive response looks like an HTML challenge page")
+        if settings.a2_historical_strict_mp3_validation and not self._looks_like_mp3(body):
+            raise HistoricalAudioDownloadError("archive response does not look like an MP3 payload")
         yield body
 
     async def start(self) -> None:
@@ -210,7 +242,6 @@ class LiveATCScheduler:
                     stream_url = await self.client.resolve_realtime_stream_url(client, settings.a2_icao_code)
                     headers = await self.client.enrich_headers_with_session_cookie(client, headers)
                 if stream_url:
-                    proxy_provider.report_result(picked_proxy, True)
                     break
             except Exception as exc:  # noqa: BLE001
                 self._last_error = self._format_exc("realtime resolve failed", exc)
@@ -220,13 +251,17 @@ class LiveATCScheduler:
         if not stream_url:
             self._last_error = "unable to resolve realtime stream url"
             return False
-        async with SessionLocal() as db:
-            svc = LiveATCIngestionService(db)
-            row = await svc.capture_realtime_stream(
-                stream_url=stream_url,
-                request_headers=headers,
-                proxy=picked_proxy,
-            )
+        try:
+            async with SessionLocal() as db:
+                svc = LiveATCIngestionService(db)
+                row = await svc.capture_realtime_stream(
+                    stream_url=stream_url,
+                    request_headers=headers,
+                    proxy=picked_proxy,
+                )
+        except Exception:
+            proxy_provider.report_result(picked_proxy, False)
+            raise
         if row is None:
             proxy_provider.report_result(picked_proxy, False)
             return False
@@ -283,18 +318,33 @@ class LiveATCScheduler:
                             if await svc.has_source_url(item.url):
                                 skipped += 1
                                 continue
+                            fresh_item = await self._refresh_historical_link(client, item, settings.a2_icao_code)
                             if saved > 0 or skipped > 0:
                                 await self._sleep_download_gap()
-                            download_urls = [item.url]
-                            for alt_url in self.client.build_archive_urls(item.file_name):
+                            if getattr(fresh_item, 'browser_body', None):
+                                row = await svc.register_historical_download(
+                                    file_name=fresh_item.file_name,
+                                    source_url=fresh_item.url,
+                                    byte_iter=self._validated_memory_byte_iter(fresh_item.browser_body or b""),
+                                )
+                                if row is None:
+                                    failed += 1
+                                    if first_failed_status is None:
+                                        first_failed_status = 0
+                                else:
+                                    saved += 1
+                                    downloaded = True
+                                    continue
+                            download_urls = [fresh_item.url]
+                            for alt_url in self.client.build_archive_urls(fresh_item.file_name):
                                 if alt_url not in download_urls:
                                     download_urls.append(alt_url)
                             item_failed_status: int | None = None
                             downloaded = False
                             for download_url in download_urls:
                                 download_headers = {**headers, **self._historical_download_headers()}
-                                if getattr(item, "referer_url", None):
-                                    download_headers["Referer"] = item.referer_url
+                                if getattr(fresh_item, "referer_url", None):
+                                    download_headers["Referer"] = fresh_item.referer_url
                                 try:
                                     async with client.stream("GET", download_url, follow_redirects=True, headers=download_headers) as resp:
                                         if resp.status_code >= 400:
@@ -306,8 +356,8 @@ class LiveATCScheduler:
                                             )
                                             if request_status < 400 and request_body:
                                                 row = await svc.register_historical_download(
-                                                    file_name=item.file_name,
-                                                    source_url=item.url,
+                                                    file_name=fresh_item.file_name,
+                                                    source_url=fresh_item.url,
                                                     byte_iter=self._validated_memory_byte_iter(request_body),
                                                 )
                                                 if row is not None:
@@ -317,8 +367,8 @@ class LiveATCScheduler:
                                             browser_status, browser_body = self.client._browser_fetch_bytes(download_url, referer=download_headers.get("Referer"))
                                             if browser_status < 400 and browser_body:
                                                 row = await svc.register_historical_download(
-                                                    file_name=item.file_name,
-                                                    source_url=item.url,
+                                                    file_name=fresh_item.file_name,
+                                                    source_url=fresh_item.url,
                                                     byte_iter=self._validated_memory_byte_iter(browser_body),
                                                 )
                                                 if row is not None:
@@ -328,8 +378,8 @@ class LiveATCScheduler:
                                             continue
                                         self._raise_for_invalid_audio_headers(resp)
                                         row = await svc.register_historical_download(
-                                            file_name=item.file_name,
-                                            source_url=item.url,
+                                            file_name=fresh_item.file_name,
+                                            source_url=fresh_item.url,
                                             byte_iter=self._validated_audio_byte_iter(resp),
                                         )
                                         if row is not None:
@@ -347,8 +397,8 @@ class LiveATCScheduler:
                                     )
                                     if request_status < 400 and request_body:
                                         row = await svc.register_historical_download(
-                                            file_name=item.file_name,
-                                            source_url=item.url,
+                                            file_name=fresh_item.file_name,
+                                            source_url=fresh_item.url,
                                             byte_iter=self._validated_memory_byte_iter(request_body),
                                         )
                                         if row is not None:
@@ -358,8 +408,8 @@ class LiveATCScheduler:
                                     browser_status, browser_body = self.client._browser_fetch_bytes(download_url, referer=download_headers.get("Referer"))
                                     if browser_status < 400 and browser_body:
                                         row = await svc.register_historical_download(
-                                            file_name=item.file_name,
-                                            source_url=item.url,
+                                            file_name=fresh_item.file_name,
+                                            source_url=fresh_item.url,
                                             byte_iter=self._validated_memory_byte_iter(browser_body),
                                         )
                                         if row is not None:

@@ -83,25 +83,27 @@ npm start
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-## API 接口
+## API 接口（A5 真实路由）
 
-前端通过以下 API 接口与后端（A-5 模块）通信：
+前端 **仅** 通过 `src/lib/backend-api.ts`（读 + 认证）与 `src/lib/api.ts`（标注写回薄封装）访问 A5。**不存在** `/api/audio/*` 等 Next 占位路由。
 
-### 音频相关
-- `GET /api/audio/list` - 获取音频列表
-- `GET /api/audio/:id` - 获取音频详情
-- `PUT /api/audio/:id/timestamps` - 更新时间戳
-- `DELETE /api/audio/:id/timestamps/:timestampId` - 删除时间戳
+详细契约见仓库根目录 [`backend/API_数据库对接文档.md`](../backend/API_数据库对接文档.md) **§15 附录**。
 
-### ADSB 相关
-- `GET /api/adsb/:audioId` - 获取 ADSB 数据
-- `GET /api/adsb/aircraft/:icao24` - 获取特定飞机数据
+### 标注员工作台 — 最小接口对照表
 
-### 标注相关
-- `GET /api/annotations/:audioId` - 获取标注列表
-- `POST /api/annotations` - 创建标注
-- `PUT /api/annotations/:id` - 更新标注
-- `DELETE /api/annotations/:id` - 删除标注
+| 功能 | 前端函数 | HTTP | 调用方 |
+|------|----------|------|--------|
+| 健康检查 | `getHealth()` | `GET /health` | 联调脚本 |
+| 登录 | `loginWithBackend()` | `POST /users/login` | `AuthContext` |
+| 注册 | `registerWithBackend()` | `POST /users/register` | 登录页 |
+| 当前用户 | `getCurrentUser()` | `GET /users/me` | `AuthContext` |
+| 录音+航迹+标注列表 | `fetchAnnotationBundle()` | `GET /tables/audio_records`<br>`GET /tables/tracks`<br>`GET /tables/annotations` | `app/page.tsx` |
+| 音频文件 | `resolveBrowserAudioUrl()` | GET `source_url`（绝对 URL） | `AudioWaveform` |
+| 改标注 | `audioAPI.updateTimestamp()` → ext | `POST /tables/annotations/ext/update/{id}` | `annotation-page.tsx` |
+| 增标注 | `annotationAPI.createAnnotation()` → ext | `POST /tables/annotations/ext/create` | （预留） |
+| 删标注 | `annotationAPI.deleteAnnotation()` → ext | `POST /tables/annotations/ext/delete-one` | （预留；UI 删片段暂存 localStorage） |
+
+> 写操作自动附带 `Authorization: Bearer <token>`（见 `backend-api.ts` 内 `requestJson`）。
 
 ## 使用说明
 
