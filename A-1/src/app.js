@@ -5,16 +5,6 @@ const adsbRouter = require('./routes/adsb');
 
 const app = express();
 
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-  return next();
-});
-
 app.use(express.json({ limit: '5mb' }));
 
 app.get('/', (req, res) => {
@@ -26,13 +16,14 @@ app.get('/', (req, res) => {
       '/api/adsb/tracks',
       '/api/adsb/tracks/batch',
       '/api/adsb/ingest',
-      '/api/adsb/sources/flightradar24/ingest',
-      '/api/adsb/sources/adsb-exchange/ingest',
-      '/api/adsb/sources/airnav-radar/ingest',
       '/api/adsb/sources/opensky/fetch',
       '/api/adsb/sources/opensky/presets',
       '/api/adsb/sources/airplanes-live/fetch',
       '/api/adsb/sources/airplanes-live/presets',
+      '/api/adsb/routes',
+      '/api/adsb/routes/crawl',
+      '/api/adsb/routes/rebuild',
+      '/api/adsb/routes/crawl-tasks/start',
       '/api/adsb/fusion/voice-track',
       '/api/voice-info',
       '/api/voice-track-rel',

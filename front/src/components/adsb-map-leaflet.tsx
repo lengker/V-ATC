@@ -110,6 +110,7 @@ export function ADSBMap({
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const markerFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
   const trailPolylinesRef = useRef<Map<string, L.Polyline>>(new Map());
+  const trailPointMarkersRef = useRef<Map<string, L.CircleMarker>>(new Map());
 
   const suspendFollowUntilRef = useRef<number>(0);
 
@@ -160,17 +161,8 @@ export function ADSBMap({
   }, [normalizedVisibleSet, saneAdsb]);
 
   const effectiveCurrentTime = useMemo(() => {
-    if (saneAdsb.length === 0) return currentTime;
-    const timestamps = saneAdsb.map((p) => p.timestamp);
-    const minTimestamp = Math.min(...timestamps);
-    const maxTimestamp = Math.max(...timestamps);
-    if (!Number.isFinite(minTimestamp) || !Number.isFinite(maxTimestamp)) return currentTime;
-
-    if (currentTime < minTimestamp - 60 || currentTime > maxTimestamp + 60) {
-      return maxTimestamp;
-    }
-    return currentTime;
-  }, [currentTime, saneAdsb]);
+    return Number.isFinite(currentTime) ? currentTime : 0;
+  }, [currentTime]);
 
   const currentPoints = useMemo(
     () => queryCurrentAdsbPoints(trackIndex, effectiveCurrentTime),
@@ -266,6 +258,8 @@ export function ADSBMap({
 
       for (const pl of trailPolylinesRef.current.values()) pl.remove();
       trailPolylinesRef.current.clear();
+      for (const marker of trailPointMarkersRef.current.values()) marker.remove();
+      trailPointMarkersRef.current.clear();
 
       trailsLayerRef.current?.remove();
       markersLayerRef.current?.remove();
@@ -499,6 +493,8 @@ export function ADSBMap({
     if (!show.trails) {
       for (const pl of trailPolylinesRef.current.values()) pl.remove();
       trailPolylinesRef.current.clear();
+      for (const marker of trailPointMarkersRef.current.values()) marker.remove();
+      trailPointMarkersRef.current.clear();
       return;
     }
 
@@ -521,13 +517,50 @@ export function ADSBMap({
       }
     }
 
+    const existingPointIds = new Set(trailPointMarkersRef.current.keys());
+    for (const id of existingPointIds) {
+      const pts = byAircraft.get(id);
+      if (!pts || pts.length !== 1) {
+        trailPointMarkersRef.current.get(id)?.remove();
+        trailPointMarkersRef.current.delete(id);
+      }
+    }
+
     const MAX_POINTS_PER_TRAIL = 220;
 
     for (const [icao24, pts] of byAircraft.entries()) {
-      if (pts.length < 2) continue;
-
       const isSelected = icao24 === selectedAircraft;
       const color = isSelected ? "#ef4444" : "#3b82f6";
+
+      if (pts.length === 1) {
+        const p = pts[0];
+        let marker = trailPointMarkersRef.current.get(icao24);
+        if (!marker) {
+          marker = L.circleMarker([p.latitude, p.longitude], {
+            radius: isSelected ? 4 : 3,
+            color,
+            fillColor: color,
+            fillOpacity: isSelected ? 0.85 : 0.65,
+            opacity: isSelected ? 0.9 : 0.65,
+            weight: 1.5,
+            interactive: false,
+            bubblingMouseEvents: false,
+          }).addTo(layer);
+          trailPointMarkersRef.current.set(icao24, marker);
+        }
+        marker.setLatLng([p.latitude, p.longitude]);
+        marker.setRadius(isSelected ? 4 : 3);
+        marker.setStyle({
+          color,
+          fillColor: color,
+          fillOpacity: isSelected ? 0.85 : 0.65,
+          opacity: isSelected ? 0.9 : 0.65,
+        });
+        continue;
+      }
+
+      if (pts.length < 2) continue;
+
       const weight = isSelected ? 3 : 2;
       const opacity = isSelected ? 0.82 : 0.55;
 

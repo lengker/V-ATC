@@ -21,6 +21,9 @@ function HomeContent() {
   const [loadedA2Audio, setLoadedA2Audio] = useState<AudioData | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
 
+  const effectiveBackendActive =
+    loadedA2Audio?.id === audioId ? loadedA2Audio : backendActive;
+
   const handleLoadA2Recording = (audio: AudioData) => {
     setLoadedA2Audio(audio);
     router.replace(`/?audioId=${encodeURIComponent(audio.id)}`);
@@ -71,7 +74,7 @@ function HomeContent() {
       };
 
       await adsbAPI.refreshVhhhFromAirplanesLive();
-      const adsbRes = await adsbAPI.getADSBData(chosenId);
+      const adsbRes = await adsbAPI.getADSBData(audio);
       if (cancelled) return;
       setBackendActive(audio);
       setBackendAdsb(adsbRes.success && adsbRes.data ? adsbRes.data : []);
@@ -83,6 +86,37 @@ function HomeContent() {
       cancelled = true;
     };
   }, [audioId, reloadToken, useBackend]);
+
+  useEffect(() => {
+    if (!useBackend || !effectiveBackendActive) return;
+
+    let cancelled = false;
+    const refreshCurrentAdsb = async () => {
+      const adsbRes = await adsbAPI.getADSBData(effectiveBackendActive);
+      if (cancelled) return;
+      if (adsbRes.success && adsbRes.data) {
+        setBackendAdsb(adsbRes.data);
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void refreshCurrentAdsb();
+    }, 10_000);
+
+    void refreshCurrentAdsb();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    effectiveBackendActive?.id,
+    effectiveBackendActive?.duration,
+    effectiveBackendActive?.metadata?.date,
+    effectiveBackendActive?.metadata?.startAt,
+    effectiveBackendActive?.metadata?.endAt,
+    useBackend,
+  ]);
 
   if (useBackend) {
     if (backendLoading) {
@@ -107,8 +141,6 @@ function HomeContent() {
       );
     }
 
-    const effectiveBackendActive =
-      loadedA2Audio?.id === audioId ? loadedA2Audio : backendActive;
     const effectiveBackendRecordings =
       backendRecordings?.map((item) => (backendActive?.id === item.id ? backendActive : item)) ?? null;
     const effectiveRecordings =

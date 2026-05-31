@@ -2,19 +2,17 @@ const { batchUpsertTracks } = require('./trackService');
 
 const AIRPLANES_LIVE_BASE_URL =
   process.env.AIRPLANES_LIVE_BASE_URL || 'https://api.airplanes.live';
-const AIRPLANES_LIVE_TIMEOUT_MS = Number(process.env.AIRPLANES_LIVE_TIMEOUT_MS || 10000);
-const AIRPLANES_LIVE_RETRIES = Number(process.env.AIRPLANES_LIVE_RETRIES || 2);
 
 const POINT_PRESETS = {
   hongkong: {
     lat: 22.308,
     lon: 113.9185,
-    radius: 80,
+    radius: 250,
   },
   vhhh: {
     lat: 22.308,
     lon: 113.9185,
-    radius: 80,
+    radius: 250,
   },
   beijing: {
     lat: 40.08,
@@ -160,56 +158,9 @@ function buildPointUrl(options = {}) {
   return { url, point };
 }
 
-async function fetchWithTimeout(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AIRPLANES_LIVE_TIMEOUT_MS);
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        'accept': 'application/json',
-        'user-agent': 'V-ATC-A1/1.0',
-        ...(options.headers || {}),
-      },
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function isTransientNetworkError(error) {
-  const code = error?.cause?.code || error?.code;
-  return ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'EAI_AGAIN', 'ENOTFOUND'].includes(code) ||
-    error?.name === 'AbortError' ||
-    /fetch failed|socket disconnected|TLS connection/i.test(String(error?.message || ''));
-}
-
-async function fetchWithRetry(url) {
-  let lastError;
-  for (let attempt = 0; attempt <= AIRPLANES_LIVE_RETRIES; attempt += 1) {
-    try {
-      return await fetchWithTimeout(url);
-    } catch (error) {
-      lastError = error;
-      if (!isTransientNetworkError(error) || attempt >= AIRPLANES_LIVE_RETRIES) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-    }
-  }
-
-  const code = lastError?.cause?.code || lastError?.code || 'NETWORK_ERROR';
-  throw new Error(
-    `Airplanes.live network request failed after ${AIRPLANES_LIVE_RETRIES + 1} attempt(s): ${code}. ` +
-      `Check network/proxy/firewall access to ${AIRPLANES_LIVE_BASE_URL}.`,
-    { cause: lastError },
-  );
-}
-
 async function fetchAirplanesLiveAircraft(options = {}) {
   const { url, point } = buildPointUrl(options);
-  const response = await fetchWithRetry(url);
+  const response = await fetch(url);
 
   if (!response.ok) {
     const text = await response.text();

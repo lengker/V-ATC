@@ -295,6 +295,20 @@ export type A2RealtimeState = {
   streamUrl?: string | null;
 };
 
+export type A1RouteCrawlTaskState = {
+  task_id: string;
+  provider?: string;
+  preset?: string | null;
+  interval_seconds?: number;
+  status?: string;
+  run_count?: number;
+  error_count?: number;
+  last_started_at?: string | null;
+  last_finished_at?: string | null;
+  last_error?: string | null;
+  last_route_count?: number;
+};
+
 export type A2HistoryImport = {
   file: File;
   taskId: number;
@@ -483,8 +497,8 @@ function parseSeconds(value?: string | null): number | undefined {
   if (!value) return undefined;
   const numeric = Number(value);
   if (Number.isFinite(numeric)) return numeric;
-  const time = Date.parse(value);
-  return Number.isFinite(time) ? Math.floor(time / 1000) : undefined;
+  const time = parseAbsoluteTimeMs(value);
+  return time !== undefined ? Math.floor(time / 1000) : undefined;
 }
 
 function secondsBetween(start?: string | null, end?: string | null): number {
@@ -496,19 +510,39 @@ function secondsBetween(start?: string | null, end?: string | null): number {
 
 function parseDateSeconds(value?: string | null): number | undefined {
   if (!value) return undefined;
-  const time = Date.parse(value);
-  return Number.isFinite(time) ? time / 1000 : undefined;
+  const time = parseAbsoluteTimeMs(value);
+  return time !== undefined ? time / 1000 : undefined;
+}
+
+function normalizeDateTimeForUtcParse(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  const withT = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(withT)) return withT;
+  return `${withT}Z`;
+}
+
+function parseAbsoluteTimeMs(value?: string | number | null): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.abs(value) > 1e12 ? value : value * 1000;
+  }
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return Math.abs(numeric) > 1e12 ? numeric : numeric * 1000;
+    const ms = Date.parse(normalizeDateTimeForUtcParse(value));
+    if (Number.isFinite(ms)) return ms;
+  }
+  return undefined;
+}
+
+function formatIsoUtc(ms: number): string | undefined {
+  if (!Number.isFinite(ms)) return undefined;
+  return new Date(ms).toISOString();
 }
 
 function parseA1Timestamp(value: A1Track["timestamp"]): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) return numeric;
-    const ms = Date.parse(value);
-    if (Number.isFinite(ms)) return ms / 1000;
-  }
-  return Date.now() / 1000;
+  const ms = parseAbsoluteTimeMs(value);
+  return ms !== undefined ? ms / 1000 : Date.now() / 1000;
 }
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
@@ -528,6 +562,15 @@ function mapA1Track(track: A1Track): ADSBData {
     altitude: toFiniteNumber(track.altitude),
     speed: toFiniteNumber(track.ground_speed),
     heading: toFiniteNumber(track.heading),
+  };
+}
+
+function mapA1TrackRelativeToRecording(track: A1Track, recordingStartMs: number): ADSBData | null {
+  const trackMs = parseAbsoluteTimeMs(track.timestamp);
+  if (trackMs === undefined) return null;
+  return {
+    ...mapA1Track(track),
+    timestamp: (trackMs - recordingStartMs) / 1000,
   };
 }
 
@@ -599,6 +642,8 @@ function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): Au
     metadata: {
       icao: item.icao_code || undefined,
       date: item.original_time || undefined,
+      startAt: item.start_at || item.original_time || undefined,
+      endAt: item.end_at || undefined,
       frequency: item.band || undefined,
     },
   };
@@ -1030,19 +1075,82 @@ export const a2VoiceAPI = {
   fileUrl: buildA2VoiceFileUrl,
 };
 
+export const a1RouteAPI = {
+  startRouteCrawlTask: async (payload: {
+    taskId?: string;
+    provider?: "airplanes-live" | "opensky";
+    preset?: string;
+    limit?: number;
+    intervalSeconds?: number;
+    maxRoutePoints?: number;
+    mergeSources?: boolean;
+  }): Promise<ApiResponse<A1RouteCrawlTaskState>> => {
+    try {
+      const result = await fetchA1<A1RouteCrawlTaskState>("/api/adsb/routes/crawl-tasks/start", {
+        method: "POST",
+        body: JSON.stringify({
+          task_id: payload.taskId,
+          provider: payload.provider ?? "airplanes-live",
+          preset: payload.preset ?? "vhhh",
+          limit: payload.limit ?? 1000,
+          interval_seconds: payload.intervalSeconds ?? 30,
+          max_route_points: payload.maxRoutePoints ?? 5000,
+          merge_sources: payload.mergeSources ?? false,
+        }),
+      });
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
+  stopRouteCrawlTask: async (taskId: string): Promise<ApiResponse<A1RouteCrawlTaskState>> => {
+    try {
+      const result = await fetchA1<A1RouteCrawlTaskState>(
+        `/api/adsb/routes/crawl-tasks/${encodeURIComponent(taskId)}/stop`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        }
+      );
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+};
+
 export const adsbAPI = {
   getADSBData: async (
-    _audioId: string,
-    _startTime?: number,
-    _endTime?: number
+    audio: AudioData,
+    options?: { bufferSeconds?: number }
   ): Promise<ApiResponse<ADSBData[]>> => {
     try {
+      const recordingStartMs = parseAbsoluteTimeMs(audio.metadata?.startAt ?? audio.metadata?.date);
+      const recordingEndMs =
+        parseAbsoluteTimeMs(audio.metadata?.endAt) ??
+        (recordingStartMs !== undefined && Number.isFinite(audio.duration)
+          ? recordingStartMs + audio.duration * 1000
+          : undefined);
+
+      if (recordingStartMs === undefined || recordingEndMs === undefined) {
+        return toApiResponse([]);
+      }
+
+      const bufferMs = (options?.bufferSeconds ?? 5) * 1000;
       const query = buildQuery({
         ...VHHH_ADSB_BOUNDS,
+        start_time: formatIsoUtc(recordingStartMs - bufferMs),
+        end_time: formatIsoUtc(recordingEndMs + bufferMs),
         limit: 1000,
       });
       const result = await fetchA1<A1Track[]>(`/api/adsb/tracks?${query}`);
-      return toApiResponse(result.data.map(mapA1Track));
+      return toApiResponse(
+        result.data
+          .map((track) => mapA1TrackRelativeToRecording(track, recordingStartMs))
+          .filter((track): track is ADSBData => Boolean(track))
+          .sort((a, b) => a.timestamp - b.timestamp)
+      );
     } catch (error) {
       return toErrorResponse(error);
     }

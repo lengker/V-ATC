@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  middlewareClientMaxBodySize: "100mb",
   outputFileTracingRoot: require("path").join(__dirname),
   async rewrites() {
     const backendUrl = process.env.ALPHA_BACKEND_URL || "http://127.0.0.1:8000";

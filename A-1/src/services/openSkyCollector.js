@@ -5,20 +5,13 @@ const OPEN_SKY_BASE_URL =
 const OPEN_SKY_TOKEN_URL =
   process.env.OPENSKY_TOKEN_URL ||
   'https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token';
-const OPEN_SKY_TIMEOUT_MS = Number(process.env.OPENSKY_TIMEOUT_MS || 10000);
 
 const BOUNDING_BOX_PRESETS = {
   hongkong: {
-    lamin: 21.1,
-    lomin: 112.45,
-    lamax: 23.5,
-    lomax: 115.39,
-  },
-  vhhh: {
-    lamin: 21.1,
-    lomin: 112.45,
-    lamax: 23.5,
-    lomax: 115.39,
+    lamin: 21.8,
+    lomin: 112.8,
+    lamax: 23.3,
+    lomax: 115.0,
   },
   beijing: {
     lamin: 39.2,
@@ -56,24 +49,6 @@ const STATE_VECTOR_FIELDS = [
 ];
 
 let cachedToken = null;
-
-async function fetchWithTimeout(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OPEN_SKY_TIMEOUT_MS);
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        'accept': 'application/json',
-        'user-agent': 'V-ATC-A1/1.0',
-        ...(options.headers || {}),
-      },
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 function parseOptionalNumber(value, field) {
   if (value === undefined || value === null || value === '') {
@@ -285,7 +260,7 @@ async function fetchOpenSkyToken() {
     client_id: clientId,
     client_secret: clientSecret,
   });
-  const response = await fetchWithTimeout(OPEN_SKY_TOKEN_URL, {
+  const response = await fetch(OPEN_SKY_TOKEN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -350,7 +325,7 @@ function rateLimitHeaders(response) {
 
 async function fetchOpenSkyStates(options = {}) {
   const { url, bounds } = buildStatesUrl(options);
-  const response = await fetchWithTimeout(url, {
+  const response = await fetch(url, {
     headers: await buildOpenSkyHeaders(),
   });
   const rate_limit = rateLimitHeaders(response);

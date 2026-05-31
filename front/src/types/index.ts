@@ -31,6 +31,8 @@ export interface AudioData {
   metadata?: {
     icao?: string;
     date?: string;
+    startAt?: string;
+    endAt?: string;
     frequency?: string;
   };
 }

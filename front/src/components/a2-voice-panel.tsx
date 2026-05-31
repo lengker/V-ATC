@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Radio, Search, Square, Upload } from "lucide-react";
-import { a2VoiceAPI, audioAPI, type A2VoiceRecord } from "@/lib/api";
+import { a1RouteAPI, a2VoiceAPI, audioAPI, type A2VoiceRecord } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -40,6 +40,8 @@ const TEXT = {
   realtimeStartFailed: "\u5b9e\u65f6\u4e0b\u8f7d\u542f\u52a8\u5931\u8d25",
   realtimeStopped: "\u5b9e\u65f6\u4e0b\u8f7d\u5df2\u505c\u6b62",
   realtimeStopFailed: "\u505c\u6b62\u5b9e\u65f6\u4e0b\u8f7d\u5931\u8d25",
+  adsbRealtimeStartFailed: "ADS-B \u5b9e\u65f6\u822a\u8ff9\u542f\u52a8\u5931\u8d25",
+  adsbRealtimeStopFailed: "ADS-B \u5b9e\u65f6\u822a\u8ff9\u505c\u6b62\u5931\u8d25",
   recordsHit: "\u6761\u8bed\u97f3\u7247\u6bb5",
   sourceUrl: "\u97f3\u9891/LiveATC URL",
   startTime: "\u5f00\u59cb\u65f6\u95f4",
@@ -149,6 +151,7 @@ export function A2VoicePanel({
   const [records, setRecords] = useState<A2VoiceRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [realtimeTaskId, setRealtimeTaskId] = useState<number | null>(null);
+  const [adsbRealtimeTaskId, setAdsbRealtimeTaskId] = useState<string | null>(null);
   const realtimeStartedAtRef = useRef<Date | null>(null);
   const loadedRealtimeRecordIdsRef = useRef<Set<string>>(new Set());
 
@@ -174,6 +177,8 @@ export function A2VoicePanel({
       metadata: {
         icao: record.icao_code,
         date: record.original_time ?? record.start_at,
+        startAt: record.start_at,
+        endAt: record.end_at,
         frequency: record.band,
       },
     };
@@ -307,7 +312,31 @@ export function A2VoicePanel({
     setRealtimeTaskId(taskRes.data.taskId);
     realtimeStartedAtRef.current = new Date();
     loadedRealtimeRecordIdsRef.current = new Set();
-    toast({ title: TEXT.realtimeStarted, description: `taskId: ${taskRes.data.taskId}` });
+
+    const adsbTaskId = `front-${queryPayload.icaoCode.toLowerCase()}-${queryPayload.band.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}-${taskRes.data.taskId}`;
+    const adsbRes = await a1RouteAPI.startRouteCrawlTask({
+      taskId: adsbTaskId,
+      provider: "airplanes-live",
+      preset: queryPayload.icaoCode.toLowerCase() === "vhhh" ? "vhhh" : "hongkong",
+      limit: 1000,
+      intervalSeconds: 30,
+      maxRoutePoints: 5000,
+    });
+    if (adsbRes.success && adsbRes.data) {
+      setAdsbRealtimeTaskId(adsbRes.data.task_id);
+      toast({
+        title: TEXT.realtimeStarted,
+        description: `A2 taskId: ${taskRes.data.taskId}; A1 taskId: ${adsbRes.data.task_id}`,
+      });
+      return;
+    }
+
+    setAdsbRealtimeTaskId(null);
+    toast({
+      title: TEXT.adsbRealtimeStartFailed,
+      description: adsbRes.error ?? `A2 taskId: ${taskRes.data.taskId}`,
+      variant: "destructive",
+    });
   };
 
   const executeDownload = () =>
@@ -378,8 +407,15 @@ export function A2VoicePanel({
       const res = await a2VoiceAPI.stopRealtimeReceive(realtimeTaskId);
       if (!res.success) {
         toast({ title: TEXT.realtimeStopFailed, description: res.error, variant: "destructive" });
-        return;
       }
+      if (adsbRealtimeTaskId) {
+        const adsbRes = await a1RouteAPI.stopRouteCrawlTask(adsbRealtimeTaskId);
+        if (!adsbRes.success) {
+          toast({ title: TEXT.adsbRealtimeStopFailed, description: adsbRes.error, variant: "destructive" });
+        }
+        setAdsbRealtimeTaskId(null);
+      }
+      if (!res.success) return;
       await syncRealtimeRecords(true);
       setRealtimeTaskId(null);
       onRefreshRecordings?.();
