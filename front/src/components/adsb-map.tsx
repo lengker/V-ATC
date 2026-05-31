@@ -3,11 +3,9 @@
 // 纯前端 SVG 交互地图 - 支持缩放、拖拽、实时航迹、悬停信息弹窗、多视图
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ADSBData } from "@/types";
+import { ADSBData, VhhhStaticLayers } from "@/types";
 import { formatTime } from "@/lib/utils";
 import { buildInterpolatedTracks } from "@/lib/adsb-interpolation";
-import type { VhhhStaticLayers } from "@/mock/vhhh-static";
-import { deriveBoundsFromData } from "@/mock/vhhh-static";
 import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -30,6 +28,53 @@ interface ADSBMapProps {
   currentTime?: number;
   selectedAircraft?: string;
   onAircraftSelect?: (icao24: string) => void;
+}
+
+function deriveBoundsFromData({
+  adsb,
+  statics,
+}: {
+  adsb: ADSBData[];
+  statics?: VhhhStaticLayers;
+}) {
+  const lats: number[] = [];
+  const lons: number[] = [];
+  for (const p of adsb) {
+    lats.push(p.latitude);
+    lons.push(p.longitude);
+  }
+  for (const line of [...(statics?.runways ?? []), ...(statics?.taxiways ?? [])]) {
+    for (const p of line.points) {
+      lats.push(p.lat);
+      lons.push(p.lon);
+    }
+  }
+  for (const p of [...(statics?.waypoints ?? []), ...(statics?.landmarks ?? [])]) {
+    lats.push(p.lat);
+    lons.push(p.lon);
+  }
+  for (const route of statics?.routeLines ?? []) {
+    for (const p of route.points) {
+      lats.push(p.lat);
+      lons.push(p.lon);
+    }
+  }
+  for (const zone of statics?.obstacleZones ?? []) {
+    for (const p of zone.polygon) {
+      lats.push(p.lat);
+      lons.push(p.lon);
+    }
+  }
+
+  if (lats.length === 0 || lons.length === 0) {
+    return { minLat: 22.05, maxLat: 22.62, minLon: 113.75, maxLon: 114.45 };
+  }
+  return {
+    minLat: Math.min(...lats),
+    maxLat: Math.max(...lats),
+    minLon: Math.min(...lons),
+    maxLon: Math.max(...lons),
+  };
 }
 
 export function ADSBMap({

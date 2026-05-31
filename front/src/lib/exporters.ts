@@ -1,5 +1,5 @@
 import type { ADSBData, AudioData, VoiceTimestamp } from "@/types";
-import type { VhhhStaticLayers } from "@/mock/vhhh-static";
+import type { VhhhStaticLayers } from "@/types";
 
 export type ExportPayload = {
   audio: AudioData;

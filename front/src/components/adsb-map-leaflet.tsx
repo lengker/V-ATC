@@ -2,18 +2,28 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
-import { ADSBData } from "@/types";
+import { ADSBData, VhhhStaticLayers } from "@/types";
 import { formatTime } from "@/lib/utils";
 import { buildAdsbTrackIndex, queryAdsbTrailPoints, queryCurrentAdsbPoints } from "@/lib/adsb-interpolation";
-import type { VhhhStaticLayers } from "@/mock/vhhh-static";
 import { Plane, ZoomIn, ZoomOut, Maximize2, Focus, LocateFixed } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
 const HONG_KONG_BOUNDS = L.latLngBounds(
-  [22.05, 113.75],
-  [22.62, 114.45]
+  [21.1, 112.45],
+  [23.5, 115.39]
 );
+const HONG_KONG_CENTER: L.LatLngExpression = [22.32, 114.17];
+const HONG_KONG_DEFAULT_ZOOM = 9;
+
+function enforceHongKongViewport(map: L.Map, animate = false) {
+  const minZoom = map.getBoundsZoom(HONG_KONG_BOUNDS, true);
+  const targetZoom = Math.max(minZoom, HONG_KONG_DEFAULT_ZOOM);
+
+  map.setMinZoom(minZoom);
+  map.setMaxBounds(HONG_KONG_BOUNDS);
+  map.setView(HONG_KONG_CENTER, targetZoom, { animate });
+}
 
 interface ADSBMapProps {
   adsbData: ADSBData[];
@@ -149,12 +159,25 @@ export function ADSBMap({
     return buildAdsbTrackIndex(saneAdsb, isVisible);
   }, [normalizedVisibleSet, saneAdsb]);
 
+  const effectiveCurrentTime = useMemo(() => {
+    if (saneAdsb.length === 0) return currentTime;
+    const timestamps = saneAdsb.map((p) => p.timestamp);
+    const minTimestamp = Math.min(...timestamps);
+    const maxTimestamp = Math.max(...timestamps);
+    if (!Number.isFinite(minTimestamp) || !Number.isFinite(maxTimestamp)) return currentTime;
+
+    if (currentTime < minTimestamp - 60 || currentTime > maxTimestamp + 60) {
+      return maxTimestamp;
+    }
+    return currentTime;
+  }, [currentTime, saneAdsb]);
+
   const currentPoints = useMemo(
-    () => queryCurrentAdsbPoints(trackIndex, currentTime),
-    [currentTime, trackIndex]
+    () => queryCurrentAdsbPoints(trackIndex, effectiveCurrentTime),
+    [effectiveCurrentTime, trackIndex]
   );
 
-  const trailRenderTime = Math.floor((currentTime || 0) * 2) / 2;
+  const trailRenderTime = Math.floor((effectiveCurrentTime || 0) * 2) / 2;
   const filteredPoints = useMemo(
     () => queryAdsbTrailPoints(trackIndex, trailRenderTime),
     [trackIndex, trailRenderTime]
@@ -180,15 +203,18 @@ export function ADSBMap({
       zoomControl: false,
       attributionControl: true,
       preferCanvas: true,
-      maxBounds: HONG_KONG_BOUNDS.pad(0.2),
-      maxBoundsViscosity: 0.8,
+      maxBounds: HONG_KONG_BOUNDS,
+      maxBoundsViscosity: 1,
+      worldCopyJump: false,
     });
 
     mapRef.current = map;
     setZoomLevel(map.getZoom());
 
     const base = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      bounds: HONG_KONG_BOUNDS,
       maxZoom: 19,
+      noWrap: true,
       attribution: "&copy; OpenStreetMap contributors",
     }).addTo(map);
 
@@ -215,11 +241,16 @@ export function ADSBMap({
     map.on("zoomstart", onZoomStart);
     map.on("movestart", onMoveStart);
 
-    const ro = new ResizeObserver(() => map.invalidateSize());
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize();
+      enforceHongKongViewport(map);
+    });
     ro.observe(host);
 
-    map.fitBounds(HONG_KONG_BOUNDS, { padding: [24, 24], animate: false });
-    requestAnimationFrame(() => map.invalidateSize());
+    requestAnimationFrame(() => {
+      map.invalidateSize();
+      enforceHongKongViewport(map);
+    });
 
     return () => {
       ro.disconnect();
@@ -289,8 +320,8 @@ export function ADSBMap({
         line.points.map((p) => [p.lat, p.lon] as L.LatLngExpression),
         {
           color: isRunway ? "#f59e0b" : "#94a3b8",
-          opacity: isRunway ? 0.95 : 0.65,
-          weight: isRunway ? 6 : 2,
+          opacity: isRunway ? 0.86 : 0.65,
+          weight: isRunway ? 3 : 2,
           lineCap: "round",
         }
       )
@@ -536,7 +567,7 @@ export function ADSBMap({
   const handleFitVisible = () => {
     const map = mapRef.current;
     if (!map) return;
-    map.fitBounds(HONG_KONG_BOUNDS, { padding: [24, 24], animate: true });
+    enforceHongKongViewport(map, true);
   };
 
   const handleFocusSelected = () => {
@@ -550,7 +581,7 @@ export function ADSBMap({
   const handleResetView = () => {
     const map = mapRef.current;
     if (!map) return;
-    map.fitBounds(HONG_KONG_BOUNDS, { padding: [24, 24], animate: true });
+    enforceHongKongViewport(map, true);
   };
 
   return (

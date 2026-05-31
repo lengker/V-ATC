@@ -2,6 +2,7 @@ import { ADSBData, Annotation, ApiResponse, AudioData, VoiceTimestamp } from "@/
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 const A2_API_BASE_URL = process.env.NEXT_PUBLIC_A2_API_BASE_URL || API_BASE_URL;
+const A1_API_BASE_URL = process.env.NEXT_PUBLIC_A1_API_BASE_URL || "http://127.0.0.1:3001";
 const API_PREFIX = "/api/v1";
 const ACCESS_TOKEN_KEY = "alpha.auth.accessToken";
 const REFRESH_TOKEN_KEY = "alpha.auth.refreshToken";
@@ -213,6 +214,31 @@ export type A2DownloadTaskCreate = {
   priority?: "high" | "medium" | "low";
 };
 
+type A1Response<T> = {
+  data: T;
+  count?: number;
+  error?: string;
+};
+
+type A1Track = {
+  track_id?: string;
+  callsign?: string | null;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
+  altitude?: number | string | null;
+  ground_speed?: number | string | null;
+  heading?: number | string | null;
+  timestamp?: string | number | null;
+  source?: string | null;
+};
+
+const VHHH_ADSB_BOUNDS = {
+  min_latitude: 21.1,
+  max_latitude: 23.5,
+  min_longitude: 112.45,
+  max_longitude: 115.39,
+};
+
 export type A2LiveAtcExecute = {
   source_url: string;
   date: string;
@@ -347,7 +373,7 @@ async function fetchAlpha<T>(
 
   if (!response.ok || !payload || payload.code !== 0) {
     if (!payload && response.status >= 500) {
-      throw new Error("后端服务不可用，请确认 Alpha 后端已在 http://127.0.0.1:8000 启动");
+      throw new Error("鍚庣鏈嶅姟涓嶅彲鐢紝璇风‘璁?Alpha 鍚庣宸插湪 http://127.0.0.1:8000 鍚姩");
     }
     throw new Error(payload?.message || responseText || `API error: ${response.status} ${response.statusText}`);
   }
@@ -380,7 +406,38 @@ async function fetchA2<T>(endpoint: string, options: RequestInit = {}): Promise<
     : null;
 
   if (!response.ok || !payload || payload.code !== 200) {
-    throw new Error(payload?.msg || payload?.message || responseText || `语音服务错误: ${response.status}`);
+    throw new Error(payload?.msg || payload?.message || responseText || `璇煶鏈嶅姟閿欒: ${response.status}`);
+  }
+
+  return payload;
+}
+
+async function fetchA1<T>(endpoint: string, options: RequestInit = {}): Promise<A1Response<T>> {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers: Record<string, string> = {
+    ...((options.headers as Record<string, string> | undefined) ?? {}),
+  };
+  if (!isFormData && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  const response = await fetch(`${A1_API_BASE_URL}${endpoint}`, {
+    ...options,
+    headers,
+  });
+  const responseText = await response.text();
+  const payload = responseText
+    ? (() => {
+        try {
+          return JSON.parse(responseText) as A1Response<T>;
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+
+  if (!response.ok || !payload) {
+    throw new Error(payload?.error || responseText || `ADS-B service error: ${response.status}`);
   }
 
   return payload;
@@ -443,6 +500,37 @@ function parseDateSeconds(value?: string | null): number | undefined {
   return Number.isFinite(time) ? time / 1000 : undefined;
 }
 
+function parseA1Timestamp(value: A1Track["timestamp"]): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return ms / 1000;
+  }
+  return Date.now() / 1000;
+}
+
+function toFiniteNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function mapA1Track(track: A1Track): ADSBData {
+  const callsign = (track.callsign || "").trim();
+  return {
+    id: track.track_id || `${callsign || "track"}-${track.timestamp ?? ""}`,
+    timestamp: parseA1Timestamp(track.timestamp),
+    icao24: callsign || track.track_id || "UNKNOWN",
+    callsign: callsign || undefined,
+    latitude: toFiniteNumber(track.latitude),
+    longitude: toFiniteNumber(track.longitude),
+    altitude: toFiniteNumber(track.altitude),
+    speed: toFiniteNumber(track.ground_speed),
+    heading: toFiniteNumber(track.heading),
+  };
+}
+
 function mapAsrToTimestamp(item: AsrResult, index: number, baseTime?: string | null): VoiceTimestamp {
   const baseSeconds = parseDateSeconds(baseTime);
   const absoluteStart = parseDateSeconds(item.start_time);
@@ -500,9 +588,9 @@ function mapAsrResultToTimestamps(item: AsrResult, index: number, baseTime?: str
 function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): AudioData {
   const downloadUrl = item.downloadUrl
     ? resolveA2Url(item.downloadUrl)
-    : item.file_path
+    : item.file_path && /^https?:\/\//i.test(item.file_path)
       ? resolveA2Url(item.file_path)
-      : "";
+      : buildA2VoiceFileUrl(item.unique_id);
   return {
     id: item.unique_id,
     url: downloadUrl,
@@ -948,22 +1036,51 @@ export const adsbAPI = {
     _startTime?: number,
     _endTime?: number
   ): Promise<ApiResponse<ADSBData[]>> => {
-    return {
-      success: false,
-      error: "后端已提供 ADSB 写入能力，但暂未提供 ADSB 列表查询接口。",
-    };
+    try {
+      const query = buildQuery({
+        ...VHHH_ADSB_BOUNDS,
+        limit: 1000,
+      });
+      const result = await fetchA1<A1Track[]>(`/api/adsb/tracks?${query}`);
+      return toApiResponse(result.data.map(mapA1Track));
+    } catch (error) {
+      return toErrorResponse(error);
+    }
   },
 
   getAircraftData: async (
-    _icao24: string,
+    icao24: string,
     _startTime?: number,
     _endTime?: number
   ): Promise<ApiResponse<ADSBData[]>> => {
-    return {
-      success: false,
-      error: "后端已提供 ADSB 写入能力，但暂未提供单机轨迹查询接口。",
-    };
+    try {
+      const query = buildQuery({
+        callsign: icao24,
+        ...VHHH_ADSB_BOUNDS,
+        limit: 1000,
+      });
+      const result = await fetchA1<A1Track[]>(`/api/adsb/tracks?${query}`);
+      return toApiResponse(result.data.map(mapA1Track));
+    } catch (error) {
+      return toErrorResponse(error);
+    }
   },
+
+  refreshVhhhFromAirplanesLive: async (): Promise<ApiResponse<{ saved_count?: number; fetched_count?: number }>> => {
+    try {
+      const result = await fetchA1<{ saved_count?: number; fetched_count?: number }>(
+        "/api/adsb/sources/airplanes-live/fetch",
+        {
+          method: "POST",
+          body: JSON.stringify({ preset: "vhhh", limit: 1000 }),
+        }
+      );
+      return toApiResponse(result.data);
+    } catch (error) {
+      return toErrorResponse(error);
+    }
+  },
+
 };
 
 export const annotationAPI = {

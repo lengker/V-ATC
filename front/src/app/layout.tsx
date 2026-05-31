@@ -22,17 +22,19 @@ export default function RootLayout({
         <meta name="theme-color" content="#6366f1" />
       </head>
       <body className="font-body antialiased">
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="dark"
-          enableSystem
-          disableTransitionOnChange
-        >
-          <AuthProvider>
-            <AuthGuard>{children}</AuthGuard>
-          </AuthProvider>
-          <Toaster />
-        </ThemeProvider>
+        <div className="app-root">
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="dark"
+            enableSystem
+            disableTransitionOnChange
+          >
+            <AuthProvider>
+              <AuthGuard>{children}</AuthGuard>
+            </AuthProvider>
+            <Toaster />
+          </ThemeProvider>
+        </div>
       </body>
     </html>
   );

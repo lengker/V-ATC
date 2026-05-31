@@ -99,9 +99,10 @@ export function EfbTopbar({
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
-                  // 通过 URL 上的 audioId 来定位缓存；没有就用 demo 的 id
+                  // 通过 URL 上的 audioId 来定位缓存。
                   const p = new URLSearchParams(window.location.search);
-                  const audioId = p.get("audioId") || "demo-audio-001";
+                  const audioId = p.get("audioId");
+                  if (!audioId) return;
                   const payload = exportTimestampOverrides(audioId);
                   downloadBlob(
                     `alpha-local-overrides-${audioId}-${Date.now()}.json`,
@@ -116,7 +117,8 @@ export function EfbTopbar({
                 onSelect={(e) => {
                   e.preventDefault();
                   const p = new URLSearchParams(window.location.search);
-                  const audioId = p.get("audioId") || "demo-audio-001";
+                  const audioId = p.get("audioId");
+                  if (!audioId) return;
                   clearTimestampOverrides(audioId);
                   window.location.reload();
                 }}

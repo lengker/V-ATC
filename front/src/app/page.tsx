@@ -2,17 +2,16 @@
 
 import { AnnotationPage } from "@/components/annotation-page";
 import { EmptyState } from "@/components/empty-state";
-import { demoAdsbTrack, demoRecordings, demoRecordingMeta } from "@/mock/demo-data";
 import { audioAPI, adsbAPI } from "@/lib/api";
 import type { ADSBData, AudioData } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 function HomeContent() {
   const router = useRouter();
   const params = useSearchParams();
-  const audioId = params.get("audioId") ?? demoRecordings[0].id;
-  const useBackend = process.env.NEXT_PUBLIC_USE_BACKEND === "1";
+  const audioId = params.get("audioId");
+  const useBackend = process.env.NEXT_PUBLIC_USE_BACKEND !== "0";
 
   const [backendLoading, setBackendLoading] = useState(false);
   const [backendError, setBackendError] = useState<{ title: string; description?: string } | null>(null);
@@ -21,22 +20,6 @@ function HomeContent() {
   const [backendAdsb, setBackendAdsb] = useState<ADSBData[] | null>(null);
   const [loadedA2Audio, setLoadedA2Audio] = useState<AudioData | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-
-  const active = useMemo(
-    () =>
-      loadedA2Audio?.id === audioId
-        ? loadedA2Audio
-        : demoRecordings.find((x) => x.id === audioId) ?? demoRecordings[0],
-    [audioId, loadedA2Audio]
-  );
-
-  const demoRecordingsWithLoaded = useMemo(
-    () =>
-      loadedA2Audio
-        ? [loadedA2Audio, ...demoRecordings.filter((item) => item.id !== loadedA2Audio.id)]
-        : demoRecordings,
-    [loadedA2Audio]
-  );
 
   const handleLoadA2Recording = (audio: AudioData) => {
     setLoadedA2Audio(audio);
@@ -67,7 +50,7 @@ function HomeContent() {
 
       const recordings = listRes.data;
       setBackendRecordings(recordings);
-      const chosenId = recordings.find((x) => x.id === audioId)?.id ?? recordings[0].id;
+      const chosenId = (audioId && recordings.find((x) => x.id === audioId)?.id) ?? recordings[0].id;
 
       const audioRes = await audioAPI.getAudio(chosenId);
       if (cancelled) return;
@@ -87,6 +70,7 @@ function HomeContent() {
         timestamps: Array.isArray(audioRes.data.timestamps) ? audioRes.data.timestamps : [],
       };
 
+      await adsbAPI.refreshVhhhFromAirplanesLive();
       const adsbRes = await adsbAPI.getADSBData(chosenId);
       if (cancelled) return;
       setBackendActive(audio);
@@ -126,16 +110,18 @@ function HomeContent() {
     const effectiveBackendActive =
       loadedA2Audio?.id === audioId ? loadedA2Audio : backendActive;
     const effectiveBackendRecordings =
-      loadedA2Audio && backendRecordings
-        ? [loadedA2Audio, ...backendRecordings.filter((item) => item.id !== loadedA2Audio.id)]
-        : backendRecordings;
+      backendRecordings?.map((item) => (backendActive?.id === item.id ? backendActive : item)) ?? null;
+    const effectiveRecordings =
+      loadedA2Audio && effectiveBackendRecordings
+        ? [loadedA2Audio, ...effectiveBackendRecordings.filter((item) => item.id !== loadedA2Audio.id)]
+        : effectiveBackendRecordings;
 
-    if (effectiveBackendActive && backendAdsb && effectiveBackendRecordings) {
+    if (effectiveBackendActive && backendAdsb && effectiveRecordings) {
       return (
         <AnnotationPage
           audioData={effectiveBackendActive}
           adsbData={backendAdsb}
-          recordings={effectiveBackendRecordings}
+          recordings={effectiveRecordings}
           recordingMeta={{}}
           onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
           onLoadRecording={handleLoadA2Recording}
@@ -158,15 +144,25 @@ function HomeContent() {
   }
 
   return (
-    <AnnotationPage
-      audioData={active}
-      adsbData={demoAdsbTrack}
-      recordings={demoRecordingsWithLoaded}
-      recordingMeta={demoRecordingMeta}
-      onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
-      onLoadRecording={handleLoadA2Recording}
-      onRefreshRecordings={() => setReloadToken((x) => x + 1)}
-    />
+    loadedA2Audio ? (
+      <AnnotationPage
+        audioData={loadedA2Audio}
+        adsbData={[]}
+        recordings={[loadedA2Audio]}
+        recordingMeta={{}}
+        onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+        onLoadRecording={handleLoadA2Recording}
+        onRefreshRecordings={() => setReloadToken((x) => x + 1)}
+      />
+    ) : (
+      <div className="grid min-h-screen place-items-center p-4">
+        <EmptyState
+          title="暂无可用录音"
+          description="未启用后端数据源，且没有从 A-2 导入真实录音。请启动后端服务，或设置 NEXT_PUBLIC_USE_BACKEND=1 后刷新。"
+          className="w-full max-w-[560px]"
+        />
+      </div>
+    )
   );
 }
 

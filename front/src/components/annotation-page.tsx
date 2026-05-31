@@ -15,12 +15,10 @@ import { RecordingsPanel } from "@/components/recordings-panel";
 import { A2VoicePanel } from "@/components/a2-voice-panel";
 import { QianwenAgentWidget } from "@/components/qianwen-agent-widget";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { AudioData, ADSBData, VoiceTimestamp } from "@/types";
-import type { RecordingMeta } from "@/mock/demo-data";
+import { AudioData, ADSBData, RecordingMeta, VhhhStaticLayers, VoiceTimestamp } from "@/types";
 import { audioAPI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Card } from "@/components/ui/card";
-import { type VhhhStaticLayers } from "@/mock/vhhh-static";
 import { exportAsJson, exportTimestampsAsCsv } from "@/lib/exporters";
 import {
   VspAirport,
@@ -157,7 +155,7 @@ function VspSourceBanner({
 }) {
   if (loading) {
     return (
-      <Card className="mb-2.5 rounded-2xl border-border/70 p-3 efb-panel">
+      <Card className="dashboard-card">
         <div className="text-sm text-muted-foreground">正在加载 VSP/AIP 数据...</div>
       </Card>
     );
@@ -165,7 +163,7 @@ function VspSourceBanner({
 
   if (error) {
     return (
-      <Card className="mb-2.5 rounded-2xl border-destructive/50 p-3 efb-panel">
+      <Card className="dashboard-card border-destructive/50">
         <div className="text-sm font-semibold text-destructive">VSP/AIP 数据加载失败</div>
         <div className="mt-1 text-xs text-muted-foreground">{error}</div>
       </Card>
@@ -182,7 +180,7 @@ function VspSourceBanner({
   const airport = data?.airports[0];
 
   return (
-    <Card className="mb-2.5 rounded-2xl border-emerald-500/40 bg-emerald-500/5 p-3 efb-panel">
+    <Card className="dashboard-card border-emerald-500/40 bg-emerald-500/5 min-h-[140px]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold text-emerald-300">
@@ -605,7 +603,7 @@ function AnnotationPageInner({
   const handleSaveTimestamp = useCallback(
     async (updatedTimestamp: VoiceTimestamp) => {
       try {
-        // Mock 模式（未接入后端音频/接口）：直接本地保存，避免请求 localhost:8000 报错刷屏
+        // 没有可写后端接口时，先保存到浏览器本地，避免请求报错刷屏
         if (!audioData.url) {
           const updatedTimestamps = timestamps.map((ts) =>
             ts.id === updatedTimestamp.id ? updatedTimestamp : ts
@@ -614,7 +612,7 @@ function AnnotationPageInner({
           saveTimestampOverride(audioData.id, updatedTimestamp);
           toast({
             title: "已本地保存",
-            description: "当前为 mock 模式（未接后端），已保存到浏览器本地（待后续同步）",
+            description: "已保存到浏览器本地（待后续同步）",
           });
           setSelectedTimestamp(null);
           return;
@@ -706,6 +704,7 @@ function AnnotationPageInner({
     setSelectedAircraft((prev) => (prev === icao24 ? undefined : icao24));
   }, []);
 
+
   const handleBottomNavChange = useCallback(
     (key: "map" | "transcripts" | "radio" | "audio" | "settings") => {
       setActiveBottomTab(key);
@@ -756,38 +755,55 @@ function AnnotationPageInner({
   }, [audioData, timestamps, adsbData, toast, vspStaticLayers]);
 
   return (
-    <div className="min-h-screen flex flex-col efb-surface">
+    <div className="dashboard-root efb-surface">
       <EfbTopbar
+        className="dashboard-header"
         title="ATC 转写与播放"
         subtitle={`音频：${audioData.id} · 目标：${aircraftList.length}`}
       />
 
       {/* 主内容区 */}
-      <div ref={contentScrollRef} className="flex-1 overflow-y-auto scroll-smooth p-2.5">
-        <VspSourceBanner data={vspMapData} loading={vspMapLoading} error={vspMapError} />
-        <div className="grid grid-cols-12 gap-2.5">
+      <section className="dashboard-status">
+          <VspSourceBanner data={vspMapData} loading={vspMapLoading} error={vspMapError} />
+      </section>
+
+      <main ref={contentScrollRef} className="dashboard-main">
         {/* 左侧：录音列表 + 波形 */}
-        <div className="col-span-12 flex flex-col gap-2.5 lg:col-span-3">
-          <div ref={radioSectionRef}>
+        <section className="dashboard-left">
+          <div ref={radioSectionRef} className="h-full min-h-0 overflow-hidden">
             <RecordingsPanel
+              className="h-full"
               recordings={recordings}
               activeId={audioData.id}
               onSelect={(id) => onSelectRecording?.(id)}
               recordingMeta={recordingMeta}
             />
           </div>
-          <A2VoicePanel
-            onRefreshRecordings={onRefreshRecordings}
-            onSelectRecording={onSelectRecording}
-            onLoadRecording={onLoadRecording}
-          />
-        </div>
+          <div className="dashboard-left-lower">
+            <A2VoicePanel
+              className="min-h-0"
+              onRefreshRecordings={onRefreshRecordings}
+              onSelectRecording={onSelectRecording}
+              onLoadRecording={onLoadRecording}
+            />
+            <div ref={transcriptSectionRef} className="h-full min-w-0 overflow-hidden">
+              <TimestampList
+                className="timestamp-card"
+                timestamps={timestamps}
+                currentTime={currentTime}
+                selectedTimestampId={selectedTimestamp?.id}
+                onTimestampClick={handleTimestampClick}
+                onTimestampEdit={handleTimestampClick}
+              />
+            </div>
+          </div>
+        </section>
 
         {/* 中间：地图/航迹（整栏用于地图可视化） */}
-        <div className="col-span-12 flex min-h-0 flex-col gap-2.5 lg:col-span-6">
-          <div ref={mapSectionRef} className="min-h-0 flex-1">
-            <Card className="flex h-[clamp(300px,42vh,520px)] min-h-[300px] flex-col overflow-hidden rounded-2xl border-border/70 p-2.5 efb-panel efb-glow">
-              <div className="min-h-0 flex-1">
+        <section className="dashboard-center">
+          <div ref={mapSectionRef} className="h-full min-h-0 overflow-hidden">
+            <Card className="dashboard-card map-card">
+              <div className="map-container flex-1">
                 <ADSBMap
                   adsbData={adsbData}
                   visibleAircraftSet={visibleAircraftSet}
@@ -800,40 +816,42 @@ function AnnotationPageInner({
               </div>
             </Card>
           </div>
-          <div ref={audioSectionRef}>
-            <div className="overflow-hidden rounded-2xl border border-border/70 efb-panel efb-glow">
-              <AudioWaveform
-                className="p-3 sm:p-4"
-                ref={audioWaveformRef}
-                audioUrl={audioData.url}
-                timestamps={timestamps}
-                currentTime={currentTime}
-                onTimeUpdate={handleTimeUpdate}
-                onTimestampClick={handleTimestampClick}
-                onTimestampsChange={handleSetTimestamps}
-              />
-              <div className="border-t border-border/50 p-3 sm:p-4">
-                <TranscriptTimelineEditor
-                  value={timestamps}
+          <div className="dashboard-center-bottom">
+            <div ref={audioSectionRef} className="h-full min-w-0 overflow-hidden">
+              <div className="dashboard-card audio-timeline-card">
+                <AudioWaveform
+                  className="audio-waveform-panel p-2"
+                  ref={audioWaveformRef}
+                  audioUrl={audioData.url}
+                  timestamps={timestamps}
                   currentTime={currentTime}
-                  timelineMax={timelineMax || 60}
-                  onSeek={(t) => setCurrentTime(t)}
-                  onChange={(next) => {
-                    handleSetTimestamps(next);
-                    const active =
-                      next.find((x) => currentTime >= x.startTime && currentTime <= x.endTime) ?? null;
-                    setSelectedTimestamp(active);
-                  }}
+                  onTimeUpdate={handleTimeUpdate}
+                  onTimestampClick={handleTimestampClick}
+                  onTimestampsChange={handleSetTimestamps}
                 />
+                <div className="scroll-area transcript-list min-h-0 border-t border-border/50 pt-2">
+                  <TranscriptTimelineEditor
+                    className="transcript-editor-card"
+                    value={timestamps}
+                    currentTime={currentTime}
+                    timelineMax={timelineMax || 60}
+                    onSeek={(t) => setCurrentTime(t)}
+                    onChange={(next) => {
+                      handleSetTimestamps(next);
+                      const active =
+                        next.find((x) => currentTime >= x.startTime && currentTime <= x.endTime) ?? null;
+                      setSelectedTimestamp(active);
+                    }}
+                  />
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* 右侧：仪表 + 辅助信息 */}
-        <div className="col-span-12 flex flex-col gap-2.5 lg:col-span-3 lg:row-span-2">
-          <div className="flex justify-end">
-              <ErrorBoundary name="千问智能体（A-4）" className="w-[320px]">
+        <section className="dashboard-right">
+          <div className="flex min-h-0 overflow-hidden">
+              <ErrorBoundary name="千问智能体（A-4）" className="w-full">
                 <QianwenAgentWidget
                   audioId={audioData.id}
                   currentTime={currentTime}
@@ -843,16 +861,23 @@ function AnnotationPageInner({
                 />
               </ErrorBoundary>
           </div>
-          <div ref={settingsSectionRef}>
-            <LayerToggles value={layerToggles} onChange={setLayerToggles} />
+          <div ref={settingsSectionRef} className="min-h-0 overflow-hidden">
+            <LayerToggles value={layerToggles} onChange={setLayerToggles} className="rounded-lg p-2" />
           </div>
-          <TimeRover value={currentTime} max={timelineMax || 60} onChange={(t) => setCurrentTime(t, "ui")} />
+          <TimeRover
+            className="rounded-lg p-2"
+            value={currentTime}
+            max={timelineMax || 60}
+            onChange={(t) => setCurrentTime(t, "ui")}
+            onTogglePlayPause={() => audioWaveformRef.current?.togglePlayPause()}
+          />
           <InstrumentPanel
+            className="rounded-lg"
             currentTime={currentTime}
             selectedAircraft={selectedAircraft}
             adsbData={adsbData}
           />
-          <div className="min-h-[220px]">
+          <div className="min-h-0 overflow-hidden">
             <AuxiliaryInfo
               audioData={audioData}
               adsbData={adsbData}
@@ -860,18 +885,7 @@ function AnnotationPageInner({
               selectedAircraft={selectedAircraft}
             />
           </div>
-        </div>
-
-        {/* 语音剪辑：在原网格内扩宽到左+中区域，不单开整行 */}
-        <div ref={transcriptSectionRef} className="col-span-12 lg:col-span-9">
-          <TimestampList
-            timestamps={timestamps}
-            currentTime={currentTime}
-            selectedTimestampId={selectedTimestamp?.id}
-            onTimestampClick={handleTimestampClick}
-            onTimestampEdit={handleTimestampClick}
-          />
-        </div>
+        </section>
 
         {false && (
           <TranscriptTimelineEditor
@@ -888,13 +902,12 @@ function AnnotationPageInner({
             }}
           />
         )}
-        </div>
-      </div>
+      </main>
 
       <EfbBottomNav
         active={activeBottomTab}
         onChange={handleBottomNavChange}
-        className="sticky bottom-0 z-20"
+        className="dashboard-bottom-nav"
       />
     </div>
   );

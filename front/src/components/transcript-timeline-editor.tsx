@@ -226,7 +226,7 @@ export function TranscriptTimelineEditor({
   const currentPct = clamp(currentTime / effectiveMax, 0, 1);
 
   return (
-    <Card className={cn("rounded-3xl border-border/70 efb-panel efb-glow overflow-hidden", className)}>
+    <Card className={cn("overflow-hidden rounded-xl border-border/70 efb-panel efb-glow", className)}>
       <CardHeader className="space-y-3 border-b border-border/40 bg-gradient-to-br from-background/40 to-transparent pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
@@ -352,7 +352,7 @@ export function TranscriptTimelineEditor({
       </CardHeader>
 
       <CardContent className="pt-5">
-        <ScrollArea className="h-[min(520px,55vh)] pr-2">
+        <ScrollArea className="transcript-editor-scroll pr-2">
           <div className="space-y-3">
             {sorted.map((t) => {
               const selected = selectedIds.has(t.id);
@@ -439,14 +439,6 @@ export function TranscriptTimelineEditor({
             })}
           </div>
         </ScrollArea>
-        <div className="mt-4 rounded-xl border border-border/40 bg-muted/15 p-3 text-xs leading-relaxed text-muted-foreground">
-          <p className="mb-2 font-medium text-foreground/90">操作说明</p>
-          <ul className="list-disc space-y-1.5 pl-4 marker:text-primary/80">
-            <li>点击“编辑”后，可多选片段并执行合并、删除，也可在播放指针处拆分当前片段。</li>
-            <li>拖动片段可整体平移，拖动左右边缘可调整开始/结束时间。</li>
-            <li>按住 Alt 点击时间轴片段内部，可以直接在点击位置拆分为两段。</li>
-          </ul>
-        </div>
       </CardContent>
     </Card>
   );

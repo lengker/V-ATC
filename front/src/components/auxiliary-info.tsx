@@ -144,19 +144,19 @@ export function AuxiliaryInfo({
   }, [query, vspData]);
 
   return (
-    <Card className="h-full rounded-3xl border-border/70 efb-panel efb-glow">
-      <CardHeader>
-        <CardTitle>辅助信息</CardTitle>
+    <Card className="dashboard-card flex h-full min-h-0 flex-col overflow-hidden border-border/70 efb-panel efb-glow">
+      <CardHeader className="shrink-0 px-2 py-2">
+        <CardTitle className="text-sm font-semibold tracking-tight">辅助信息</CardTitle>
       </CardHeader>
-      <CardContent>
-        <Tabs defaultValue="vsp" className="w-full">
+      <CardContent className="card-body min-h-0 flex-1 px-2 pb-2 pt-0">
+        <Tabs defaultValue="vsp" className="flex h-full min-h-0 w-full flex-col">
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="audio">音频</TabsTrigger>
             <TabsTrigger value="aircraft">航空器</TabsTrigger>
             <TabsTrigger value="vsp">VSP/AIP</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="audio" className="space-y-4 mt-4">
+          <TabsContent value="audio" className="info-list mt-2 min-h-0 flex-1 space-y-2 pr-1">
             {audioData ? (
               <>
                 <InfoRow label="音频编号" value={audioData.id} />
@@ -173,7 +173,7 @@ export function AuxiliaryInfo({
             )}
           </TabsContent>
 
-          <TabsContent value="aircraft" className="space-y-4 mt-4">
+          <TabsContent value="aircraft" className="info-list mt-2 min-h-0 flex-1 space-y-2 pr-1">
             {currentAircraftData ? (
               <>
                 <InfoRow label="呼号" value={currentAircraftData.callsign || "暂无"} />
@@ -197,14 +197,14 @@ export function AuxiliaryInfo({
             )}
           </TabsContent>
 
-          <TabsContent value="vsp" className="space-y-3 mt-4">
+          <TabsContent value="vsp" className="mt-2 flex min-h-0 flex-1 flex-col space-y-2 overflow-hidden">
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="搜索 VSP：机场、跑道、频率、导航台、航司"
-              className="h-10 bg-background/40 border-border/60"
+              className="h-8 bg-background/40 border-border/60 text-xs"
             />
-            <ScrollArea className="h-[420px] pr-2">
+            <ScrollArea className="info-list h-auto min-h-0 flex-1 pr-2">
               {vspLoading ? (
                 <p className="text-sm text-muted-foreground">正在加载 VSP 数据...</p>
               ) : vspError ? (
@@ -321,8 +321,8 @@ export function AuxiliaryInfo({
 
 function InfoRow({ label, value }: { label: string; value: string | number }) {
   return (
-    <div className="space-y-2">
-      <div className="text-sm font-medium">{label}</div>
+    <div className="space-y-1">
+      <div className="text-xs font-medium">{label}</div>
       <div className="text-sm text-muted-foreground">{value}</div>
     </div>
   );
@@ -330,9 +330,9 @@ function InfoRow({ label, value }: { label: string; value: string | number }) {
 
 function VspSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="space-y-2">
+    <section className="space-y-1.5">
       <div className="text-xs font-semibold text-muted-foreground">{title}</div>
-      <div className="space-y-2">{children}</div>
+      <div className="space-y-1.5">{children}</div>
     </section>
   );
 }
@@ -349,7 +349,7 @@ function VspCard({
   metaClassName?: string;
 }) {
   return (
-    <div className="rounded-xl border border-border/60 bg-background/20 p-3">
+    <div className="rounded-lg border border-border/60 bg-background/20 p-2">
       <div className="flex items-center justify-between gap-2">
         <div className="text-sm font-medium truncate">{title}</div>
         {meta ? <div className={`text-xs tabular-nums ${metaClassName}`}>{meta}</div> : null}

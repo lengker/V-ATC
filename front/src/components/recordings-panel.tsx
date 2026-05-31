@@ -1,11 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AudioData } from "@/types";
+import { AudioData, RecordingMeta } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatTime } from "@/lib/utils";
 import { Star, Radio, Headphones, User } from "lucide-react";
-import type { RecordingMeta } from "@/mock/demo-data";
 import { VirtualList } from "@/components/ui/virtual-list";
 
 export function RecordingsPanel({
@@ -13,11 +12,13 @@ export function RecordingsPanel({
   activeId,
   onSelect,
   recordingMeta = {},
+  className,
 }: {
   recordings: AudioData[];
   activeId: string;
   onSelect: (id: string) => void;
   recordingMeta?: Record<string, RecordingMeta>;
+  className?: string;
 }) {
   const [tab, setTab] = useState<"Radio" | "Cabin" | "Starred" | "Mine">("Radio");
   const [starredSet, setStarredSet] = useState<Set<string>>(() => {
@@ -88,8 +89,8 @@ export function RecordingsPanel({
   ];
 
   return (
-    <Card className="rounded-2xl border-border/70 efb-panel efb-glow overflow-hidden">
-      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent px-3 py-2.5">
+    <Card className={cn("dashboard-card flex h-full min-h-0 flex-col overflow-hidden border-border/70 efb-panel efb-glow", className)}>
+      <CardHeader className="shrink-0 border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent px-2 py-2">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-sm font-semibold tracking-tight">录音列表</CardTitle>
           <span className="rounded-full bg-background/50 px-2 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/50">
@@ -97,9 +98,9 @@ export function RecordingsPanel({
           </span>
         </div>
       </CardHeader>
-      <CardContent className="px-3 py-3">
+      <CardContent className="card-body flex min-h-0 flex-1 flex-col px-2 py-2">
         <div
-          className="mb-2 flex flex-wrap gap-1 rounded-xl border border-border/50 bg-muted/15 p-0.5"
+          className="mb-2 flex shrink-0 flex-wrap gap-1 rounded-lg border border-border/50 bg-muted/15 p-0.5"
           role="tablist"
           aria-label="录音筛选"
         >
@@ -124,7 +125,7 @@ export function RecordingsPanel({
         </div>
         <VirtualList
           items={filtered}
-          className="h-[168px] pr-2"
+          className="audio-list min-h-0 flex-1 pr-1"
           gapPx={6}
           overscan={10}
           estimateSizePx={84}
@@ -151,7 +152,7 @@ export function RecordingsPanel({
                 }
               }}
               className={cn(
-                "w-full text-left rounded-lg border p-2.5 transition-all duration-200",
+                "w-full text-left rounded-lg border p-2 transition-all duration-200",
                 r.id === activeId
                   ? "border-primary/80 bg-primary/12 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
                   : "border-border/60 bg-background/15 hover:border-border hover:bg-accent/30"

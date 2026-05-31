@@ -33,7 +33,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn, formatTime } from "@/lib/utils";
-import { createMockWavBlob } from "@/lib/mock-audio";
 import { VoiceTimestamp } from "@/types";
 import { usePlaybackOptional } from "@/context/PlaybackContext";
 
@@ -507,9 +506,18 @@ export const AudioWaveform = memo(
     });
 
     // 播放/暂停事件
+    const stopPlaybackClock = () => {
+      setIsPlaying(false);
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      lastEmitRef.current = -1;
+    };
+
     wavesurfer.on("play", () => setIsPlaying(true));
-    wavesurfer.on("pause", () => setIsPlaying(false));
-    wavesurfer.on("finish", () => setIsPlaying(false));
+    wavesurfer.on("pause", stopPlaybackClock);
+    wavesurfer.on("finish", stopPlaybackClock);
 
     // 时间更新事件
     const handleTimeUpdate = (time: number) => {
@@ -538,25 +546,11 @@ export const AudioWaveform = memo(
       resizeObserver.observe(waveformRef.current);
     }
 
-    // 尝试加载音频（若 url 为空，则生成 mock WAV）
+    // 尝试加载真实音频源
     try {
       const rawUrl = audioUrl?.trim() ?? "";
-      const shouldUseMockAudio = rawUrl.length === 0;
 
-      if (shouldUseMockAudio) {
-        const mockDurationSec = Math.max(timelineMaxFromCtx, expectedDuration, 1);
-        const blob = createMockWavBlob({ durationSec: mockDurationSec });
-        const maybePromise = wavesurfer.loadBlob(blob) as unknown;
-        if (
-          maybePromise &&
-          typeof (maybePromise as Promise<unknown>).catch === "function"
-        ) {
-          (maybePromise as Promise<unknown>).catch((error) => {
-            if (error instanceof Error && error.name === "AbortError") return;
-            console.error("Error loading mock audio blob:", error);
-          });
-        }
-      } else {
+      if (rawUrl.length > 0) {
         const maybePromise = wavesurfer.load(rawUrl) as unknown;
         if (
           maybePromise &&
@@ -567,6 +561,10 @@ export const AudioWaveform = memo(
             console.error("Error loading audio:", error);
           });
         }
+      } else {
+        setAudioError("当前录音没有可播放的音频文件");
+        setDuration(Math.max(timelineMaxFromCtx, expectedDuration, 0));
+        setIsLoading(false);
       }
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
@@ -619,6 +617,13 @@ export const AudioWaveform = memo(
       const ws = wavesurferRef.current;
       if (ws) {
         try {
+          const audio = ws.getMediaElement();
+          if (audio instanceof HTMLMediaElement && audio.paused) {
+            setIsPlaying(false);
+            rafRef.current = null;
+            lastEmitRef.current = -1;
+            return;
+          }
           const t = ws.getCurrentTime();
           // 降低抖动：只有明显变化才推送
           if (Math.abs(t - lastEmitRef.current) >= 0.05) {
@@ -983,7 +988,7 @@ export const AudioWaveform = memo(
         </div>
       )}
 
-      <div className="audio-waveform-shell relative overflow-hidden rounded-2xl border border-border/40 ring-1 ring-white/5">
+      <div className="audio-waveform-shell relative overflow-hidden rounded-xl border border-border/40 ring-1 ring-white/5">
         <div ref={waveformRef} className="w-full" style={{ height: "108px" }} />
 
         <TimestampOverlay
@@ -1005,7 +1010,7 @@ export const AudioWaveform = memo(
 
       {timestamps.length > 0 && (
         <div className="rounded-xl border border-border/45 bg-background/30 p-2">
-          <div className="flex max-h-28 flex-col gap-1.5 overflow-y-auto pr-1">
+          <div className="flex max-h-80 flex-col gap-1.5 overflow-y-auto pr-1">
             {[...timestamps]
               .sort((a, b) => a.startTime - b.startTime)
               .map((timestamp) => {

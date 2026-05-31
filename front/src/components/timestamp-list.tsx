@@ -16,6 +16,7 @@ interface TimestampListProps {
   selectedTimestampId?: string;
   onTimestampClick?: (timestamp: VoiceTimestamp) => void;
   onTimestampEdit?: (timestamp: VoiceTimestamp) => void;
+  className?: string;
 }
 
 export function TimestampList({
@@ -24,6 +25,7 @@ export function TimestampList({
   selectedTimestampId,
   onTimestampClick,
   onTimestampEdit,
+  className,
 }: TimestampListProps) {
   const playback = usePlaybackOptional();
   const effectiveCurrentTime = playback?.currentTime ?? currentTime;
@@ -54,17 +56,17 @@ export function TimestampList({
   };
 
   return (
-    <Card className="h-full rounded-3xl border-border/70 efb-panel efb-glow">
-      <CardHeader>
+    <Card className={cn("dashboard-card flex h-full min-h-0 flex-col overflow-hidden border-border/70 efb-panel efb-glow", className)}>
+      <CardHeader className="shrink-0 px-2 py-2">
         <CardTitle>语音时间戳</CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="mb-3 space-y-2">
+      <CardContent className="card-body flex min-h-0 flex-1 flex-col px-2 pb-2 pt-0">
+        <div className="mb-2 shrink-0 space-y-2">
           <Input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="搜索：文本 / 说话人 / 时间…"
-            className="h-9 bg-background/40 border-border/60"
+            className="h-8 bg-background/40 border-border/60 text-xs"
           />
           <div className="text-xs text-muted-foreground">
             显示 {deferredTimestamps.length} / {sortedTimestamps.length}
@@ -72,10 +74,10 @@ export function TimestampList({
         </div>
           <VirtualList
             items={deferredTimestamps}
-            className="h-[600px]"
-            gapPx={8}
+            className="timestamp-list min-h-0 flex-1"
+            gapPx={6}
             overscan={10}
-            estimateSizePx={92}
+            estimateSizePx={80}
             getKey={(t) => t.id}
             empty={
               <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
@@ -89,7 +91,7 @@ export function TimestampList({
               return (
                 <div
                   className={cn(
-                    "p-3 rounded-lg border cursor-pointer transition-colors",
+                    "p-2 rounded-lg border cursor-pointer transition-colors",
                     active && "bg-primary/10 border-primary",
                     selected && "ring-2 ring-primary",
                     !active && !selected && "hover:bg-accent"

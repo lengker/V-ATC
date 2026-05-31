@@ -35,6 +35,55 @@ export interface AudioData {
   };
 }
 
+export type RecordingMeta = {
+  channel: "Radio" | "Cabin";
+  mine?: boolean;
+};
+
+export type StaticPoint = {
+  id: string;
+  name: string;
+  kind: "waypoint" | "landmark" | "navaid";
+  lat: number;
+  lon: number;
+  note?: string;
+};
+
+export type StaticLine = {
+  id: string;
+  name: string;
+  kind: "runway" | "taxiway" | "sid" | "star";
+  points: Array<{ lat: number; lon: number }>;
+  note?: string;
+};
+
+export type RoutePolyline = {
+  id: string;
+  name: string;
+  kind: "planned" | "detour" | "missed";
+  points: Array<{ lat: number; lon: number }>;
+  note?: string;
+  endLabel?: string;
+};
+
+export type ObstacleZone = {
+  id: string;
+  name: string;
+  kind: "nfz" | "weather" | "terrain";
+  polygon: Array<{ lat: number; lon: number }>;
+  note?: string;
+};
+
+export type VhhhStaticLayers = {
+  runways: StaticLine[];
+  taxiways: StaticLine[];
+  waypoints: StaticPoint[];
+  landmarks: StaticPoint[];
+  procedures: Array<{ id: string; type: "SID" | "STAR"; name: string; runway?: string; note?: string }>;
+  routeLines?: RoutePolyline[];
+  obstacleZones?: ObstacleZone[];
+};
+
 // 标注数据类型
 export interface Annotation {
   id: string;

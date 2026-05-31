@@ -9,7 +9,7 @@ import { ScrollBar } from "@/components/ui/scroll-area";
 
 export type VirtualListProps<T> = {
   items: T[];
-  /** Height should be controlled via className (e.g. h-[600px]) or parent layout. */
+  /** Height should be controlled via parent layout or a compact className. */
   className?: string;
   viewportClassName?: string;
   /** Extra class for the inner "total size" container. */

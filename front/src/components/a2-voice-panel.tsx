@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import type { AudioData } from "@/types";
+import { cn } from "@/lib/utils";
 
 const TEXT = {
   alphaSyncFailed: "Alpha \u540c\u6b65\u5931\u8d25",
@@ -127,10 +128,12 @@ export function A2VoicePanel({
   onRefreshRecordings,
   onSelectRecording,
   onLoadRecording,
+  className,
 }: {
   onRefreshRecordings?: () => void;
   onSelectRecording?: (id: string) => void;
   onLoadRecording?: (audio: AudioData) => void;
+  className?: string;
 }) {
   const { toast } = useToast();
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -421,8 +424,8 @@ export function A2VoicePanel({
   };
 
   return (
-    <Card className="overflow-hidden rounded-2xl border-border/70 efb-panel efb-glow">
-      <CardHeader className="border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent px-3 py-2.5">
+    <Card className={cn("flex h-full min-h-0 flex-col overflow-hidden rounded-xl border-border/70 efb-panel efb-glow", className)}>
+      <CardHeader className="shrink-0 border-b border-border/40 bg-gradient-to-br from-background/35 to-transparent px-3 py-2.5">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="text-sm font-semibold tracking-tight">{TEXT.title}</CardTitle>
           <span className="rounded-full bg-background/50 px-2 py-0.5 text-[11px] text-muted-foreground ring-1 ring-border/50">
@@ -430,7 +433,7 @@ export function A2VoicePanel({
           </span>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2.5 px-3 py-3">
+      <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
         <div className="grid grid-cols-2 gap-1.5">
           <div className="space-y-1">
             <Label className="text-xs">机场四字码</Label>
@@ -515,7 +518,7 @@ export function A2VoicePanel({
         </div>
 
         {records.length > 0 && (
-          <div className="max-h-36 space-y-1.5 overflow-auto pr-1 text-xs">
+          <div className="max-h-28 space-y-1.5 overflow-auto pr-1 text-xs">
             {records.map((record) => (
               <div key={record.unique_id} className="rounded-xl border border-border/60 bg-background/20 p-2">
                 <div className="flex items-center justify-between gap-2">

@@ -18,8 +18,13 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   }, [loading, user, router, pathname]);
 
   if (PUBLIC_ROUTES.has(pathname)) return <>{children}</>;
-  if (loading) return null;
-  if (!user) return null;
+  if (loading || !user) {
+    return (
+      <div className="grid h-screen place-items-center bg-background text-sm text-muted-foreground">
+        正在进入系统...
+      </div>
+    );
+  }
   return <>{children}</>;
 }
 
