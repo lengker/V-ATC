@@ -20,17 +20,32 @@ import { audioAPI } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Card } from "@/components/ui/card";
 import { vhhhStatic } from "@/mock/vhhh-static";
-import { exportAsJson, exportTimestampsAsCsv } from "@/lib/exporters";
+import { exportAsJson, exportAnnotationPackage, exportTimestampsAsCsv } from "@/lib/exporters";
 import {
   applyTimestampOverrides,
   loadTimestampOverrides,
   saveTimestampOverride,
   saveFullTimestamps,
 } from "@/lib/local-annotation-store";
+import { storeTranscriptSegments } from "@/lib/transcript-store";
 import { PlaybackProvider, usePlayback } from "@/context/PlaybackContext";
+import {
+  isRecordingTimelineAligned,
+  matchesFlightKey,
+  primaryCallsignForRecording,
+  recordingHasTimelineAdsb,
+  recordingTrackSummary,
+  resolvePrimaryAircraftKey,
+  resolveBestRecordingUtcStartSec,
+  timelineAdsbPoints,
+} from "@/lib/recording-adsb-alignment";
 import { useRecordingsSync } from "@/context/recordings-sync-context";
 import { pickRecordingBySearchQuery } from "@/lib/global-search";
 import { buildAgentWorkspaceSnapshot } from "@/lib/agent-workspace-context";
+import {
+  applyAgentTranscriptOps,
+  type AgentTranscriptOps,
+} from "@/lib/agent-transcript-ops";
 import { getRecordingDisplayName } from "@/lib/recording-display";
 import { recordingTimelineMax } from "@/lib/utils";
 
@@ -57,6 +72,8 @@ const ADSBMap = dynamic(() => import("@/components/adsb-map-leaflet").then((mod)
 interface AnnotationPageProps {
   audioData: AudioData;
   adsbData: ADSBData[];
+  /** OpenSky 实时全量（与录音对齐层分离，保证地图上始终有真实机 */
+  mapLiveAdsb?: ADSBData[];
   /** 地图轮询版本号，强制航迹/标记重绘 */
   adsbMapRevision?: number;
   onSelectRecording?: (id: string) => void;
@@ -79,6 +96,9 @@ function RecordingsPanelSlot({
     onTranscribeSelected,
     onDeleteRecording,
     deletingRecordingId,
+    onBatchExport,
+    batchExporting,
+    batchExportProgress,
   } = useRecordingsSync();
   return (
     <RecordingsPanel
@@ -93,6 +113,9 @@ function RecordingsPanelSlot({
       onTranscribeSelected={onTranscribeSelected}
       onDeleteRecording={onDeleteRecording}
       deletingRecordingId={deletingRecordingId}
+      onBatchExport={onBatchExport}
+      batchExporting={batchExporting}
+      batchExportProgress={batchExportProgress}
     />
   );
 }
@@ -100,6 +123,7 @@ function RecordingsPanelSlot({
 function AnnotationPageComponent({
   audioData,
   adsbData,
+  mapLiveAdsb = [],
   adsbMapRevision = 0,
   onSelectRecording,
 }: AnnotationPageProps) {
@@ -119,7 +143,15 @@ function AnnotationPageComponent({
     return applyTimestampOverrides(audioData.timestamps, overrides);
   });
 
-  const timelineMax = recordingTimelineMax(audioData.duration || 0, timestamps);
+  const timelineMax = useMemo(
+    () =>
+      Math.max(
+        recordingTimelineMax(audioData.duration || 0, timestamps),
+        Number(audioData.duration) || 0,
+        1
+      ),
+    [audioData.duration, timestamps]
+  );
 
   // 同步 audioData：服务端已有 ASR 时优先用服务端，避免空本地缓存盖住新转写
   useEffect(() => {
@@ -160,10 +192,11 @@ function AnnotationPageComponent({
   }, [audioData.id, audioData.timestamps]);
 
   return (
-    <PlaybackProvider timelineMax={timelineMax || 60}>
+    <PlaybackProvider key={audioData.id} timelineMax={timelineMax || 60} initialTime={0}>
       <AnnotationPageInner
         audioData={audioData}
         adsbData={adsbData}
+        mapLiveAdsb={mapLiveAdsb}
         adsbMapRevision={adsbMapRevision}
         onSelectRecording={onSelectRecording}
         timestamps={timestamps}
@@ -180,6 +213,7 @@ export const AnnotationPage = memo(
     if (
       prev.onSelectRecording !== next.onSelectRecording ||
       prev.adsbData !== next.adsbData ||
+      prev.mapLiveAdsb !== next.mapLiveAdsb ||
       prev.adsbMapRevision !== next.adsbMapRevision
     ) {
       return false;
@@ -194,6 +228,7 @@ export const AnnotationPage = memo(
 type AnnotationPageInnerProps = {
   audioData: AudioData;
   adsbData: ADSBData[];
+  mapLiveAdsb?: ADSBData[];
   adsbMapRevision?: number;
   onSelectRecording?: (id: string) => void;
   timestamps: VoiceTimestamp[];
@@ -204,6 +239,7 @@ type AnnotationPageInnerProps = {
 function AnnotationPageInner({
   audioData,
   adsbData,
+  mapLiveAdsb = [],
   adsbMapRevision = 0,
   onSelectRecording,
   timestamps,
@@ -225,6 +261,7 @@ function AnnotationPageInner({
     obstacles: true,
   });
   const [visibleAircraftSet, setVisibleAircraftSet] = useState<Set<string>>(new Set());
+  const userPickedAircraftRef = useRef(false);
   const [activeBottomTab, setActiveBottomTab] = useState<
     "map" | "transcripts" | "radio" | "audio" | "settings"
   >("transcripts");
@@ -262,6 +299,10 @@ function AnnotationPageInner({
   const mapSectionRef = useRef<HTMLDivElement>(null);
   const audioWaveformRef = useRef<AudioWaveformHandle>(null);
   const [waveformPlaying, setWaveformPlaying] = useState(false);
+  const [mapContinueLive, setMapContinueLive] = useState(false);
+  const [mapLiveRealtimeMode, setMapLiveRealtimeMode] = useState(false);
+  const useLivePanelClock =
+    mapLiveRealtimeMode && !waveformPlaying && !mapContinueLive;
   const transcriptSectionRef = useRef<HTMLDivElement>(null);
   const radioSectionRef = useRef<HTMLDivElement>(null);
   const audioSectionRef = useRef<HTMLDivElement>(null);
@@ -280,7 +321,37 @@ function AnnotationPageInner({
   }, []);
 
   const fullSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backendSyncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestFullDraftRef = useRef<VoiceTimestamp[] | null>(null);
+  const timestampsSnapshotRef = useRef<VoiceTimestamp[]>(timestamps);
+  timestampsSnapshotRef.current = timestamps;
+
+  const syncDirtySegmentsToBackend = useCallback(
+    async (prev: VoiceTimestamp[], next: VoiceTimestamp[]) => {
+      if (!audioData.url) return;
+      const prevMap = new Map(prev.map((t) => [t.id, t]));
+      for (const t of next) {
+        const old = prevMap.get(t.id);
+        if (!old) continue;
+        if (
+          old.text === t.text &&
+          old.startTime === t.startTime &&
+          old.endTime === t.endTime &&
+          (old.speaker ?? "") === (t.speaker ?? "")
+        ) {
+          continue;
+        }
+        const annotationId = Number(t.id);
+        if (!Number.isFinite(annotationId)) continue;
+        try {
+          await audioAPI.updateTimestamp(audioData.id, t);
+        } catch {
+          // 本地已保存，后端失败不阻塞编辑
+        }
+      }
+    },
+    [audioData.id, audioData.url]
+  );
 
   // audioId 切换/组件卸载时，清理未完成的防抖写入
   useEffect(() => {
@@ -288,6 +359,10 @@ function AnnotationPageInner({
       if (fullSaveDebounceRef.current) {
         clearTimeout(fullSaveDebounceRef.current);
         fullSaveDebounceRef.current = null;
+      }
+      if (backendSyncDebounceRef.current) {
+        clearTimeout(backendSyncDebounceRef.current);
+        backendSyncDebounceRef.current = null;
       }
     };
   }, [audioData.id]);
@@ -370,8 +445,9 @@ function AnnotationPageInner({
 
   const handleSetTimestamps = useCallback(
     (next: VoiceTimestamp[]) => {
+      const prev = timestampsSnapshotRef.current;
       setTimestamps(next);
-      // 支持拆分/合并/删除/新增段落：用 full list 持久化，刷新不丢
+      timestampsSnapshotRef.current = next;
       if (typeof window !== "undefined") {
         latestFullDraftRef.current = next;
         if (fullSaveDebounceRef.current) {
@@ -381,34 +457,76 @@ function AnnotationPageInner({
           const latest = latestFullDraftRef.current;
           if (!latest) return;
           try {
-            saveFullTimestamps(audioData.id, latest);
+            storeTranscriptSegments(audioData.id, latest);
           } catch {
             // ignore
           }
         }, 600);
+
+        if (backendSyncDebounceRef.current) {
+          clearTimeout(backendSyncDebounceRef.current);
+        }
+        backendSyncDebounceRef.current = setTimeout(() => {
+          const latest = latestFullDraftRef.current;
+          if (!latest) return;
+          void syncDirtySegmentsToBackend(prev, latest);
+        }, 1500);
       }
     },
-    [audioData.id]
+    [audioData.id, syncDirtySegmentsToBackend]
   );
 
   // 从音频数据中提取所有唯一的飞机 ICAO24
-  const aircraftList = Array.from(
-    new Set(adsbData.map((d) => d.icao24))
+  const mergedAdsbPool = useMemo(
+    () => [...adsbData, ...mapLiveAdsb],
+    [adsbData, mapLiveAdsb]
   );
 
-  const prevAudioIdForTargetsRef = useRef(audioData.id);
+  const aircraftList = useMemo(
+    () => Array.from(new Set(mergedAdsbPool.map((d) => d.icao24))),
+    [mergedAdsbPool]
+  );
+
+  const primaryRecordingAircraft = useMemo(
+    () => resolvePrimaryAircraftKey(audioData, mergedAdsbPool),
+    [audioData, mergedAdsbPool]
+  );
+
+  const recordingUtcStartSec = useMemo(
+    () => resolveBestRecordingUtcStartSec(audioData, mergedAdsbPool, primaryRecordingAircraft),
+    [audioData, mergedAdsbPool, primaryRecordingAircraft]
+  );
+
+  /** 切换录音：选中主目标并显示该时段全部飞机（组件 remount 时 prevAudioId 初值会等于新 id，不能靠 !== 判断） */
   useEffect(() => {
-    if (prevAudioIdForTargetsRef.current !== audioData.id) {
-      prevAudioIdForTargetsRef.current = audioData.id;
-      setVisibleAircraftSet(new Set(aircraftList));
-      return;
+    userPickedAircraftRef.current = false;
+    setMapContinueLive(false);
+    const primary = resolvePrimaryAircraftKey(audioData, mergedAdsbPool);
+    if (primary) {
+      setSelectedAircraft(primary);
+      const vis = new Set<string>([primary.toLowerCase()]);
+      const row = mergedAdsbPool.find((p) => matchesFlightKey(p, primary));
+      if (row?.callsign?.trim()) vis.add(row.callsign.trim().toLowerCase());
+      setVisibleAircraftSet(vis);
+    } else {
+      setVisibleAircraftSet(new Set());
+      setSelectedAircraft(undefined);
     }
-    // 仅首次有航迹时默认全选；实时刷新不改动用户已勾选的筛选
+  }, [audioData.id]);
+
+  /** 航迹数据晚于录音到达时，补选主目标（仅当用户尚未手动点选其他机） */
+  useEffect(() => {
+    if (!primaryRecordingAircraft || userPickedAircraftRef.current) return;
+    setSelectedAircraft(primaryRecordingAircraft);
     setVisibleAircraftSet((prev) => {
-      if (prev.size > 0 || aircraftList.length === 0) return prev;
-      return new Set(aircraftList);
+      const next = new Set(prev);
+      const pk = primaryRecordingAircraft.toLowerCase();
+      next.add(pk);
+      const row = mergedAdsbPool.find((p) => matchesFlightKey(p, pk));
+      if (row?.callsign?.trim()) next.add(row.callsign.trim().toLowerCase());
+      return next;
     });
-  }, [audioData.id, aircraftList.length]);
+  }, [primaryRecordingAircraft]);
 
   // 处理时间戳点击：跳转波形并播放该段
   const handleTimestampClick = useCallback((timestamp: VoiceTimestamp) => {
@@ -417,9 +535,15 @@ function AnnotationPageInner({
     audioWaveformRef.current?.playSegment(timestamp.startTime, timestamp.endTime);
   }, [setCurrentTime]);
 
-  const handleWaveformSeek = useCallback((t: number) => {
-    audioWaveformRef.current?.playFrom(t);
-  }, []);
+  const handleWaveformSeek = useCallback(
+    (t: number) => {
+      const dur = audioData.duration || timelineMax || 60;
+      if (t < dur - 0.05) setMapContinueLive(false);
+      setCurrentTime(t, "waveform");
+      audioWaveformRef.current?.seekTo(t);
+    },
+    [audioData.duration, setCurrentTime, timelineMax]
+  );
 
   const handleWaveformStep = useCallback((delta: number) => {
     audioWaveformRef.current?.skipBy(delta);
@@ -553,33 +677,26 @@ function AnnotationPageInner({
     [audioData.id, audioData.url]
   );
 
-  const handleApplyAiSegmentPatches = useCallback(
-    async (patches: Array<{ id: string; text: string }>) => {
-      const map = new Map(patches.map((p) => [p.id, p.text.trim()]));
-      const changed: VoiceTimestamp[] = [];
-      const next = timestamps.map((ts) => {
-        const text = map.get(ts.id);
-        if (text === undefined || text === ts.text) return ts;
-        const updated = { ...ts, text };
-        changed.push(updated);
-        return updated;
-      });
-      if (!changed.length) {
+  const handleApplyAiTranscriptOps = useCallback(
+    async (ops: AgentTranscriptOps) => {
+      const result = applyAgentTranscriptOps(timestamps, ops);
+      if (!result.applied) {
         toast({
-          title: "未匹配到可更新片段",
-          description: "返回的 segmentPatches 与当前转写 id 不一致。",
+          title: "未应用编辑",
+          description: result.message,
           variant: "destructive",
         });
         return;
       }
-      await persistTimestamps(next, changed);
-      setSelectedTimestamp(changed[0] ?? selectedTimestamp);
+      handleSetTimestamps(result.next);
+      const firstMerged = result.next[0];
+      if (firstMerged) setSelectedTimestamp(firstMerged);
       toast({
-        title: `已更新 ${changed.length} 段转写`,
-        description: "已按智能体建议逐段写入语音剪辑区。",
+        title: "已应用智能体编辑",
+        description: result.message,
       });
     },
-    [persistTimestamps, selectedTimestamp, timestamps, toast]
+    [handleSetTimestamps, timestamps, toast]
   );
 
   // 智能体 suggestedText：自动落到选中段 / 播放头段 / 全部段（不再要求「左侧」点录音列表）
@@ -633,13 +750,26 @@ function AnnotationPageInner({
   );
 
   // 处理音频时间更新
-  const handleTimeUpdate = useCallback((time: number) => {
-    setCurrentTime(time, "waveform");
-  }, [setCurrentTime]);
+  const handleTimeUpdate = useCallback(
+    (time: number) => {
+      setCurrentTime(time, "waveform");
+      const dur = audioData.duration || timelineMax || 60;
+      if (time >= dur - 0.05) setMapContinueLive(true);
+    },
+    [audioData.duration, setCurrentTime, timelineMax]
+  );
 
   // 处理飞机选择
   const handleAircraftSelect = useCallback((icao24: string) => {
-    setSelectedAircraft((prev) => (prev === icao24 ? undefined : icao24));
+    userPickedAircraftRef.current = true;
+    const key = icao24.toLowerCase();
+    setVisibleAircraftSet((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    setSelectedAircraft(key);
   }, []);
 
   const handleBottomNavChange = useCallback(
@@ -755,21 +885,62 @@ function AnnotationPageInner({
 
   // 顶部菜单触发导出
   useEffect(() => {
-    const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as { type: "json" | "csv" } | undefined;
+    const handler = async (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as
+        | { type: "json" | "csv" | "package" | "audio" }
+        | undefined;
       if (!detail) return;
+      const payload = {
+        audio: audioData,
+        timestamps,
+        adsb: adsbData,
+        staticLayers: vhhhStatic,
+        exportedAt: new Date().toISOString(),
+      };
       if (detail.type === "json") {
-        exportAsJson({
-          audio: audioData,
-          timestamps,
-          adsb: adsbData,
-          staticLayers: vhhhStatic,
-          exportedAt: new Date().toISOString(),
+        exportAsJson(payload);
+        toast({ title: "已导出", description: "JSON 标注包已下载" });
+        return;
+      }
+      if (detail.type === "csv") {
+        exportTimestampsAsCsv(timestamps, undefined, audioData.id);
+        toast({ title: "已导出", description: "转写 CSV 已下载" });
+        return;
+      }
+      if (detail.type === "audio") {
+        if (!audioData.url) {
+          toast({ title: "无法导出音频", description: "当前录音无音频 URL", variant: "destructive" });
+          return;
+        }
+        try {
+          const { exportAudioFile } = await import("@/lib/exporters");
+          await exportAudioFile(audioData.url, `alpha-${audioData.id}-audio`);
+          toast({ title: "已导出", description: "音频文件已下载" });
+        } catch (e) {
+          toast({
+            title: "音频导出失败",
+            description: e instanceof Error ? e.message : "请检查网络或 CORS",
+            variant: "destructive",
+          });
+        }
+        return;
+      }
+      if (detail.type === "package") {
+        const result = await exportAnnotationPackage(payload);
+        const parts = [
+          result.json && "JSON",
+          result.csv && "转写 CSV",
+          result.adsbCsv && "ADSB CSV",
+          result.audio && "音频",
+        ].filter(Boolean);
+        toast({
+          title: parts.length ? "导出完成" : "导出未完成",
+          description:
+            parts.length > 0
+              ? `已下载：${parts.join("、")}${result.errors.length ? `（${result.errors.join("；")}）` : ""}`
+              : result.errors.join("；") || "无可用导出项",
+          variant: parts.length ? "default" : "destructive",
         });
-        toast({ title: "已导出", description: "JSON 文件已下载" });
-      } else {
-        exportTimestampsAsCsv(timestamps);
-        toast({ title: "已导出", description: "CSV 文件已下载" });
       }
     };
     window.addEventListener("alpha.export", handler as EventListener);
@@ -780,7 +951,7 @@ function AnnotationPageInner({
     <div className="h-screen flex flex-col overflow-hidden efb-surface">
       <EfbTopbar
         title="ATC Transcriptions & Playback"
-        subtitle={`${getRecordingDisplayName(audioData)} · Targets: ${aircraftList.length}`}
+        subtitle={`${getRecordingDisplayName(audioData)} · ${recordingTrackSummary(audioData, adsbData)}`}
         searchValue={globalSearch}
         onSearchChange={setGlobalSearch}
         onSearchSubmit={runGlobalSearch}
@@ -793,19 +964,19 @@ function AnnotationPageInner({
 
       {/* 主内容区 */}
       <div ref={contentScrollRef} className="flex-1 min-h-0 overflow-y-auto scroll-smooth p-3">
-        <div className="grid grid-cols-12 gap-3">
-        {/* 左侧：录音列表 + 波形 */}
-        <div className="col-span-12 lg:col-span-4 flex flex-col gap-3">
-          <div ref={radioSectionRef} className="scroll-mt-3 rounded-3xl">
+        <div className="grid grid-cols-12 gap-3 lg:items-stretch">
+        {/* 左侧：录音列表 + 波形（与地图同高，波形区自动撑满剩余高度） */}
+        <div className="col-span-12 lg:col-span-4 flex flex-col gap-3 self-stretch min-h-0">
+          <div ref={radioSectionRef} className="scroll-mt-3 rounded-3xl shrink-0">
             <RecordingsPanelSlot
               activeId={audioData.id}
               onSelect={(id) => onSelectRecording?.(id)}
             />
           </div>
-          <div ref={audioSectionRef}>
-            <Card className="overflow-hidden rounded-3xl border-border/70 efb-panel efb-glow">
+          <div ref={audioSectionRef} className="flex min-h-0 flex-1 flex-col">
+            <Card className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border-border/70 efb-panel efb-glow">
               <AudioWaveform
-                className="p-4 sm:p-5"
+                className="flex min-h-0 flex-1 flex-col p-4 sm:p-5"
                 ref={audioWaveformRef}
                 audioUrl={audioData.url}
                 timestamps={timestamps}
@@ -819,13 +990,14 @@ function AnnotationPageInner({
           </div>
         </div>
 
-        {/* 中间：地图/航迹（整栏用于地图可视化） */}
-        <div className="col-span-12 lg:col-span-5 flex flex-col gap-3 min-h-0">
-          <div ref={mapSectionRef} className="min-h-0 flex-1 scroll-mt-3 rounded-3xl">
-            <Card className="flex h-[min(78vh,940px)] min-h-[420px] flex-col overflow-hidden p-3 rounded-3xl border-border/70 efb-panel efb-glow">
-              <div className="min-h-0 flex-1">
+        {/* 中间：地图与左侧波形底部对齐，填满网格行高 */}
+        <div className="col-span-12 lg:col-span-5 flex min-h-0 flex-col self-stretch">
+          <div ref={mapSectionRef} className="flex min-h-0 flex-1 flex-col scroll-mt-3 rounded-3xl">
+            <Card className="flex h-full min-h-[380px] flex-1 flex-col overflow-hidden rounded-3xl border-border/70 p-3 efb-panel efb-glow">
+              <div className="flex min-h-0 flex-1 flex-col">
                 <ADSBMap
                   adsbData={adsbData}
+                  mapLiveAdsb={mapLiveAdsb}
                   mapRefreshRevision={adsbMapRevision}
                   visibleAircraftSet={visibleAircraftSet}
                   staticLayers={vhhhStatic}
@@ -834,6 +1006,13 @@ function AnnotationPageInner({
                   selectedAircraft={selectedAircraft}
                   onAircraftSelect={handleAircraftSelect}
                   liveAdsbStatus={liveAdsbStatus}
+                  focusRecordingId={audioData.id}
+                  timelinePlaybackMode={isRecordingTimelineAligned(audioData)}
+                  primaryRecordingAircraft={primaryRecordingAircraft}
+                  recordingUtcStartSec={recordingUtcStartSec}
+                  audioDurationSec={audioData.duration || timelineMax || 60}
+                  mapPlaybackActive={waveformPlaying || mapContinueLive}
+                  onLiveRealtimeModeChange={setMapLiveRealtimeMode}
                 />
               </div>
             </Card>
@@ -844,12 +1023,21 @@ function AnnotationPageInner({
         <div className="col-span-12 lg:col-span-3 lg:row-span-2 flex flex-col gap-3">
           <div className="relative">
             <TargetsPanel
-              adsbData={adsbData}
+              adsbData={mergedAdsbPool}
               visibleSet={visibleAircraftSet}
               onVisibleSetChange={setVisibleAircraftSet}
               selectedAircraft={selectedAircraft}
               onSelectAircraft={handleAircraftSelect}
               externalFilterQuery={targetsFilterQuery}
+              currentTime={currentTime}
+              recordingUtcStartSec={recordingUtcStartSec}
+              recordingDurationSec={audioData.duration || timelineMax || 62}
+              useLiveWallClockNow={useLivePanelClock}
+              mapForceKeys={
+                [primaryRecordingAircraft, selectedAircraft].filter(
+                  Boolean
+                ) as string[]
+              }
             />
             <div className="absolute top-3 right-3 z-20">
               <ErrorBoundary name="千问智能体（A-4）" className="w-[320px]">
@@ -860,7 +1048,7 @@ function AnnotationPageInner({
                   selectedTimestamp={selectedTimestamp}
                   workspace={agentWorkspace}
                   onApplySuggestedText={handleApplyAiSuggestedText}
-                  onApplySegmentPatches={handleApplyAiSegmentPatches}
+                  onApplyTranscriptOps={handleApplyAiTranscriptOps}
                 />
               </ErrorBoundary>
             </div>
@@ -883,14 +1071,20 @@ function AnnotationPageInner({
           <InstrumentPanel
             currentTime={currentTime}
             selectedAircraft={selectedAircraft}
-            adsbData={adsbData}
+            adsbData={mergedAdsbPool}
+            recordingUtcStartSec={recordingUtcStartSec}
+            recordingDurationSec={audioData.duration || timelineMax || 62}
+            useLiveWallClockNow={useLivePanelClock}
           />
           <div className="min-h-[280px]">
             <AuxiliaryInfo
               audioData={audioData}
-              adsbData={adsbData}
+              adsbData={mergedAdsbPool}
               currentTime={currentTime}
               selectedAircraft={selectedAircraft}
+              recordingUtcStartSec={recordingUtcStartSec}
+              recordingDurationSec={audioData.duration || timelineMax || 62}
+              useLiveWallClockNow={useLivePanelClock}
             />
           </div>
         </div>

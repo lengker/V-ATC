@@ -3,7 +3,11 @@ import type { AudioData } from "@/types";
 /** 将 A5 start_time_utc（ISO）格式化为本地墙钟时间，与「当前时间」一致 */
 export function formatRecordingCaptureTimeLocal(isoUtc: string | undefined): string {
   if (!isoUtc?.trim()) return "";
-  const d = new Date(isoUtc);
+  let s = isoUtc.trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s) && !/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) {
+    s = s.includes("T") ? `${s}Z` : `${s.replace(" ", "T")}Z`;
+  }
+  const d = new Date(s);
   if (Number.isNaN(d.getTime())) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
@@ -42,13 +46,83 @@ export function formatRecordingFileName(fileName: string): string {
   return cleaned;
 }
 
+/** 从文件名解析 UTC 采集窗口（用于纠正被「实时更新」误写成当前时刻的记录） */
+export function parseRecordingUtcRangeFromFileName(
+  fileName: string,
+  durationSec: number
+): { startTimeUtc: string; endTimeUtc: string } | null {
+  const stem = fileName.replace(/\.(mp3|wav|m4a|ogg|aac)$/i, "").trim();
+  if (!stem) return null;
+  const durMs = Math.max(1000, Math.round(Math.max(1, durationSec) * 1000));
+
+  const toIso = (d: Date) => d.toISOString();
+
+  const vhhhLocal = /^vhhh[_-]?(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})$/i.exec(stem);
+  if (vhhhLocal) {
+    // 文件名墙钟为香港时间 (UTC+8)，不是 UTC
+    const startMs =
+      Date.UTC(
+        Number(vhhhLocal[1]),
+        Number(vhhhLocal[2]) - 1,
+        Number(vhhhLocal[3]),
+        Number(vhhhLocal[4]),
+        Number(vhhhLocal[5]),
+        Number(vhhhLocal[6])
+      ) -
+      8 * 3600 * 1000;
+    const start = new Date(startMs);
+    if (!Number.isNaN(start.getTime())) {
+      return {
+        startTimeUtc: toIso(start),
+        endTimeUtc: toIso(new Date(start.getTime() + durMs)),
+      };
+    }
+  }
+
+  const embedded = /(\d{4})(\d{2})(\d{2})[tT](\d{2})(\d{2})(\d{2})/.exec(stem);
+  if (embedded) {
+    const start = new Date(
+      Date.UTC(
+        Number(embedded[1]),
+        Number(embedded[2]) - 1,
+        Number(embedded[3]),
+        Number(embedded[4]),
+        Number(embedded[5]),
+        Number(embedded[6])
+      )
+    );
+    if (!Number.isNaN(start.getTime())) {
+      return {
+        startTimeUtc: toIso(start),
+        endTimeUtc: toIso(new Date(start.getTime() + durMs)),
+      };
+    }
+  }
+
+  const liveatc = /(\d{4})-(\d{2})-(\d{2})-(\d{4})Z/i.exec(stem);
+  if (liveatc) {
+    const hm = liveatc[4];
+    const start = new Date(
+      Date.UTC(Number(liveatc[1]), Number(liveatc[2]) - 1, Number(liveatc[3]), Number(hm.slice(0, 2)), Number(hm.slice(2, 4)), 0)
+    );
+    if (!Number.isNaN(start.getTime())) {
+      return {
+        startTimeUtc: toIso(start),
+        endTimeUtc: toIso(new Date(start.getTime() + durMs)),
+      };
+    }
+  }
+
+  return null;
+}
+
 export function getRecordingDisplayName(recording: AudioData): string {
+  const fromFile = formatRecordingFileName(recording.metadata?.fileName ?? "");
+  if (fromFile) return fromFile;
   const fromUtc = formatRecordingCaptureTimeLocal(recording.metadata?.startTimeUtc);
   if (fromUtc) return fromUtc;
   const fromMeta = recording.metadata?.title?.trim();
   if (fromMeta) return fromMeta;
-  const fromFile = formatRecordingFileName(recording.metadata?.fileName ?? "");
-  if (fromFile) return fromFile;
   return `录音 #${recording.id}`;
 }
 

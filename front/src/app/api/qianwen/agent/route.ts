@@ -62,16 +62,22 @@ function buildSystemPrompt() {
     "{",
     '  "reply": string,',
     '  "suggestedText"?: string,',
-    '  "segmentPatches"?: Array<{ "id": string, "text": string }>,',
+    '  "segmentPatches"?: Array<{ "id": string, "text"?: string, "speaker"?: string }>,',
+    '  "mergeGroups"?: Array<{ "segmentIds": string[], "speaker"?: string, "text"?: string }>,',
     '  "confidence"?: number,',
     '  "keywords"?: string[],',
     '  "notes"?: string',
     "}",
     "",
+    "编辑权限（用户要求合并片段、改说话人、改文本时均可使用）：",
+    "- mergeGroups：合并转写段。每组 segmentIds 至少 2 个，且必须是 workspace.activeRecording.transcript 里已有的 id；",
+    "  合并后时间范围为各段 start/end 的并集；未提供 text 时用各段原文换行拼接；可用 speaker 指定合并后说话人（如 ATC、Pilot）；",
+    "  默认只合并相邻或用户明确指定的段，不要擅自合并整条录音。",
+    "- segmentPatches：按 id 修改单段，可只改 text、只改 speaker、或两者都改；只列出有改动的段，不必覆盖全部段；",
+    "- 改单段文本也可用 suggestedText（仅 selectedTimestamp 一段时）。",
+    "",
     "改写/润色规则（用户要求修改转写时必须遵守）：",
-    "- 禁止只输出分析报告、原因说明或「建议用户去听录音」而不给可写入文本；",
-    "- 改单段：填 suggestedText（该段完整改写后的文本）；",
-    "- 改多段或全文：填 segmentPatches，数组长度与 workspace.activeRecording.transcript 段数一致，每段 id 必须与快照中 id 完全一致，text 为改正/润色后的该段全文；",
+    "- 禁止只输出分析报告、原因说明或「建议用户去听录音」而不给可写入字段；",
     "- reply 仅 1～3 句说明已改什么，不要重复贴全文。",
     "",
     "你可以参考下面的 VSP/AIP（用于提示可能的程序/地标/航司简字映射；不要编造不在列表中的数据）：",
@@ -79,10 +85,37 @@ function buildSystemPrompt() {
     `- SID/STAR：${procedures}`,
     `- 航司简字 ↔ 呼号：${airlines}`,
     "",
-    "建议优先：",
-    "1) 保持原意和语义边界，不要擅自加入新的事实；",
-    "2) 若原文疑似口误/ASR 漏字，给出更像真实 ATC 逐字稿的改写；",
-    "3) 如果无法给出可靠建议，就不要给 suggestedText（或给一个空/简单提示）。",
+    "建议优先（默认保守校对，见用户上下文中的 rewriteStyle）：",
+    "1) 标注文本应尽量与录音听感一致，不是「理想化」ATC 稿；",
+    "2) 默认只改正显拼写、标点、空格；不要用航司/程序表去猜测替换听感词；",
+    "3) 仅当用户明确要求 ATC/ASR 语义校正时，才可做呼号、高度等听感纠错，并在 reply 说明依据；",
+    "4) 无把握则保持原文，把存疑项写在 reply，不要写入 segmentPatches/suggestedText。",
+  ].join("\n");
+}
+
+/** 用户明确要求 ATC/ASR 语义级改写（否则走保守拼写校对） */
+function userWantsAtcSemanticRewrite(command: string): boolean {
+  const c = command.trim();
+  if (!c) return false;
+  if (/不要|别|仅|只/.test(c) && /猜|替换|语义|atc|asr/i.test(c)) return false;
+  return /asr|atc\s*语义|语义校正|口误|逐字稿|规范化|润色|呼号|航司|听感纠错|像真实\s*atc/i.test(c);
+}
+
+function buildRewriteStyleHint(userCommand: string): string {
+  if (userWantsAtcSemanticRewrite(userCommand)) {
+    return [
+      "rewriteStyle=ATC/ASR 语义校正（用户已明确要求）：",
+      "- 在确信的 ASR 误听时可参照 VSP/AIP 纠错；",
+      "- reply 中简要列出关键「听感→改后」；",
+      "- 仍不要编造快照中不存在的航班/程序。",
+    ].join("\n");
+  }
+  return [
+    "rewriteStyle=保守拼写校对（默认，除非用户明确要求 ATC/ASR 校正）：",
+    "- 只改明确拼写错误、标点、空格、大小写；",
+    "- 禁止用航司表、高度、SID/STAR 去「猜」并替换原文词（如 baby、february 等听感词）；",
+    "- 疑似 ASR 误听但不确定时：保持原文，仅在 reply 列出「存疑」建议，不要写入 segmentPatches；",
+    "- 目标是与录音听感一致，不是生成标准逐字稿。",
   ].join("\n");
 }
 
@@ -124,9 +157,8 @@ function buildModeHint(mode: AgentMode, userCommand: string): string {
   if (rewrite) {
     return [
       "用户模式=改写转写（必须产出可写入字段，禁止只分析）：",
-      "- 根据 workspace.activeRecording.transcript 逐段改正文法/ASR 错误，保持 ATC 语义；",
-      "- 若仅改 selectedTimestamp 一段：用 suggestedText；",
-      "- 若改全文或多段：必须用 segmentPatches（每段 id+text，覆盖 transcript 中每一段）；",
+      buildRewriteStyleHint(userCommand),
+      "- 改文本：segmentPatches 或 suggestedText；改说话人/合并段：segmentPatches.speaker 或 mergeGroups；",
       "- 不要拒绝改写，不要要求用户去听录音。",
     ].join("\n");
   }
@@ -140,7 +172,10 @@ function buildModeHint(mode: AgentMode, userCommand: string): string {
     case "rewrite_annotation":
       return "用户模式=改写标注：优化 selectedTimestamp 文本，输出 suggestedText。";
     default:
-      return "用户模式=自定义：按 userCommand 处理，需要时结合 workspace 全文。";
+      return [
+        "用户模式=自定义：按 userCommand 处理，需要时结合 workspace 全文。",
+        "若用户要求合并片段、修改说话人（ATC/Pilot 等）或结构调整，使用 mergeGroups / segmentPatches。",
+      ].join("\n");
   }
 }
 
@@ -304,18 +339,49 @@ export async function POST(req: Request) {
     const suggestedText = typeof value.suggestedText === "string" && value.suggestedText.trim() ? value.suggestedText : undefined;
     const segmentPatches = Array.isArray(value.segmentPatches)
       ? value.segmentPatches
-          .filter(
-            (p: unknown) =>
-              p &&
-              typeof p === "object" &&
-              typeof (p as { id?: unknown }).id === "string" &&
-              typeof (p as { text?: unknown }).text === "string" &&
-              String((p as { text: string }).text).trim()
-          )
-          .map((p: { id: string; text: string }) => ({
-            id: String(p.id),
-            text: String(p.text).trim(),
-          }))
+          .map((p: unknown) => {
+            if (!p || typeof p !== "object") return null;
+            const id = (p as { id?: unknown }).id;
+            if (typeof id !== "string" || !id.trim()) return null;
+            const textRaw = (p as { text?: unknown }).text;
+            const speakerRaw = (p as { speaker?: unknown }).speaker;
+            const text =
+              typeof textRaw === "string" && textRaw.trim() ? textRaw.trim() : undefined;
+            const speaker =
+              typeof speakerRaw === "string" && speakerRaw.trim()
+                ? speakerRaw.trim()
+                : speakerRaw === ""
+                  ? ""
+                  : undefined;
+            if (text === undefined && speaker === undefined) return null;
+            return { id: id.trim(), text, speaker };
+          })
+          .filter(Boolean)
+      : undefined;
+
+    const mergeGroups = Array.isArray(value.mergeGroups)
+      ? value.mergeGroups
+          .map((g: unknown) => {
+            if (!g || typeof g !== "object") return null;
+            const ids = (g as { segmentIds?: unknown }).segmentIds;
+            if (!Array.isArray(ids) || ids.length < 2) return null;
+            const segmentIds = ids
+              .filter((x): x is string => typeof x === "string" && Boolean(String(x).trim()))
+              .map((x) => x.trim());
+            if (segmentIds.length < 2) return null;
+            const textRaw = (g as { text?: unknown }).text;
+            const speakerRaw = (g as { speaker?: unknown }).speaker;
+            return {
+              segmentIds,
+              text:
+                typeof textRaw === "string" && textRaw.trim() ? textRaw.trim() : undefined,
+              speaker:
+                typeof speakerRaw === "string" && speakerRaw.trim()
+                  ? speakerRaw.trim()
+                  : undefined,
+            };
+          })
+          .filter(Boolean)
       : undefined;
     const confidence = typeof value.confidence === "number" ? value.confidence : undefined;
     const keywords = Array.isArray(value.keywords) ? value.keywords.filter((x: any) => typeof x === "string") : undefined;
@@ -326,6 +392,7 @@ export async function POST(req: Request) {
       reply,
       suggestedText,
       segmentPatches: segmentPatches?.length ? segmentPatches : undefined,
+      mergeGroups: mergeGroups?.length ? mergeGroups : undefined,
       confidence,
       keywords,
       notes,

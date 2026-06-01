@@ -49,7 +49,13 @@ Start-Process powershell -ArgumentList @(
     "Set-Location '$Root'; python a1_live_collector.py"
 ) | Out-Null
 
-Write-Host "Starting front on :3000 ..."
+Write-Host "Starting front on :3000 (webpack dev, stable on Windows) ..."
+$FrontNext = Join-Path $QtRoot "front\.next"
+if (Test-Path $FrontNext) {
+    Write-Host "Cleaning front\.next ..."
+    Remove-Item -Recurse -Force $FrontNext -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+}
 Start-Process powershell -ArgumentList @(
     "-NoExit", "-Command",
     "Set-Location '$QtRoot\front'; npm run dev"

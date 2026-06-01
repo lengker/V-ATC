@@ -1,6 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useLiveWallClockTick } from "@/hooks/use-live-wall-clock-tick";
+import { buildAdsbTrackIndex } from "@/lib/adsb-interpolation";
+import { getAircraftStateForAuxInfo, sampleAircraftAtWallTime } from "@/lib/adsb-playback";
+import {
+  matchesFlightKey,
+  passesMapDisplayQuality,
+} from "@/lib/recording-adsb-alignment";
 import { ADSBData } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,6 +32,11 @@ export function TargetsPanel({
   selectedAircraft,
   onSelectAircraft,
   externalFilterQuery,
+  currentTime = 0,
+  recordingUtcStartSec,
+  recordingDurationSec,
+  useLiveWallClockNow = false,
+  mapForceKeys = [],
 }: {
   adsbData: ADSBData[];
   visibleSet: Set<string>;
@@ -33,6 +45,13 @@ export function TargetsPanel({
   onSelectAircraft: (icao24: string) => void;
   /** 顶栏全局搜索命中目标时同步筛选框 */
   externalFilterQuery?: string;
+  currentTime?: number;
+  recordingUtcStartSec?: number;
+  recordingDurationSec?: number;
+  /** 地图「实时 OpenSky」开启且未在播放录音 */
+  useLiveWallClockNow?: boolean;
+  /** 录音主目标等：全选时仍保留在可见集 */
+  mapForceKeys?: string[];
 }) {
   const [q, setQ] = useState("");
 
@@ -42,12 +61,85 @@ export function TargetsPanel({
   const [minAlt, setMinAlt] = useState<string>("");
   const [maxAlt, setMaxAlt] = useState<string>("");
 
-  const latestMap = useMemo(() => latestByIcao(adsbData), [adsbData]);
+  const hasLiveLayer = useMemo(() => adsbData.some((p) => p.live), [adsbData]);
+  const recordingWall =
+    recordingUtcStartSec != null && recordingUtcStartSec > 1_000_000_000;
+  const needLiveTick = useLiveWallClockNow || (hasLiveLayer && !recordingWall);
+  const needPlaybackTick = recordingWall && !useLiveWallClockNow;
+  const liveTick = useLiveWallClockTick(needLiveTick);
+  const playbackTick = useLiveWallClockTick(needPlaybackTick, 250);
+
+  const liveTrackIndex = useMemo(() => {
+    const liveOnly = adsbData.filter((p) => p.live);
+    return buildAdsbTrackIndex(liveOnly.length > 0 ? liveOnly : adsbData);
+  }, [adsbData]);
+
+  const forceKeysForMap = useMemo(
+    () => new Set(mapForceKeys.map((k) => k.toLowerCase()).filter(Boolean)),
+    [mapForceKeys]
+  );
+
+  const latestMap = useMemo(() => {
+    if (!useLiveWallClockNow || !hasLiveLayer) return latestByIcao(adsbData);
+    const wallSec = Date.now() / 1000;
+    const liveOnly = adsbData.filter((p) => p.live);
+    const index = buildAdsbTrackIndex(liveOnly);
+    const map = new Map<string, ADSBData>();
+    for (const [icao24, arr] of index.tracks) {
+      const p = sampleAircraftAtWallTime(arr, wallSec, { maxExtrapolateSec: 120 });
+      if (p) map.set(icao24.toLowerCase(), p);
+    }
+    for (const p of latestByIcao(adsbData).values()) {
+      if (!map.has(p.icao24.toLowerCase())) map.set(p.icao24.toLowerCase(), p);
+    }
+    return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- liveTick 驱动墙钟重采样
+  }, [adsbData, hasLiveLayer, liveTick, useLiveWallClockNow]);
+
+  const auxOpts = useMemo(
+    () => ({
+      ...(useLiveWallClockNow ? { useLiveWallClockNow: true as const } : {}),
+      ...(recordingWall && recordingDurationSec != null && recordingDurationSec > 0
+        ? { recordingDurationSec }
+        : {}),
+    }),
+    [recordingDurationSec, recordingWall, useLiveWallClockNow]
+  );
 
   const selectedTarget = useMemo(() => {
     if (!selectedAircraft) return null;
-    return latestMap.get(selectedAircraft) ?? null;
-  }, [latestMap, selectedAircraft]);
+    const fromAux = getAircraftStateForAuxInfo(
+      adsbData,
+      selectedAircraft,
+      currentTime,
+      recordingUtcStartSec,
+      auxOpts
+    );
+    if (fromAux) return fromAux;
+    if (useLiveWallClockNow) {
+      return (
+        latestMap.get(selectedAircraft) ??
+        [...latestMap.values()].find((p) => matchesFlightKey(p, selectedAircraft)) ??
+        null
+      );
+    }
+    return (
+      adsbData.find((p) => matchesFlightKey(p, selectedAircraft)) ??
+      latestMap.get(selectedAircraft) ??
+      [...latestMap.values()].find((p) => matchesFlightKey(p, selectedAircraft)) ??
+      null
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- liveTick/playbackTick 驱动墙钟重采样
+  }, [
+    adsbData,
+    auxOpts,
+    currentTime,
+    latestMap,
+    liveTick,
+    playbackTick,
+    recordingUtcStartSec,
+    selectedAircraft,
+  ]);
 
   const targets = useMemo(() => {
     const arr = Array.from(latestMap.values());
@@ -66,11 +158,11 @@ export function TargetsPanel({
 
     const sel = selectedAircraft?.toLowerCase();
     return [...filtered].sort((a, b) => {
-      const aPin = sel && a.icao24.toLowerCase() === sel ? 0 : 1;
-      const bPin = sel && b.icao24.toLowerCase() === sel ? 0 : 1;
+      const aPin = sel && matchesFlightKey(a, sel) ? 0 : 1;
+      const bPin = sel && matchesFlightKey(b, sel) ? 0 : 1;
       if (aPin !== bPin) return aPin - bPin;
-      const aVis = visibleSet.has(a.icao24) ? 0 : 1;
-      const bVis = visibleSet.has(b.icao24) ? 0 : 1;
+      const aVis = visibleSet.has(a.icao24.toLowerCase()) ? 0 : 1;
+      const bVis = visibleSet.has(b.icao24.toLowerCase()) ? 0 : 1;
       if (aVis !== bVis) return aVis - bVis;
       const labelA = (a.callsign || a.icao24).toLowerCase();
       const labelB = (b.callsign || b.icao24).toLowerCase();
@@ -79,21 +171,40 @@ export function TargetsPanel({
   }, [latestMap, q, minAlt, maxAlt, selectedAircraft, visibleSet]);
 
   const toggle = (icao24: string, checked: boolean) => {
+    const key = icao24.toLowerCase();
     const next = new Set(visibleSet);
-    if (checked) next.add(icao24);
-    else next.delete(icao24);
+    if (checked) next.add(key);
+    else next.delete(key);
     onVisibleSetChange(next);
   };
 
   const selectAllFiltered = () => {
     const next = new Set(visibleSet);
-    for (const t of targets) next.add(t.icao24);
+    const wallSec = Date.now() / 1000;
+    for (const t of targets) {
+      const arr =
+        liveTrackIndex.tracks.get(t.icao24.toLowerCase()) ??
+        [...liveTrackIndex.tracks.values()].find((pts) =>
+          matchesFlightKey(pts[0], t.icao24)
+        );
+      if (
+        arr &&
+        !passesMapDisplayQuality(arr, {
+          wallSec,
+          forceKeys: forceKeysForMap,
+        })
+      ) {
+        continue;
+      }
+      next.add(t.icao24.toLowerCase());
+      if (t.callsign?.trim()) next.add(t.callsign.trim().toLowerCase());
+    }
     onVisibleSetChange(next);
   };
 
   const clearAllFiltered = () => {
     const next = new Set(visibleSet);
-    for (const t of targets) next.delete(t.icao24);
+    for (const t of targets) next.delete(t.icao24.toLowerCase());
     onVisibleSetChange(next);
   };
 
@@ -110,7 +221,7 @@ export function TargetsPanel({
                 当前选中
               </span>
               <span className="text-[10px] text-muted-foreground">
-                {visibleSet.has(selectedTarget.icao24) ? "地图上显示" : "未勾选显示"}
+                {visibleSet.has(selectedTarget.icao24.toLowerCase()) ? "地图上显示" : "未勾选显示"}
               </span>
             </div>
             <button
@@ -149,7 +260,7 @@ export function TargetsPanel({
             </dl>
             <div className="mt-3 flex items-center gap-2">
               <Checkbox
-                checked={visibleSet.has(selectedTarget.icao24)}
+                checked={visibleSet.has(selectedTarget.icao24.toLowerCase())}
                 onCheckedChange={(v) => toggle(selectedTarget.icao24, Boolean(v))}
               />
               <span className="text-xs text-muted-foreground">在地图上显示该目标</span>
@@ -201,7 +312,7 @@ export function TargetsPanel({
             </div>
           }
           renderItem={(t) => {
-            const checked = visibleSet.has(t.icao24);
+            const checked = visibleSet.has(t.icao24.toLowerCase());
             const active = selectedAircraft === t.icao24;
             return (
               <div

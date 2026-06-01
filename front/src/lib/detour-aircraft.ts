@@ -238,7 +238,29 @@ export function buildDetourLiveAdsb(wallSec?: number): ADSBData[] {
 }
 
 /** 合并绕飞机到地图航迹（若后端已有同 ICAO 则跳过） */
+export function countRealLiveAircraft(adsb: ADSBData[]): number {
+  return new Set(
+    adsb.filter((p) => p.live && p.icao24 !== DETOUR_ICAO24).map((p) => p.icao24.toLowerCase())
+  ).size;
+}
+
+/** 仅当显式开启 NEXT_PUBLIC_ENABLE_DETOUR_DEMO=true 时才允许演示绕飞 */
+export function isDetourDemoEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ENABLE_DETOUR_DEMO === "true";
+}
+
+/** OpenSky 已有足够真实航班时，不再注入前端绕飞演示机 */
+export function shouldInjectDetourAdsb(adsb: ADSBData[]): boolean {
+  if (!isDetourDemoEnabled()) return false;
+  return countRealLiveAircraft(adsb) < 2;
+}
+
+export function stripSyntheticDetour(adsb: ADSBData[]): ADSBData[] {
+  return adsb.filter((p) => p.icao24 !== DETOUR_ICAO24);
+}
+
 export function mergeDetourLiveAdsb(adsb: ADSBData[]): ADSBData[] {
+  if (!shouldInjectDetourAdsb(adsb)) return stripSyntheticDetour(adsb);
   if (adsb.some((p) => p.icao24 === DETOUR_ICAO24)) return adsb;
   return enrichVerticalRates([...adsb, ...buildDetourLiveAdsb()]);
 }

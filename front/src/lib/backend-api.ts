@@ -1,7 +1,18 @@
 import { dedupeAdsbPointsByFlight, enrichVerticalRates } from "@/lib/adsb-interpolation";
-import { mergeDetourLiveAdsb } from "@/lib/detour-aircraft";
+import { stripSyntheticDetour } from "@/lib/detour-aircraft";
 import { AudioData, ADSBData, VoiceTimestamp } from "@/types";
-import { formatRecordingCaptureTimeLocal, formatRecordingFileName } from "@/lib/recording-display";
+import {
+  formatRecordingCaptureTimeLocal,
+  formatRecordingFileName,
+  parseRecordingUtcRangeFromFileName,
+} from "@/lib/recording-display";
+import {
+  buildAdsbAlignedToRecording,
+  buildAdsbFromLiveWallClockBuffer,
+  finalizeRecordingAdsb,
+  toUnixSeconds,
+  type MapTrackRow,
+} from "@/lib/recording-adsb-alignment";
 import type { RecordingMeta } from "@/mock/demo-data";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
@@ -87,19 +98,6 @@ function normalizeRelativeSeconds(raw: unknown, durationSec: number): number {
   if (n > 86_400 && n < 1e9) return Math.min(n / 1000, Math.max(durationSec, 60));
   if (durationSec > 0 && n > durationSec * 20) return Math.min(n / 1000, durationSec);
   return n;
-}
-
-function toUnixSeconds(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value > 1e11 ? value / 1000 : value;
-  }
-  const asNum = Number(value);
-  if (Number.isFinite(asNum)) {
-    return asNum > 1e11 ? asNum / 1000 : asNum;
-  }
-  const asDate = Date.parse(String(value ?? ""));
-  if (Number.isFinite(asDate)) return asDate / 1000;
-  return 0;
 }
 
 const VHHH_CENTER = { lat: 22.308, lon: 113.918 };
@@ -304,7 +302,7 @@ export async function fetchLiveTracksFromApi(
 
 /** 地图轮询专用：只拉实时航迹，避免每 10s 重载三表 */
 export async function fetchLiveAdsbForMap(
-  hours = 1,
+  hours = 6,
   limit = 50_000
 ): Promise<{
   adsbData: ADSBData[];
@@ -315,8 +313,8 @@ export async function fetchLiveAdsbForMap(
 }> {
   const liveTrackRows = await fetchLiveTracksFromApi(hours, limit);
   const liveAdsb = buildLiveAdsbPoints(liveTrackRows, {
-    activeWithinMinutes: LIVE_ACTIVE_MINUTES,
-    trailWithinMinutes: LIVE_TRAIL_MINUTES,
+    activeWithinMinutes: 360,
+    trailWithinMinutes: Math.max(LIVE_TRAIL_MINUTES, 360),
   });
   let latestLiveAt: number | null = null;
   for (const t of liveTrackRows) {
@@ -325,10 +323,10 @@ export async function fetchLiveAdsbForMap(
       latestLiveAt = ts;
     }
   }
-  const merged = mergeDetourLiveAdsb(liveAdsb);
+  const merged = stripSyntheticDetour(liveAdsb);
   return {
     adsbData: merged,
-    liveAircraftCount: new Set(merged.map((p) => p.icao24)).size,
+    liveAircraftCount: new Set(merged.filter((p) => p.live).map((p) => p.icao24)).size,
     latestLiveAt,
     activeWithinMinutes: LIVE_ACTIVE_MINUTES,
   };
@@ -362,7 +360,7 @@ export async function triggerA1LiveCollectOnce(): Promise<Record<string, unknown
 /** 地图「在线」口径：该时间内仍有 ADS-B 回波的航班（非 4 小时历史累计） */
 const LIVE_ACTIVE_MINUTES = 25;
 /** 单架飞机尾迹最多展示最近多少分钟 */
-const LIVE_TRAIL_MINUTES = 45;
+const LIVE_TRAIL_MINUTES = 120;
 
 function buildLiveAdsbPoints(
   liveRows: BackendTrack[],
@@ -376,7 +374,6 @@ function buildLiveAdsbPoints(
 
   const byFlight = new Map<string, BackendTrack[]>();
   for (const t of liveRows) {
-    if (!isNearVhhh(t.tracks_latitude, t.tracks_longitude)) continue;
     const fid = String(t.flight_id || "").trim() || `track-${t.track_id}`;
     const list = byFlight.get(fid) ?? [];
     list.push(t);
@@ -485,6 +482,7 @@ type BackendAudioRecord = {
   duration_ms?: number;
   file_name?: string;
   start_time_utc?: string;
+  end_time_utc?: string;
   track_id?: number;
 };
 
@@ -690,10 +688,33 @@ export const audioRecordsExtApi = {
     }),
 };
 
-export async function stampRecordingCaptureNow(audioId: string, durationSec: number) {
+/** 仅在 A5 尚无 start_time_utc 时写入；优先从文件名解析，避免覆盖历史采集时刻 */
+export async function ensureRecordingCaptureUtc(
+  audioId: string,
+  durationSec: number,
+  fileName?: string
+) {
   const id = Number(audioId);
   if (!Number.isFinite(id) || id <= 0) return;
-  const durMs = Math.max(1000, Math.round(Math.max(1, durationSec) * 1000));
+  let row: BackendAudioRecord;
+  try {
+    row = await getTableItem<BackendAudioRecord>("audio_records", audioId);
+  } catch {
+    return;
+  }
+  if (row.start_time_utc) return;
+
+  const duration = Math.max(1, durationSec);
+  const fromFile = fileName ? parseRecordingUtcRangeFromFileName(fileName, duration) : null;
+  if (fromFile) {
+    await audioRecordsExtApi.update(id, {
+      start_time_utc: fromFile.startTimeUtc,
+      end_time_utc: fromFile.endTimeUtc,
+    });
+    return;
+  }
+
+  const durMs = Math.max(1000, Math.round(duration * 1000));
   const end = new Date();
   const start = new Date(end.getTime() - durMs);
   const toIso = (d: Date) => d.toISOString();
@@ -766,6 +787,8 @@ export async function fetchRecordingByAudioId(
     const id = String(row.audio_id);
     const fileName = String(row.file_name || "").trim();
     const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+    const endTimeUtc = row.end_time_utc ? String(row.end_time_utc) : undefined;
+    const trackIdNum = Number(row.track_id);
     const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
     return {
       id,
@@ -779,6 +802,8 @@ export async function fetchRecordingByAudioId(
           undefined,
         fileName: fileName || undefined,
         startTimeUtc,
+        endTimeUtc,
+        trackId: Number.isFinite(trackIdNum) && trackIdNum > 0 ? trackIdNum : undefined,
       },
     };
   } catch {
@@ -821,16 +846,46 @@ export async function fetchPendingRecordingsForAsr(noCache = true): Promise<Audi
     });
 }
 
+export type AnnotationBundle = {
+  recordings: AudioData[];
+  /** 无录音时间窗时的回退（多为 OpenSky 实时层） */
+  adsbData: ADSBData[];
+  /** 按 audio_id：UTC 窗口内航迹，timestamp 已对齐播放条 0…duration */
+  adsbByRecordingId: Record<string, ADSBData[]>;
+  recordingMeta: Record<string, RecordingMeta>;
+  liveAircraftCount: number;
+};
+
+function buildAudioMetadataFromRow(
+  row: BackendAudioRecord,
+  track: BackendTrack | undefined,
+  durationSec: number
+): NonNullable<AudioData["metadata"]> {
+  const fileName = String(row.file_name || "").trim();
+  const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+  const endTimeUtc = row.end_time_utc ? String(row.end_time_utc) : undefined;
+  const trackIdNum = Number(row.track_id);
+  const flight = track?.flight_id ? String(track.flight_id).trim() : undefined;
+  const linkTrackMeta = Number.isFinite(trackIdNum) && trackIdNum > 1;
+  const title =
+    formatRecordingFileName(fileName) || formatRecordingCaptureTimeLocal(startTimeUtc) || undefined;
+  return {
+    title,
+    fileName: fileName || undefined,
+    startTimeUtc,
+    endTimeUtc,
+    trackId: Number.isFinite(trackIdNum) && trackIdNum > 0 ? trackIdNum : undefined,
+    primaryCallsign: linkTrackMeta && flight ? flight : undefined,
+    icao: linkTrackMeta && flight ? flight : undefined,
+    date: startTimeUtc ? String(startTimeUtc).slice(0, 10) : undefined,
+  };
+}
+
 export async function fetchAnnotationBundle(options?: {
   noCache?: boolean;
   /** 地图用：有实时数据时不回退 VHHH-DEMO 演示航迹 */
   mapLiveOnly?: boolean;
-}): Promise<{
-  recordings: AudioData[];
-  adsbData: ADSBData[];
-  recordingMeta: Record<string, RecordingMeta>;
-  liveAircraftCount: number;
-}> {
+}): Promise<AnnotationBundle> {
   const noCache = options?.noCache ?? false;
   const mapLiveOnly = options?.mapLiveOnly ?? false;
   // 与后端 GET /tables/{key}?limit= 上限（当前 le=1000）一致，避免 422
@@ -853,8 +908,8 @@ export async function fetchAnnotationBundle(options?: {
   const mergedTrackRows = [...tracksById.values()];
   const liveTrackRows = await fetchLiveTracksFromApi(1, 30_000);
   const liveAdsb = buildLiveAdsbPoints(liveTrackRows, {
-    activeWithinMinutes: LIVE_ACTIVE_MINUTES,
-    trailWithinMinutes: LIVE_TRAIL_MINUTES,
+    activeWithinMinutes: Math.max(LIVE_ACTIVE_MINUTES, 360),
+    trailWithinMinutes: Math.max(LIVE_TRAIL_MINUTES, 360),
   });
 
   let usableTracks =
@@ -893,17 +948,24 @@ export async function fetchAnnotationBundle(options?: {
     list.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
   }
 
+  const nowSec = Date.now() / 1000;
+  const hasRecentAudio = audioRows.some((row) => {
+    const st = toUnixSeconds(row.start_time_utc);
+    return st > 1_000_000_000 && nowSec - st < 6 * 3600;
+  });
+  if (hasRecentAudio) {
+    for (const t of await fetchLiveTracksFromApi(2, 50_000)) {
+      const id = Number(t.track_id);
+      if (Number.isFinite(id)) tracksById.set(id, t);
+    }
+  }
+  const allTracksForAlignment: MapTrackRow[] = [...tracksById.values()];
+
   const recordings: AudioData[] = audioRows
     .filter((row) => (annotationsByAudioId.get(Number(row.audio_id))?.length ?? 0) > 0)
     .map((row) => {
       const id = String(row.audio_id);
       const track = tracksById.get(Number(row.track_id));
-      const fileName = String(row.file_name || "").trim();
-      const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
-      const title =
-        formatRecordingCaptureTimeLocal(startTimeUtc) ||
-        formatRecordingFileName(fileName) ||
-        undefined;
       const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
       return {
         id,
@@ -914,15 +976,34 @@ export async function fetchAnnotationBundle(options?: {
           startTime: normalizeRelativeSeconds(ts.startTime, durationSec),
           endTime: normalizeRelativeSeconds(ts.endTime, durationSec),
         })),
-        metadata: {
-          title,
-          fileName: fileName || undefined,
-          startTimeUtc,
-          icao: track?.departure_airport_code || track?.arrival_airport_code || track?.flight_id,
-          date: startTimeUtc ? String(startTimeUtc).slice(0, 10) : undefined,
-        },
+        metadata: buildAudioMetadataFromRow(row, track, durationSec),
       };
     });
+
+  const adsbByRecordingId: Record<string, ADSBData[]> = {};
+  for (const row of audioRows) {
+    const id = String(row.audio_id);
+    const track = tracksById.get(Number(row.track_id));
+    const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
+    const stub: AudioData = {
+      id,
+      url: resolveBrowserAudioUrl(row.source_url),
+      duration: durationSec,
+      timestamps: [],
+      metadata: buildAudioMetadataFromRow(row, track, durationSec),
+    };
+    let points = buildAdsbAlignedToRecording(stub, allTracksForAlignment, {
+      preferVhhh,
+      bufferSec: 90,
+    });
+    if (points.length === 0) {
+      points = buildAdsbFromLiveWallClockBuffer(stub, liveAdsb, { bufferSec: 90 });
+    }
+    const fromLive = buildAdsbFromLiveWallClockBuffer(stub, liveAdsb, { bufferSec: 120 });
+    adsbByRecordingId[id] = finalizeRecordingAdsb(
+      fromLive.length > 0 ? fromLive : points
+    );
+  }
 
   const parsedTimes = usableTracks
     .map((t) => toUnixSeconds(t.timestamp))
@@ -966,8 +1047,11 @@ export async function fetchAnnotationBundle(options?: {
       : mapLiveOnly
         ? []
         : demoAdsb;
-  const adsbData = mergeDetourLiveAdsb(enrichVerticalRates(adsbMerged));
-  const liveAircraftCount = new Set(adsbData.filter((p) => p.live).map((p) => p.icao24)).size;
+  /** 未选中录音 / 无 UTC 对齐时的地图回退（实时层） */
+  const adsbData = stripSyntheticDetour(enrichVerticalRates(adsbMerged));
+  const liveAircraftCount = new Set(
+    (liveAdsb.length > 0 ? liveAdsb : adsbData).filter((p) => p.live).map((p) => p.icao24)
+  ).size;
 
   const recordingMeta: Record<string, RecordingMeta> = {};
   for (const rec of recordings) {
@@ -978,6 +1062,15 @@ export async function fetchAnnotationBundle(options?: {
     };
   }
 
-  return { recordings, adsbData, recordingMeta, liveAircraftCount };
+  return { recordings, adsbData, adsbByRecordingId, recordingMeta, liveAircraftCount };
 }
+
+export {
+  adsbForRecording,
+  isRecordingTimelineAligned,
+  pickFallbackPrimaryFromLive,
+  rebuildRecordingTimelineFromLive,
+  recordingTrackSummary,
+  timelineAdsbPoints,
+} from "@/lib/recording-adsb-alignment";
 

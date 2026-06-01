@@ -12,6 +12,12 @@ venv/
 .DS_Store
 teamwork/
 code.zip
+ai-code.zip
+_pack_tmp/
+_pack_ai_tmp/
+.vscode/
+*.sqlite3
+*.db
 
 # 大模型 / 缓存（本地保留，GitHub 单文件限 100MB）
 联调/a3_speech_processing_6/models/*.onnx

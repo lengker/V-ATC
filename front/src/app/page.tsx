@@ -14,15 +14,19 @@ import {
   useState,
 } from "react";
 import {
+  adsbForRecording,
   deleteRecordingFromBackend,
   fetchAnnotationBundle,
   fetchLiveAdsbForMap,
   fetchPendingRecordingsForAsr,
   fetchRecordingByAudioId,
+  isRecordingTimelineAligned,
+  rebuildRecordingTimelineFromLive,
   refreshRecordingsFromA2,
-  stampRecordingCaptureNow,
+  ensureRecordingCaptureUtc,
   triggerA1LiveCollectOnce,
   triggerAsrForRecording,
+  type AnnotationBundle,
   type RefreshRecordingsResult,
 } from "@/lib/backend-api";
 import { mergeDetourLiveAdsb } from "@/lib/detour-aircraft";
@@ -31,6 +35,9 @@ import { RecordingsSyncProvider } from "@/context/recordings-sync-context";
 import { AudioData, ADSBData } from "@/types";
 import type { RecordingMeta } from "@/mock/demo-data";
 import { useToast } from "@/hooks/use-toast";
+import { exportBatchAnnotationPackages } from "@/lib/batch-export";
+import { loadTimestampsWithLocalEdits } from "@/lib/local-annotation-store";
+import { vhhhStatic } from "@/mock/vhhh-static";
 
 /** 地图只读刷新；OpenSky 采集由 start-all 的 a1_live_collector 负责（勿与前端双开） */
 const ADSB_MAP_POLL_MS = 10_000;
@@ -79,7 +86,9 @@ function HomeContent() {
   const { toast } = useToast();
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
   const selectedAudioIdRef = useRef<string | null>(null);
-  const latestAdsbRef = useRef<ADSBData[]>(mergeDetourLiveAdsb(demoAdsbTrack));
+  const latestAdsbRef = useRef<ADSBData[]>([]);
+  const [mapLiveAdsb, setMapLiveAdsb] = useState<ADSBData[]>([]);
+  const adsbByRecordingRef = useRef<Record<string, ADSBData[]>>({});
   const [loading, setLoading] = useState(true);
 
   const [recordingsList, setRecordingsList] = useState<AudioData[]>(demoRecordings);
@@ -88,6 +97,12 @@ function HomeContent() {
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const [syncingRecordings, setSyncingRecordings] = useState(false);
   const [deletingRecordingId, setDeletingRecordingId] = useState<string | null>(null);
+  const [batchExporting, setBatchExporting] = useState(false);
+  const [batchExportProgress, setBatchExportProgress] = useState<{
+    current: number;
+    total: number;
+    audioId?: string;
+  } | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState<{
     audioId: string;
     message: string;
@@ -114,19 +129,30 @@ function HomeContent() {
   const lastMapCollectAtRef = useRef(0);
   const [adsbMapRevision, setAdsbMapRevision] = useState(0);
 
+  const resolveWorkspaceAdsb = useCallback((audio: AudioData) => {
+    return adsbForRecording(audio, adsbByRecordingRef.current, latestAdsbRef.current);
+  }, []);
+
+  const applyBundleToRefs = useCallback((remote: AnnotationBundle) => {
+    adsbByRecordingRef.current = remote.adsbByRecordingId;
+    latestAdsbRef.current = remote.adsbData;
+    const liveLayer = remote.adsbData.filter((p) => p.live === true || p.timestamp > 1_000_000_000);
+    if (liveLayer.length > 0) setMapLiveAdsb(liveLayer);
+  }, []);
+
   useEffect(() => {
     recordingsListRef.current = recordingsList;
   }, [recordingsList]);
 
   const applyListOnly = useCallback(
     (
-      remote: Awaited<ReturnType<typeof fetchAnnotationBundle>>,
+      remote: AnnotationBundle,
       refresh: RefreshRecordingsResult | undefined,
       opts: { isInitial?: boolean; fromPoll?: boolean }
     ) => {
       const prevCount = recordingCountRef.current;
       const nextCount = remote.recordings.length;
-      latestAdsbRef.current = remote.adsbData;
+      applyBundleToRefs(remote);
 
       const applyList = () => {
         setRecordingsList(remote.recordings);
@@ -161,7 +187,7 @@ function HomeContent() {
           }
           return prev;
         }
-        return { audio: nextAudio, adsb: remote.adsbData };
+        return { audio: nextAudio, adsb: adsbForRecording(nextAudio, remote.adsbByRecordingId, remote.adsbData) };
       });
 
       if (prevCount != null && nextCount > prevCount && opts.fromPoll) {
@@ -177,18 +203,19 @@ function HomeContent() {
         });
       }
     },
-    [toast]
+    [applyBundleToRefs, toast]
   );
 
   const finishAsrForTarget = useCallback(
     async (
       target: AudioData,
-      remote: Awaited<ReturnType<typeof fetchAnnotationBundle>>,
+      remote: AnnotationBundle,
       opts?: { loadingMessage?: string }
     ) => {
       setSelectedAudioId(target.id);
       selectedAudioIdRef.current = target.id;
-      setWorkspace({ audio: target, adsb: remote.adsbData });
+      applyBundleToRefs(remote);
+      setWorkspace({ audio: target, adsb: adsbForRecording(target, remote.adsbByRecordingId, remote.adsbData) });
 
       if ((target.timestamps?.length ?? 0) > 0) {
         setTranscriptLoading(null);
@@ -206,7 +233,7 @@ function HomeContent() {
 
       const asr = await triggerAsrForRecording(target.id);
       try {
-        await stampRecordingCaptureNow(target.id, target.duration);
+        await ensureRecordingCaptureUtc(target.id, target.duration, target.metadata?.fileName);
       } catch {
         /* 时间戳写入失败不阻塞转写结果 */
       }
@@ -216,7 +243,11 @@ function HomeContent() {
         setRecordingsList(nextRemote.recordings);
         recordingsListRef.current = nextRemote.recordings;
         setRecordingMeta(nextRemote.recordingMeta);
-        setWorkspace({ audio: updated, adsb: nextRemote.adsbData });
+        applyBundleToRefs(nextRemote);
+        setWorkspace({
+          audio: updated,
+          adsb: adsbForRecording(updated, nextRemote.adsbByRecordingId, nextRemote.adsbData),
+        });
         setLastSyncAt(Date.now());
         const n = updated.timestamps.length;
         setTranscriptLoading(null);
@@ -242,7 +273,7 @@ function HomeContent() {
       }
       return nextRemote;
     },
-    [toast]
+    [applyBundleToRefs, toast]
   );
 
   const runTranscribeSelected = useCallback(async () => {
@@ -302,6 +333,7 @@ function HomeContent() {
       if (!remote.recordings.length && !pending.length) {
         setRecordingsList([]);
         setRecordingMeta(remote.recordingMeta);
+        applyBundleToRefs(remote);
         setWorkspace({ audio: EMPTY_PLACEHOLDER_AUDIO, adsb: remote.adsbData });
         const blocked = refresh.blocked ?? 0;
         toast({
@@ -370,7 +402,7 @@ function HomeContent() {
           setRecordingsList([]);
           setRecordingMeta(remote.recordingMeta);
           recordingCountRef.current = 0;
-          latestAdsbRef.current = remote.adsbData;
+          applyBundleToRefs(remote);
           setWorkspace({ audio: EMPTY_PLACEHOLDER_AUDIO, adsb: remote.adsbData });
           setLiveAdsbStatus({
             aircraft: remote.liveAircraftCount,
@@ -455,7 +487,22 @@ function HomeContent() {
         const live = await fetchLiveAdsbForMap();
         if (!active) return;
         latestAdsbRef.current = live.adsbData;
-        setWorkspace((prev) => ({ ...prev, adsb: live.adsbData }));
+        setMapLiveAdsb(live.adsbData);
+        const recordings = recordingsListRef.current;
+        for (const rec of recordings) {
+          if (!isRecordingTimelineAligned(rec)) continue;
+          const rebuilt = rebuildRecordingTimelineFromLive(rec, live.adsbData);
+          if (rebuilt.length > 0) {
+            adsbByRecordingRef.current[rec.id] = rebuilt;
+          }
+        }
+        setWorkspace((prev) => {
+          const nextAdsb = isRecordingTimelineAligned(prev.audio)
+            ? adsbForRecording(prev.audio, adsbByRecordingRef.current, live.adsbData)
+            : live.adsbData;
+          if (prev.adsb === nextAdsb) return prev;
+          return { ...prev, adsb: nextAdsb };
+        });
         setAdsbMapRevision((r) => r + 1);
         const nowSec = Date.now() / 1000;
         const stale =
@@ -495,8 +542,8 @@ function HomeContent() {
     if (!first) return;
     setSelectedAudioId(first.id);
     selectedAudioIdRef.current = first.id;
-    setWorkspace({ audio: first, adsb: latestAdsbRef.current });
-  }, [recordingsList, workspace.audio]);
+    setWorkspace({ audio: first, adsb: resolveWorkspaceAdsb(first) });
+  }, [recordingsList, resolveWorkspaceAdsb, workspace.audio]);
 
   useEffect(() => {
     if (!recordingsList.length) return;
@@ -574,7 +621,7 @@ function HomeContent() {
           const nextId = nextList[0]?.id ?? "";
           setSelectedAudioId(nextId || null);
           selectedAudioIdRef.current = nextId || null;
-          setWorkspace({ audio: nextAudio, adsb: latestAdsbRef.current });
+          setWorkspace({ audio: nextAudio, adsb: resolveWorkspaceAdsb(nextAudio) });
           try {
             if (nextId) {
               window.history.replaceState(window.history.state, "", `/?audioId=${encodeURIComponent(nextId)}`);
@@ -602,6 +649,7 @@ function HomeContent() {
       toast,
       clearRecordingLocalCache,
       transcriptLoading?.audioId,
+      resolveWorkspaceAdsb,
       workspace.audio.id,
     ]
   );
@@ -612,7 +660,15 @@ function HomeContent() {
       selectedAudioIdRef.current = id;
       const next = pickAudio(recordingsList, id);
       if (next) {
-        setWorkspace({ audio: next, adsb: latestAdsbRef.current });
+        const aligned = resolveWorkspaceAdsb(next);
+        setWorkspace({ audio: next, adsb: aligned });
+        if (isRecordingTimelineAligned(next) && aligned.length === 0) {
+          toast({
+            title: "该时段无航迹",
+            description: "已按录音 UTC 时间窗过滤，库内无匹配 ADS-B 点",
+            variant: "destructive",
+          });
+        }
         if (transcriptLoading?.audioId === id) {
           // 保留「立即更新」触发的加载态
         } else {
@@ -625,7 +681,7 @@ function HomeContent() {
         // ignore
       }
     },
-    [recordingsList, transcriptLoading?.audioId]
+    [recordingsList, resolveWorkspaceAdsb, toast, transcriptLoading?.audioId]
   );
 
   // 已有片段则结束加载态
@@ -643,6 +699,90 @@ function HomeContent() {
     [recordingsList]
   );
 
+  const handleBatchExport = useCallback(
+    async (ids: string[]) => {
+      const unique = [...new Set(ids.filter(Boolean))];
+      if (unique.length === 0) {
+        toast({ title: "未选择录音", description: "请先勾选要导出的录音", variant: "destructive" });
+        return;
+      }
+      setBatchExporting(true);
+      setBatchExportProgress({ current: 0, total: unique.length });
+      try {
+        const payloads = unique
+          .map((id) => {
+            const rec = recordingsListRef.current.find((r) => r.id === id);
+            if (!rec) return null;
+            const timestamps = loadTimestampsWithLocalEdits(id, rec.timestamps ?? []);
+            const adsb = adsbForRecording(
+              rec,
+              adsbByRecordingRef.current,
+              latestAdsbRef.current
+            );
+            return {
+              audio: { ...rec, timestamps },
+              timestamps,
+              adsb,
+              staticLayers: vhhhStatic,
+              exportedAt: new Date().toISOString(),
+            };
+          })
+          .filter((p): p is NonNullable<typeof p> => p != null);
+
+        if (payloads.length === 0) {
+          toast({ title: "导出失败", description: "找不到所选录音", variant: "destructive" });
+          return;
+        }
+
+        const result = await exportBatchAnnotationPackages(payloads, {
+          includeAudio: true,
+          includeAdsb: true,
+          delayMs: 400,
+          onProgress: (p) => {
+            setBatchExportProgress({
+              current: p.index,
+              total: p.total,
+              audioId: p.audioId,
+            });
+          },
+        });
+
+        toast({
+          title: "批量导出完成",
+          description: `已处理 ${result.exported}/${result.total} 条；manifest 与合并 CSV 已下载${
+            result.errors.length ? `；${result.errors.length} 项告警` : ""
+          }`,
+          variant: result.exported > 0 ? "default" : "destructive",
+        });
+      } catch (e) {
+        toast({
+          title: "批量导出失败",
+          description: e instanceof Error ? e.message : "未知错误",
+          variant: "destructive",
+        });
+      } finally {
+        setBatchExporting(false);
+        setBatchExportProgress(null);
+      }
+    },
+    [toast]
+  );
+
+  useEffect(() => {
+    const onBatch = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as { ids?: string[]; all?: boolean } | undefined;
+      if (detail?.ids?.length) {
+        void handleBatchExport(detail.ids);
+        return;
+      }
+      if (detail?.all) {
+        void handleBatchExport(recordingsListRef.current.map((r) => r.id));
+      }
+    };
+    window.addEventListener("alpha.batch-export", onBatch as EventListener);
+    return () => window.removeEventListener("alpha.batch-export", onBatch as EventListener);
+  }, [handleBatchExport]);
+
   const listSyncValue = useMemo(
     () => ({
       recordings: recordingsList,
@@ -654,6 +794,9 @@ function HomeContent() {
       onTranscribeSelected: () => void runTranscribeSelected(),
       onDeleteRecording: (id: string) => void handleDeleteRecording(id),
       deletingRecordingId,
+      onBatchExport: handleBatchExport,
+      batchExporting,
+      batchExportProgress,
       transcriptLoading,
       liveAdsbStatus,
     }),
@@ -667,6 +810,9 @@ function HomeContent() {
       runTranscribeSelected,
       handleDeleteRecording,
       deletingRecordingId,
+      handleBatchExport,
+      batchExporting,
+      batchExportProgress,
       transcriptLoading,
       liveAdsbStatus,
     ]
@@ -686,6 +832,7 @@ function HomeContent() {
         key={workspace.audio.id || "__empty__"}
         audioData={workspace.audio}
         adsbData={workspace.adsb}
+        mapLiveAdsb={mapLiveAdsb}
         adsbMapRevision={adsbMapRevision}
         onSelectRecording={handleSelectRecording}
       />

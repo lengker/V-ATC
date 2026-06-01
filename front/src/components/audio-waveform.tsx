@@ -419,8 +419,9 @@ export const AudioWaveform = memo(
   const [audioError, setAudioError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [bufferedPercent, setBufferedPercent] = useState(0);
+  /** 播放头秒数：本地直驱 UI，避免 useDeferredValue 被地图轮询饿死导致一直 00:01 */
+  const [uiPlayheadSec, setUiPlayheadSec] = useState(() => playback?.currentTime ?? currentTime ?? 0);
   const effectiveCurrentTime = playback?.currentTime ?? currentTime;
-  const deferredCurrentTime = useDeferredValue(effectiveCurrentTime);
   const isMockSource = !(audioUrl?.trim() ?? "");
   /** WaveSurfer.zoom(minPxPerSec)：「整段适配容器宽度」时的 px/s，再乘以界面 zoom 倍率 */
   const fitMinPxPerSecRef = useRef(50);
@@ -438,6 +439,19 @@ export const AudioWaveform = memo(
     return Math.max(d, duration, expectedDuration, 0);
   }, [duration, expectedDuration]);
 
+  const pushPlayhead = useCallback(
+    (time: number, opts?: { syncUi?: boolean }) => {
+      if (!Number.isFinite(time) || time < 0) return;
+      if (opts?.syncUi !== false) setUiPlayheadSec(time);
+      setPlaybackCurrentTime?.(time, "waveform");
+      onTimeUpdate?.(time);
+    },
+    [onTimeUpdate, setPlaybackCurrentTime]
+  );
+
+  const pushPlayheadRef = useRef(pushPlayhead);
+  pushPlayheadRef.current = pushPlayhead;
+
   /** 命令式跳转：先暂停再 seek，避免播放中被旧 currentTime 拉回 */
   const imperativeSeek = useCallback(
     (time: number, opts?: { play?: boolean; segmentEnd?: number | null }) => {
@@ -445,8 +459,7 @@ export const AudioWaveform = memo(
       const liveDuration = getLiveDuration();
       const next = Math.max(0, Math.min(time, liveDuration > 0 ? liveDuration : time));
 
-      setPlaybackCurrentTime?.(next, "ui");
-      onTimeUpdate?.(next);
+      pushPlayhead(next);
       lastEmitRef.current = next;
       lastImperativeSeekRef.current = next;
       seekingUntilRef.current = Date.now() + 1200;
@@ -464,15 +477,14 @@ export const AudioWaveform = memo(
         console.warn("imperativeSeek failed:", e);
       }
     },
-    [audioError, getLiveDuration, onTimeUpdate, setPlaybackCurrentTime]
+    [audioError, getLiveDuration, pushPlayhead]
   );
 
   const emitTimeUpdate = useCallback(
     (time: number) => {
-      setPlaybackCurrentTime?.(time, "waveform");
-      onTimeUpdate?.(time);
+      pushPlayhead(time);
     },
-    [onTimeUpdate, setPlaybackCurrentTime]
+    [pushPlayhead]
   );
   const emitTimeUpdateRef = useRef(emitTimeUpdate);
   const timestampsRef = useRef(timestamps);
@@ -489,6 +501,12 @@ export const AudioWaveform = memo(
   useEffect(() => {
     onPlayStateChangeRef.current?.(isPlaying);
   }, [isPlaying]);
+
+  // 暂停 / 外部 seek 时与全局 PlaybackContext 对齐
+  useEffect(() => {
+    if (isPlaying) return;
+    setUiPlayheadSec(effectiveCurrentTime);
+  }, [effectiveCurrentTime, isPlaying]);
 
   // 仅 audioUrl 变化时重建 WaveSurfer（其余经 ref 读取，避免后台同步打断播放）
   useEffect(() => {
@@ -560,8 +578,24 @@ export const AudioWaveform = memo(
 
     // 播放/暂停事件
     wavesurfer.on("play", () => setIsPlaying(true));
-    wavesurfer.on("pause", () => setIsPlaying(false));
-    wavesurfer.on("finish", () => setIsPlaying(false));
+    wavesurfer.on("pause", () => {
+      setIsPlaying(false);
+      try {
+        const t = wavesurfer.getCurrentTime();
+        if (Number.isFinite(t)) pushPlayheadRef.current(t);
+      } catch {
+        // ignore
+      }
+    });
+    wavesurfer.on("finish", () => {
+      setIsPlaying(false);
+      try {
+        const t = wavesurfer.getCurrentTime();
+        if (Number.isFinite(t)) pushPlayheadRef.current(t);
+      } catch {
+        // ignore
+      }
+    });
 
     // 时间更新事件
     const handleTimeUpdate = (time: number) => {
@@ -584,6 +618,9 @@ export const AudioWaveform = memo(
     wavesurfer.on("timeupdate", handleTimeUpdate);
     // 某些 backend 下播放过程主要通过 audioprocess 更稳定地推送时间
     wavesurfer.on("audioprocess", handleTimeUpdate);
+    // 拖动/点击波形定位播放条（暂停时也要更新地图航迹）
+    wavesurfer.on("interaction", handleTimeUpdate);
+    wavesurfer.on("seeking", handleTimeUpdate);
 
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined" && waveformRef.current) {
@@ -682,10 +719,14 @@ export const AudioWaveform = memo(
       if (ws) {
         try {
           const t = ws.getCurrentTime();
-          // 降低抖动：只有明显变化才推送
-          if (Math.abs(t - lastEmitRef.current) >= 0.05) {
+          if (!Number.isFinite(t)) {
+            rafRef.current = requestAnimationFrame(tick);
+            return;
+          }
+          setUiPlayheadSec(t);
+          if (Math.abs(t - lastEmitRef.current) >= 0.04) {
             lastEmitRef.current = t;
-            emitTimeUpdate(t);
+            emitTimeUpdateRef.current(t);
           }
         } catch {
           // ignore
@@ -700,7 +741,7 @@ export const AudioWaveform = memo(
       rafRef.current = null;
       lastEmitRef.current = -1;
     };
-  }, [isPlaying, emitTimeUpdate]);
+  }, [isPlaying]);
 
   // 外部时间变化时，同步 wavesurfer 播放头（仅暂停时；播放中由波形自身驱动，避免把跳转拉回去）
   useEffect(() => {
@@ -710,9 +751,17 @@ export const AudioWaveform = memo(
 
     const liveDuration = getLiveDuration();
     if (liveDuration <= 0) return;
-    const next = Math.max(0, Math.min(deferredCurrentTime, liveDuration));
+
     try {
       const wsTime = ws.getCurrentTime();
+      // 暂停后：以 WaveSurfer 实际位置为准写回 React，避免被旧的 25s 卡死值拉回
+      if (Math.abs(wsTime - effectiveCurrentTime) > 0.12) {
+        pushPlayhead(Math.max(0, Math.min(wsTime, liveDuration)));
+        lastEmitRef.current = wsTime;
+        return;
+      }
+
+      const next = Math.max(0, Math.min(uiPlayheadSec, liveDuration));
       if (Math.abs(wsTime - next) < 0.15) return;
       if (lastImperativeSeekRef.current >= 0 && Math.abs(wsTime - lastImperativeSeekRef.current) < 0.25) {
         return;
@@ -721,7 +770,7 @@ export const AudioWaveform = memo(
     } catch (e) {
       console.warn("Failed to sync external time:", e);
     }
-  }, [deferredCurrentTime, audioError, getLiveDuration, isPlaying]);
+  }, [uiPlayheadSec, effectiveCurrentTime, audioError, getLiveDuration, isPlaying, pushPlayhead]);
 
   // 同步倍速播放
   useEffect(() => {
@@ -812,23 +861,15 @@ export const AudioWaveform = memo(
             wavesurferRef.current.seekTo(Math.max(0, Math.min(1, value / liveDuration)));
           }
           seekingUntilRef.current = Date.now() + 150;
-          setPlaybackCurrentTime?.(value, "ui");
-          // 使用防抖避免过频繁更新
-          if (seekTimeoutRef.current) {
-            clearTimeout(seekTimeoutRef.current);
-          }
-          seekTimeoutRef.current = setTimeout(() => {
-            onTimeUpdate?.(value);
-          }, 50);
+          pushPlayhead(value);
         } catch (error) {
           console.error("Seek error:", error);
         }
       } else {
-        setPlaybackCurrentTime?.(value, "ui");
-        onTimeUpdate?.(value);
+        pushPlayhead(value);
       }
     },
-    [duration, audioError, onTimeUpdate, setPlaybackCurrentTime, getLiveDuration]
+    [duration, audioError, getLiveDuration, pushPlayhead]
   );
 
   const handleScrubSeek = useCallback(
@@ -906,7 +947,7 @@ export const AudioWaveform = memo(
       skipBy: (deltaSeconds: number) => {
         const ws = wavesurferRef.current;
         const liveDuration = getLiveDuration();
-        const baseTime = ws ? ws.getCurrentTime() : deferredCurrentTime;
+        const baseTime = ws ? ws.getCurrentTime() : uiPlayheadSec;
         const maxT = liveDuration > 0 ? liveDuration : Math.max(duration, expectedDuration, baseTime);
         const next = Math.max(0, Math.min(baseTime + deltaSeconds, maxT));
         try {
@@ -914,8 +955,7 @@ export const AudioWaveform = memo(
           if (ws && maxT > 0 && !audioError) {
             ws.seekTo(Math.max(0, Math.min(1, next / maxT)));
           }
-          setPlaybackCurrentTime?.(next, "ui");
-          onTimeUpdate?.(next);
+          pushPlayhead(next);
         } catch {
           // ignore
         }
@@ -943,13 +983,12 @@ export const AudioWaveform = memo(
     }),
     [
       audioError,
-      deferredCurrentTime,
       duration,
       getLiveDuration,
       imperativeSeek,
-      onTimeUpdate,
-      setPlaybackCurrentTime,
+      pushPlayhead,
       togglePlayPause,
+      uiPlayheadSec,
       volume,
       zoom,
     ]
@@ -1015,7 +1054,7 @@ export const AudioWaveform = memo(
         <TimestampOverlay
           timestamps={timestamps}
           duration={duration}
-          currentTime={deferredCurrentTime}
+          currentTime={uiPlayheadSec}
           onTimestampClick={handleTimestampClick}
           onTimestampBoundaryDrag={handleTimestampBoundaryDrag}
           onScrubSeek={handleScrubSeek}
@@ -1046,14 +1085,13 @@ export const AudioWaveform = memo(
             className="h-9 rounded-xl gap-0.5 px-2"
             onClick={() => {
               if (wavesurferRef.current && duration > 0) {
-                const newTime = Math.max(deferredCurrentTime - 5, 0);
+                const newTime = Math.max(uiPlayheadSec - 5, 0);
                 const liveDuration = getLiveDuration();
                 if (liveDuration > 0) {
                   wavesurferRef.current.seekTo(Math.max(0, Math.min(1, newTime / liveDuration)));
                 }
                 seekingUntilRef.current = Date.now() + 150;
-                setPlaybackCurrentTime?.(newTime, "ui");
-                onTimeUpdate?.(newTime);
+                pushPlayhead(newTime);
               }
             }}
             title="快退 5 秒（←）"
@@ -1067,14 +1105,13 @@ export const AudioWaveform = memo(
             className="h-9 rounded-xl gap-0.5 px-2"
             onClick={() => {
               if (wavesurferRef.current && duration > 0) {
-                const newTime = Math.min(deferredCurrentTime + 5, duration);
+                const newTime = Math.min(uiPlayheadSec + 5, duration);
                 const liveDuration = getLiveDuration();
                 if (liveDuration > 0) {
                   wavesurferRef.current.seekTo(Math.max(0, Math.min(1, newTime / liveDuration)));
                 }
                 seekingUntilRef.current = Date.now() + 150;
-                setPlaybackCurrentTime?.(newTime, "ui");
-                onTimeUpdate?.(newTime);
+                pushPlayhead(newTime);
               }
             }}
             title="快进 5 秒（→）"
@@ -1088,10 +1125,10 @@ export const AudioWaveform = memo(
 
         <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
           <span className="w-[4.25rem] shrink-0 font-mono tabular-nums text-xs text-muted-foreground">
-            {formatTime(deferredCurrentTime)}
+            {formatTime(uiPlayheadSec)}
           </span>
           <Slider
-            value={[deferredCurrentTime]}
+            value={[uiPlayheadSec]}
             max={duration || 1}
             step={0.1}
             onValueChange={([value]) => handleSeek(value)}

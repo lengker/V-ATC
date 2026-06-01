@@ -36,6 +36,10 @@ export type RecordingsSyncState = {
   /** 删除一条录音（A5） */
   onDeleteRecording?: (id: string) => void | Promise<void>;
   deletingRecordingId?: string | null;
+  /** 批量导出（JSON + CSV + 音频等） */
+  onBatchExport?: (ids: string[]) => void | Promise<void>;
+  batchExporting?: boolean;
+  batchExportProgress?: { current: number; total: number; audioId?: string } | null;
 };
 
 const RecordingsSyncContext = createContext<RecordingsSyncState | null>(null);

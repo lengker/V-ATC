@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VoiceTimestamp } from "@/types";
 import { cn, formatTime, recordingTimelineMax } from "@/lib/utils";
+import {
+  parseQueryTimeInput,
+  queryTranscriptSegments,
+  type TranscriptTimeQuery,
+} from "@/lib/transcript-store";
 import { useRecordingsSync } from "@/context/recordings-sync-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -20,6 +25,9 @@ import {
   Scissors,
   Sparkles,
   Trash2,
+  Search,
+  Download,
+  X,
 } from "lucide-react";
 
 const MIN_SEGMENT_SECONDS = 0.05;
@@ -92,6 +100,11 @@ export function TranscriptTimelineEditor({
 }) {
   const [editMode, setEditMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [queryStart, setQueryStart] = useState("");
+  const [queryEnd, setQueryEnd] = useState("");
+  const [queryText, setQueryText] = useState("");
+  const [queryAtPlayhead, setQueryAtPlayhead] = useState(false);
+  const [queryActive, setQueryActive] = useState(false);
   const timelineRef = useRef<HTMLDivElement>(null);
   const segmentListRef = useRef<HTMLDivElement>(null);
   const lastFollowedActiveIdRef = useRef<string | null>(null);
@@ -107,7 +120,39 @@ export function TranscriptTimelineEditor({
   const { onTranscribeSelected, syncing, pendingTranscriptCount } = useRecordingsSync();
   const sorted = useMemo(() => normalizeSegments(value), [value]);
   const effectiveMax = recordingTimelineMax(timelineMax || 0, sorted);
-  const selectedList = useMemo(() => sorted.filter((t) => selectedIds.has(t.id)), [sorted, selectedIds]);
+
+  const runTimeQuery = useCallback(() => {
+    setQueryActive(true);
+  }, []);
+
+  const clearTimeQuery = useCallback(() => {
+    setQueryStart("");
+    setQueryEnd("");
+    setQueryText("");
+    setQueryAtPlayhead(false);
+    setQueryActive(false);
+  }, []);
+
+  const timeQuery = useMemo((): TranscriptTimeQuery => {
+    const q: TranscriptTimeQuery = {};
+    if (queryText.trim()) q.text = queryText.trim();
+    if (queryAtPlayhead) {
+      q.atTimeSec = currentTime;
+      return q;
+    }
+    const start = parseQueryTimeInput(queryStart);
+    const end = parseQueryTimeInput(queryEnd);
+    if (start != null) q.startSec = start;
+    if (end != null) q.endSec = end;
+    return q;
+  }, [currentTime, queryAtPlayhead, queryEnd, queryStart, queryText]);
+
+  const filtered = useMemo(() => {
+    if (!queryActive) return sorted;
+    return queryTranscriptSegments(sorted, timeQuery);
+  }, [queryActive, sorted, timeQuery]);
+
+  const selectedList = useMemo(() => filtered.filter((t) => selectedIds.has(t.id)), [filtered, selectedIds]);
   const active = useMemo(
     () => sorted.find((t) => currentTime >= t.startTime && currentTime <= t.endTime) ?? null,
     [sorted, currentTime]
@@ -352,6 +397,20 @@ export function TranscriptTimelineEditor({
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("alpha.export", { detail: { type: "package" } })
+                )
+              }
+              disabled={showGenerating || sorted.length === 0}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              导出
+            </Button>
+            <Button
               variant={editMode ? "default" : "outline"}
               size="sm"
               onClick={() => setEditMode((v) => !v)}
@@ -476,6 +535,70 @@ export function TranscriptTimelineEditor({
           </div>
           ) : null}
         </div>
+
+        {!showGenerating && sorted.length > 0 ? (
+          <div className="flex flex-wrap items-end gap-2 rounded-2xl border border-border/50 bg-muted/10 p-3">
+            <div className="min-w-[88px] flex-1">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                开始时间
+              </div>
+              <Input
+                value={queryStart}
+                onChange={(e) => setQueryStart(e.target.value)}
+                placeholder="mm:ss 或秒"
+                className="h-8 rounded-xl text-xs"
+                disabled={queryAtPlayhead}
+              />
+            </div>
+            <div className="min-w-[88px] flex-1">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                结束时间
+              </div>
+              <Input
+                value={queryEnd}
+                onChange={(e) => setQueryEnd(e.target.value)}
+                placeholder="mm:ss 或秒"
+                className="h-8 rounded-xl text-xs"
+                disabled={queryAtPlayhead}
+              />
+            </div>
+            <div className="min-w-[120px] flex-[1.4]">
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                文本关键词
+              </div>
+              <Input
+                value={queryText}
+                onChange={(e) => setQueryText(e.target.value)}
+                placeholder="呼号 / 转写内容"
+                className="h-8 rounded-xl text-xs"
+              />
+            </div>
+            <label className="flex h-8 cursor-pointer items-center gap-1.5 rounded-xl border border-border/50 bg-background/40 px-2.5 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={queryAtPlayhead}
+                onChange={(e) => setQueryAtPlayhead(e.target.checked)}
+                className="rounded"
+              />
+              当前指针
+            </label>
+            <Button type="button" size="sm" variant="secondary" className="h-8" onClick={runTimeQuery}>
+              <Search className="mr-1.5 h-3.5 w-3.5" />
+              查询
+            </Button>
+            {queryActive ? (
+              <Button type="button" size="sm" variant="ghost" className="h-8" onClick={clearTimeQuery}>
+                <X className="mr-1.5 h-3.5 w-3.5" />
+                清除
+              </Button>
+            ) : null}
+            {queryActive ? (
+              <span className="w-full text-xs text-muted-foreground sm:w-auto">
+                匹配 {filtered.length} / {sorted.length} 段
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </CardHeader>
 
       <CardContent className="pt-5">
@@ -513,7 +636,12 @@ export function TranscriptTimelineEditor({
                 </div>
               </div>
             ) : null}
-            {sorted.map((t) => {
+            {filtered.length === 0 && queryActive ? (
+              <div className="rounded-2xl border border-dashed border-border/60 bg-muted/10 px-4 py-8 text-center text-sm text-muted-foreground">
+                无匹配片段，请调整时间范围或关键词后重试。
+              </div>
+            ) : null}
+            {filtered.map((t) => {
               const selected = selectedIds.has(t.id);
               const isActive = active?.id === t.id;
               return (

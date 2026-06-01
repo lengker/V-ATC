@@ -8,6 +8,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import type { AgentWorkspaceSnapshot } from "@/lib/agent-workspace-context";
+import {
+  summarizeAgentOps,
+  type AgentTranscriptOps,
+} from "@/lib/agent-transcript-ops";
 import type { VoiceTimestamp } from "@/types";
 import { cn } from "@/lib/utils";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -18,13 +22,12 @@ type AgentMode =
   | "summarize_transcript"
   | "custom";
 
-type SegmentPatch = { id: string; text: string };
-
 type AgentResponse = {
   ok: boolean;
   reply?: string;
   suggestedText?: string;
-  segmentPatches?: SegmentPatch[];
+  segmentPatches?: AgentTranscriptOps["segmentPatches"];
+  mergeGroups?: AgentTranscriptOps["mergeGroups"];
   error?: string;
   debug?: unknown;
 };
@@ -34,7 +37,8 @@ type ChatMsg = { id: string; role: "user" | "assistant"; content: string };
 const MODE_PRESETS: Record<AgentMode, { label: string; placeholder: string }> = {
   rewrite_annotation: {
     label: "改写",
-    placeholder: "请改正当前录音全部转写的语法和 ASR 错误，逐段输出可写入文本。",
+    placeholder:
+      "请逐段检查拼写与标点（仅改明确错误，勿根据呼号猜测替换词语）。需要 ATC/ASR 语义校正请写明。",
   },
   summarize_segment: {
     label: "段总结",
@@ -46,7 +50,8 @@ const MODE_PRESETS: Record<AgentMode, { label: string; placeholder: string }> = 
   },
   custom: {
     label: "自定义",
-    placeholder: "输入问题；若需改转写请写「帮我修改转写」等。",
+    placeholder:
+      "可合并相邻片段、改说话人（ATC/Pilot）、改文本；例：「把 0–30s 两段合并为 ATC」。",
   },
 };
 
@@ -62,7 +67,7 @@ export function QianwenAgentWidget({
   selectedTimestamp,
   workspace,
   onApplySuggestedText,
-  onApplySegmentPatches,
+  onApplyTranscriptOps,
   className,
 }: {
   audioId: string;
@@ -71,7 +76,7 @@ export function QianwenAgentWidget({
   selectedTimestamp: VoiceTimestamp | null;
   workspace: AgentWorkspaceSnapshot;
   onApplySuggestedText: (text: string, opts?: { applyToAll?: boolean }) => void;
-  onApplySegmentPatches: (patches: SegmentPatch[]) => void | Promise<void>;
+  onApplyTranscriptOps: (ops: AgentTranscriptOps) => void | Promise<void>;
   className?: string;
 }) {
   const { toast } = useToast();
@@ -87,7 +92,7 @@ export function QianwenAgentWidget({
 
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [suggestedText, setSuggestedText] = useState<string | null>(null);
-  const [segmentPatches, setSegmentPatches] = useState<SegmentPatch[] | null>(null);
+  const [pendingOps, setPendingOps] = useState<AgentTranscriptOps | null>(null);
 
   useEffect(() => {
     try {
@@ -101,13 +106,7 @@ export function QianwenAgentWidget({
   useEffect(() => {
     if (!open) return;
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [chat, open, suggestedText, segmentPatches, error]);
-
-  useEffect(() => {
-    if (open && !input.trim()) {
-      setInput(MODE_PRESETS[mode].placeholder);
-    }
-  }, [open, mode, input]);
+  }, [chat, open, suggestedText, pendingOps, error]);
 
   const context = useMemo(() => {
     const ts = selectedTimestamp;
@@ -128,23 +127,24 @@ export function QianwenAgentWidget({
 
   const applyMode = useCallback((next: AgentMode) => {
     setMode(next);
-    setInput(MODE_PRESETS[next].placeholder);
+    setInput("");
   }, []);
 
   const clearChat = useCallback(() => {
     setChat([]);
     setSuggestedText(null);
-    setSegmentPatches(null);
+    setPendingOps(null);
     setError(null);
     setLastDebug(null);
   }, []);
 
-  const applyPatches = useCallback(
-    async (patches: SegmentPatch[]) => {
-      await onApplySegmentPatches(patches);
+  const applyOps = useCallback(
+    async (ops: AgentTranscriptOps) => {
+      await onApplyTranscriptOps(ops);
+      setPendingOps(null);
       setOpen(false);
     },
-    [onApplySegmentPatches]
+    [onApplyTranscriptOps]
   );
 
   const applySingle = useCallback(
@@ -163,7 +163,7 @@ export function QianwenAgentWidget({
     setLoading(true);
     setError(null);
     setSuggestedText(null);
-    setSegmentPatches(null);
+    setPendingOps(null);
     setLastDebug(null);
 
     const userMsg: ChatMsg = {
@@ -221,25 +221,24 @@ export function QianwenAgentWidget({
 
       const rewrite = wantsRewrite(command, mode);
 
-      if (data.segmentPatches?.length) {
-        setSegmentPatches(data.segmentPatches);
-        if (rewrite) {
-          await applyPatches(data.segmentPatches);
-          toast({ title: "已自动写入转写", description: `已更新 ${data.segmentPatches.length} 段。` });
-        } else {
-          toast({ title: "已生成逐段改写", description: "点击下方按钮写入转写。" });
-        }
+      const ops: AgentTranscriptOps = {};
+      if (data.mergeGroups?.length) ops.mergeGroups = data.mergeGroups;
+      if (data.segmentPatches?.length) ops.segmentPatches = data.segmentPatches;
+      if (ops.mergeGroups?.length || ops.segmentPatches?.length) {
+        setPendingOps(ops);
+        toast({
+          title: "已生成转写编辑建议",
+          description: `${summarizeAgentOps(ops)}。请核对后点「应用到转写」。`,
+        });
         return;
       }
 
       if (data.suggestedText) {
         setSuggestedText(data.suggestedText);
-        if (rewrite) {
-          applySingle(data.suggestedText);
-          toast({ title: "已自动写入转写", description: "已应用 suggestedText。" });
-        } else {
-          toast({ title: "已生成建议", description: "点击下方「应用建议到转写」。" });
-        }
+        toast({
+          title: "已生成建议",
+          description: "请先核对再点「应用建议到转写」。",
+        });
         return;
       }
 
@@ -258,7 +257,7 @@ export function QianwenAgentWidget({
       setLoading(false);
     }
   }, [
-    applyPatches,
+    applyOps,
     applySingle,
     audioId,
     currentTime,
@@ -336,7 +335,7 @@ export function QianwenAgentWidget({
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 space-y-2">
               {chat.length === 0 ? (
                 <p className="text-xs leading-relaxed text-muted-foreground">
-                  已接入当前页面转写与地图数据。说「帮我修改转写」会<strong>自动写入</strong>语音剪辑区。
+                  已接入转写与地图。可<strong>合并片段</strong>、<strong>改说话人</strong>（ATC/Pilot）、改文本；应用前请核对。
                 </p>
               ) : null}
 
@@ -375,20 +374,36 @@ export function QianwenAgentWidget({
             </div>
 
             {/* 建议区：固定在输入框上方 */}
-            {(suggestedText || segmentPatches?.length) ? (
+            {(suggestedText || pendingOps) ? (
               <div className="shrink-0 space-y-2 border-t border-border/60 bg-primary/5 px-3 py-2">
-                {segmentPatches?.length ? (
+                {pendingOps ? (
                   <>
                     <div className="text-xs font-semibold text-primary">
-                      逐段改写（{segmentPatches.length} 段）
+                      转写编辑 · {summarizeAgentOps(pendingOps)}
                     </div>
+                    {pendingOps.mergeGroups?.map((g, i) => (
+                      <p key={`m-${i}`} className="text-[10px] text-muted-foreground">
+                        合并 {g.segmentIds.length} 段
+                        {g.speaker ? ` → ${g.speaker}` : ""}
+                      </p>
+                    ))}
+                    {pendingOps.segmentPatches?.slice(0, 4).map((p) => (
+                      <p key={p.id} className="text-[10px] text-muted-foreground truncate">
+                        {p.id.slice(0, 8)}…
+                        {p.speaker !== undefined ? ` 说话人→${p.speaker || "（空）"}` : ""}
+                        {p.text !== undefined ? " 改文本" : ""}
+                      </p>
+                    ))}
+                    {(pendingOps.segmentPatches?.length ?? 0) > 4 ? (
+                      <p className="text-[10px] text-muted-foreground">…等更多段</p>
+                    ) : null}
                     <Button
                       type="button"
                       size="sm"
                       className="h-8 w-full rounded-2xl"
-                      onClick={() => void applyPatches(segmentPatches)}
+                      onClick={() => void applyOps(pendingOps)}
                     >
-                      应用全部到转写
+                      应用到转写
                     </Button>
                   </>
                 ) : null}
@@ -448,7 +463,7 @@ export function QianwenAgentWidget({
 
               <div className="flex items-center gap-2">
                 <p className="flex-1 text-[10px] leading-snug text-muted-foreground">
-                  Enter 发送 · Shift+Enter 换行 · 改写会自动写入
+                  Enter 发送 · Shift+Enter 换行 · 改写需确认后写入
                 </p>
                 <Button
                   type="button"

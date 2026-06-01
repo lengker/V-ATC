@@ -37,6 +37,12 @@ export interface AudioData {
     fileName?: string;
     /** A5 start_time_utc，用于列表显示为本地采集时间 */
     startTimeUtc?: string;
+    /** A5 end_time_utc，与航迹 UTC 窗口对齐 */
+    endTimeUtc?: string;
+    /** A5 track_id，关联 LNG_TRACKS 链 */
+    trackId?: number;
+    /** 关联航迹呼号 / flight_id，用于地图默认选中 */
+    primaryCallsign?: string;
     icao?: string;
     date?: string;
     frequency?: string;

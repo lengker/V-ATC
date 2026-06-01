@@ -7,6 +7,8 @@ import { formatTime } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useMemo, useState } from "react";
+import { useLiveWallClockTick } from "@/hooks/use-live-wall-clock-tick";
+import { getAircraftStateForAuxInfo } from "@/lib/adsb-playback";
 import { vspAip } from "@/mock/vsp-aip";
 
 interface AuxiliaryInfoProps {
@@ -14,6 +16,9 @@ interface AuxiliaryInfoProps {
   adsbData?: ADSBData[];
   currentTime?: number;
   selectedAircraft?: string;
+  recordingUtcStartSec?: number;
+  recordingDurationSec?: number;
+  useLiveWallClockNow?: boolean;
 }
 
 export function AuxiliaryInfo({
@@ -21,11 +26,46 @@ export function AuxiliaryInfo({
   adsbData = [],
   currentTime = 0,
   selectedAircraft,
+  recordingUtcStartSec,
+  recordingDurationSec,
+  useLiveWallClockNow = false,
 }: AuxiliaryInfoProps) {
-  // 获取当前时间点的飞机数据
-  const currentAircraftData = adsbData
-    .filter((d) => d.icao24 === selectedAircraft && d.timestamp <= currentTime)
-    .sort((a, b) => b.timestamp - a.timestamp)[0];
+  const hasLiveLayer = useMemo(() => adsbData.some((p) => p.live), [adsbData]);
+  const recordingWall =
+    recordingUtcStartSec != null && recordingUtcStartSec > 1_000_000_000;
+  const needLiveTick = useLiveWallClockNow || (hasLiveLayer && !recordingWall);
+  const liveTick = useLiveWallClockTick(needLiveTick);
+  const auxOpts = useMemo(
+    () => ({
+      ...(useLiveWallClockNow ? { useLiveWallClockNow: true as const } : {}),
+      ...(recordingWall && recordingDurationSec != null && recordingDurationSec > 0
+        ? { recordingDurationSec }
+        : {}),
+    }),
+    [recordingDurationSec, recordingWall, useLiveWallClockNow]
+  );
+
+  const currentAircraftData = useMemo(
+    () =>
+      getAircraftStateForAuxInfo(
+        adsbData,
+        selectedAircraft,
+        currentTime,
+        recordingUtcStartSec,
+        auxOpts
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- liveTick 驱动墙钟重采样
+    [adsbData, auxOpts, liveTick, selectedAircraft, currentTime, recordingUtcStartSec]
+  );
+
+  const timestampLabel = useMemo(() => {
+    if (!currentAircraftData) return "—";
+    const ts = currentAircraftData.timestamp;
+    if (currentAircraftData.live || ts > 1_000_000_000) {
+      return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+    }
+    return formatTime(ts);
+  }, [currentAircraftData]);
 
   const [q, setQ] = useState("");
   const query = q.trim().toLowerCase();
@@ -160,16 +200,16 @@ export function AuxiliaryInfo({
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">时间戳</div>
-                  <div className="text-sm text-muted-foreground">
-                    {formatTime(currentAircraftData.timestamp)}
+                  <div className="text-sm font-medium">
+                    {currentAircraftData.live ? "采样时间（实时）" : "时间戳（相对录音）"}
                   </div>
+                  <div className="text-sm text-muted-foreground">{timestampLabel}</div>
                 </div>
               </>
             ) : (
               <p className="text-sm text-muted-foreground">
                 {selectedAircraft
-                  ? "当前时间点无该飞机数据"
+                  ? "未在航迹库中匹配到该飞机（实时层请确认 OpenSky 有回波；历史层请拖时间轴到航迹时段）"
                   : "请选择一架飞机"}
               </p>
             )}

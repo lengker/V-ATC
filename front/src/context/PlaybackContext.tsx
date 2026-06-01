@@ -28,37 +28,53 @@ export function PlaybackProvider({
   timelineMax: number;
   initialTime?: number;
 }) {
-  const [currentTime, _setCurrentTime] = useState(() => clamp(initialTime, 0, Math.max(0, timelineMax || 0)));
   const [audioDuration, _setAudioDuration] = useState<number | null>(null);
 
-  const timelineMaxRef = useRef(timelineMax);
+  const resolveMax = useCallback(
+    (dur: number | null) => Math.max(timelineMax || 0, dur ?? 0, 1),
+    [timelineMax]
+  );
+
+  const [currentTime, _setCurrentTime] = useState(() =>
+    clamp(initialTime, 0, resolveMax(null))
+  );
+
+  const timelineMaxRef = useRef(resolveMax(audioDuration));
+
   useEffect(() => {
-    timelineMaxRef.current = timelineMax;
-    // timelineMax 变化时，确保 currentTime 不越界
-    _setCurrentTime((t) => clamp(t, 0, Math.max(0, timelineMax)));
-  }, [timelineMax]);
+    timelineMaxRef.current = resolveMax(audioDuration);
+    _setCurrentTime((t) => clamp(t, 0, timelineMaxRef.current));
+  }, [audioDuration, resolveMax]);
 
   const setCurrentTime = useCallback((t: number, _source?: PlaybackTimeSource) => {
+    if (Number.isFinite(t) && t > timelineMaxRef.current) {
+      timelineMaxRef.current = t;
+    }
     _setCurrentTime(clamp(t, 0, Math.max(0, timelineMaxRef.current || 0)));
   }, []);
 
   const setAudioDuration = useCallback((d: number) => {
+    if (!Number.isFinite(d) || d <= 0) return;
     _setAudioDuration((prev) => {
-      if (!Number.isFinite(d) || d <= 0) return prev;
       if (prev != null && Math.abs(prev - d) < 0.01) return prev;
       return d;
     });
+    if (d > timelineMaxRef.current) {
+      timelineMaxRef.current = d;
+    }
   }, []);
+
+  const effectiveTimelineMax = resolveMax(audioDuration);
 
   const value = useMemo(
     () => ({
       currentTime,
-      timelineMax,
+      timelineMax: effectiveTimelineMax,
       audioDuration,
       setCurrentTime,
       setAudioDuration,
     }),
-    [currentTime, timelineMax, audioDuration, setCurrentTime, setAudioDuration]
+    [currentTime, effectiveTimelineMax, audioDuration, setCurrentTime, setAudioDuration]
   );
 
   return <PlaybackContext.Provider value={value}>{children}</PlaybackContext.Provider>;

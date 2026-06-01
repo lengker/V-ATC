@@ -23,13 +23,61 @@ from purge_recordings_without_transcript import load_blocklist, unblock_a2_files
 DEFAULT_TRACK_ID = 1
 
 
+def _iso_utc(d: datetime) -> str:
+    return d.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _now_capture_window_ms(duration_ms: int) -> tuple[str, str]:
-    """实时更新：用当前墙钟作为采集结束时刻，列表显示本地时间。"""
+    """仅当 A2/文件名均无法解析采集时刻时的兜底。"""
     end = datetime.now(timezone.utc)
     dur = max(1000, int(duration_ms or 0) or 60_000)
     start = end - timedelta(milliseconds=dur)
-    fmt = lambda d: d.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    return fmt(start), fmt(end)
+    return _iso_utc(start), _iso_utc(end)
+
+
+def _utc_from_filename(file_name: str, duration_ms: int) -> tuple[str, str] | None:
+    """从 LiveATC 等文件名解析 UTC 起止（与前端 recording-display 规则一致）。"""
+    import re
+
+    stem = re.sub(r"\.(mp3|wav|m4a|ogg|aac)$", "", (file_name or "").strip(), flags=re.I)
+    if not stem:
+        return None
+    dur = max(1000, int(duration_ms or 0) or 60_000)
+
+    m = re.match(
+        r"^vhhh[_-]?(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})$",
+        stem,
+        re.I,
+    )
+    if m:
+        y, mo, d, h, mi, s = (int(x) for x in m.groups())
+        start = datetime(y, mo, d, h, mi, s, tzinfo=timezone.utc)
+        return _iso_utc(start), _iso_utc(start + timedelta(milliseconds=dur))
+
+    m = re.search(r"(\d{4})(\d{2})(\d{2})[tT](\d{2})(\d{2})(\d{2})", stem)
+    if m:
+        y, mo, d, h, mi, s = (int(x) for x in m.groups())
+        start = datetime(y, mo, d, h, mi, s, tzinfo=timezone.utc)
+        return _iso_utc(start), _iso_utc(start + timedelta(milliseconds=dur))
+
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})-(\d{4})Z", stem, re.I)
+    if m:
+        y, mo, d, hm = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
+        h, mi = int(hm[:2]), int(hm[2:])
+        start = datetime(y, mo, d, h, mi, 0, tzinfo=timezone.utc)
+        return _iso_utc(start), _iso_utc(start + timedelta(milliseconds=dur))
+    return None
+
+
+def _resolve_capture_utc(row: sqlite3.Row, file_name: str, duration_ms: int) -> tuple[str, str]:
+    start = row["start_time_utc"]
+    end = row["end_time_utc"]
+    if start and end:
+        return str(start), str(end)
+    parsed = _utc_from_filename(file_name, duration_ms)
+    if parsed:
+        return parsed
+    return _now_capture_window_ms(duration_ms)
 
 
 def _get_json(url: str) -> list:
@@ -131,10 +179,6 @@ def run_sync(*, ignore_blocklist: bool = False) -> dict[str, int | str]:
                     "file_size": int(row["file_size"] or 0) or fp_abs.stat().st_size,
                     "duration_ms": dur_ms,
                 }
-                if ignore_blocklist:
-                    start_iso, end_iso = _now_capture_window_ms(dur_ms)
-                    values["start_time_utc"] = start_iso
-                    values["end_time_utc"] = end_iso
                 try:
                     _post_json(
                         f"{A5_BASE}/tables/audio_records/ext/update/{audio_id}",
@@ -148,11 +192,7 @@ def run_sync(*, ignore_blocklist: bool = False) -> dict[str, int | str]:
             continue
 
         dur_ms = int(row["duration_ms"] or 0) or 60_000
-        if ignore_blocklist:
-            start_iso, end_iso = _now_capture_window_ms(dur_ms)
-        else:
-            start_iso = row["start_time_utc"]
-            end_iso = row["end_time_utc"]
+        start_iso, end_iso = _resolve_capture_utc(row, fname, dur_ms)
         payload = {
             "source_url": source_url,
             "start_time_utc": start_iso,

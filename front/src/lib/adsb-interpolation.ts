@@ -364,11 +364,24 @@ export function queryInterpolatedTracks(
   return { currentPoints, trailPoints };
 }
 
-export function queryCurrentAdsbPoints(index: AdsbTrackIndex, currentTime: number): ADSBData[] {
+export type AdsbPlaybackQueryOptions = {
+  /** 播放条早于首点时仍显示首点（避免 0s 时地图 0 targets） */
+  clampBeforeFirst?: boolean;
+};
+
+export function queryCurrentAdsbPoints(
+  index: AdsbTrackIndex,
+  currentTime: number,
+  options?: AdsbPlaybackQueryOptions
+): ADSBData[] {
   const currentPoints: ADSBData[] = [];
 
   for (const [, arr] of index.tracks.entries()) {
-    if (arr.length === 0 || currentTime < arr[0].timestamp) continue;
+    if (arr.length === 0) continue;
+    if (currentTime < arr[0].timestamp) {
+      if (options?.clampBeforeFirst) currentPoints.push(arr[0]);
+      continue;
+    }
     const current = interpolateAdsbAtTime(arr, currentTime, { outside: "null" });
     if (current) currentPoints.push(current);
   }
@@ -385,11 +398,19 @@ export function queryLatestAdsbPoints(index: AdsbTrackIndex): ADSBData[] {
   return currentPoints;
 }
 
-export function queryAdsbTrailPoints(index: AdsbTrackIndex, currentTime: number): ADSBData[] {
+export function queryAdsbTrailPoints(
+  index: AdsbTrackIndex,
+  currentTime: number,
+  options?: AdsbPlaybackQueryOptions
+): ADSBData[] {
   const trailPoints: ADSBData[] = [];
 
   for (const [, arr] of index.tracks.entries()) {
-    if (arr.length === 0 || currentTime < arr[0].timestamp) continue;
+    if (arr.length === 0) continue;
+    if (currentTime < arr[0].timestamp) {
+      if (options?.clampBeforeFirst) trailPoints.push(arr[0]);
+      continue;
+    }
 
     const current = interpolateAdsbAtTime(arr, currentTime, { outside: "null" });
     const historyEnd = upperBoundByTime(arr, currentTime);

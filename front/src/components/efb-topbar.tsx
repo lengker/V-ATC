@@ -197,6 +197,37 @@ export function EfbTopbar({
               <DropdownMenuItem
                 onSelect={(e) => {
                   e.preventDefault();
+                  window.dispatchEvent(
+                    new CustomEvent("alpha.batch-export", { detail: { all: true } })
+                  );
+                }}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                批量导出全部录音
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  window.dispatchEvent(new CustomEvent("alpha.export", { detail: { type: "package" } }));
+                }}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                导出完整包（JSON+CSV+音频）
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  window.dispatchEvent(new CustomEvent("alpha.export", { detail: { type: "audio" } }));
+                }}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                仅导出音频
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
                   window.dispatchEvent(new CustomEvent("alpha.export", { detail: { type: "json" } }));
                 }}
               >
