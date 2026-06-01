@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, Radio, Search, Square, Upload } from "lucide-react";
+import { Download, Loader2, Radio, Search, Square, Upload } from "lucide-react";
 import { a1RouteAPI, a2VoiceAPI, audioAPI, type A2VoiceRecord } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,15 +30,29 @@ const TEXT = {
   format: "\u683c\u5f0f",
   noRecordReturned: "\u540e\u7aef\u672a\u8fd4\u56de\u8bed\u97f3\u8bb0\u5f55\uff0c\u8bf7\u7a0d\u540e\u67e5\u8be2\u3002",
   openWaveform: "\u8f7d\u5165\u6ce2\u5f62",
+  progressCreateTask: "\u521b\u5efa\u4e0b\u8f7d\u4efb\u52a1",
+  progressDownload: "\u6b63\u5728\u4e0b\u8f7d\u97f3\u9891",
+  progressImport: "\u6b63\u5728\u5bfc\u5165\u6ce2\u5f62",
+  progressRefresh: "\u5237\u65b0\u5f55\u97f3\u5217\u8868",
+  progressSync: "\u540c\u6b65 Alpha \u5143\u6570\u636e",
   query: "\u67e5\u8be2",
   queryComplete: "\u67e5\u8be2\u5b8c\u6210",
   queryFailed: "\u67e5\u8be2\u5931\u8d25",
   queryRange: "\u67e5\u8be2\u8303\u56f4",
   realtime: "\u5b9e\u65f6\u4e0b\u8f7d",
   realtimeCreateFailed: "\u5b9e\u65f6\u4efb\u52a1\u521b\u5efa\u5931\u8d25",
+  realtimeProgressAdsb: "\u542f\u52a8 ADS-B \u822a\u8ff9",
+  realtimeProgressCreate: "\u521b\u5efa\u5b9e\u65f6\u4efb\u52a1",
+  realtimeProgressListening: "\u5b9e\u65f6\u4e0b\u8f7d\u8fd0\u884c\u4e2d",
+  realtimeProgressStart: "\u542f\u52a8\u5b9e\u65f6\u63a5\u6536",
+  realtimeProgressStop: "\u505c\u6b62\u5b9e\u65f6\u63a5\u6536",
+  realtimeProgressStopAdsb: "\u505c\u6b62 ADS-B \u822a\u8ff9",
+  realtimeProgressSync: "\u68c0\u67e5\u5b9e\u65f6\u65b0\u7247\u6bb5",
+  realtimeStarting: "\u542f\u52a8\u4e2d",
   realtimeStarted: "\u5b9e\u65f6\u4e0b\u8f7d\u5df2\u542f\u52a8",
   realtimeStartFailed: "\u5b9e\u65f6\u4e0b\u8f7d\u542f\u52a8\u5931\u8d25",
   realtimeStopped: "\u5b9e\u65f6\u4e0b\u8f7d\u5df2\u505c\u6b62",
+  realtimeStopping: "\u505c\u6b62\u4e2d",
   realtimeStopFailed: "\u505c\u6b62\u5b9e\u65f6\u4e0b\u8f7d\u5931\u8d25",
   adsbRealtimeStartFailed: "ADS-B \u5b9e\u65f6\u822a\u8ff9\u542f\u52a8\u5931\u8d25",
   adsbRealtimeStopFailed: "ADS-B \u5b9e\u65f6\u822a\u8ff9\u505c\u6b62\u5931\u8d25",
@@ -47,6 +61,12 @@ const TEXT = {
   startTime: "\u5f00\u59cb\u65f6\u95f4",
   stopRealtime: "\u505c\u6b62\u5b9e\u65f6",
   title: "\u8bed\u97f3\u6570\u636e",
+};
+
+type ProgressState = {
+  label: string;
+  value: number;
+  detail?: string;
 };
 
 function toA2DateTime(value: string) {
@@ -147,6 +167,7 @@ export function A2VoicePanel({
   const [liveAtcSlot, setLiveAtcSlot] = useState("0000-0030");
   const [outputFormat, setOutputFormat] = useState<"wav" | "mp3">("wav");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<ProgressState | null>(null);
   const busyActionRef = useRef<string | null>(null);
   const [records, setRecords] = useState<A2VoiceRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -165,13 +186,7 @@ export function A2VoicePanel({
 
     return {
       id: record.unique_id,
-      url: a2VoiceAPI.exportVoiceUrl({
-        startTime: record.start_at,
-        endTime: record.end_at,
-        icaoCode: record.icao_code,
-        band: record.band,
-        outputFormat: "wav",
-      }),
+      url: a2VoiceAPI.playableFileUrl(record.unique_id),
       duration,
       timestamps: [],
       metadata: {
@@ -180,6 +195,8 @@ export function A2VoicePanel({
         startAt: record.start_at,
         endAt: record.end_at,
         frequency: record.band,
+        fileName: record.file_name ?? undefined,
+        asrUrl: a2VoiceAPI.fileUrl(record.unique_id),
       },
     };
   };
@@ -195,6 +212,20 @@ export function A2VoicePanel({
     }),
     [band, endTime, icaoCode, startTime]
   );
+
+  const refreshVoiceRecords = useCallback(async (showToast = true) => {
+    const res = await a2VoiceAPI.queryVoice(queryPayload);
+    if (!res.success || !res.data) {
+      toast({ title: TEXT.queryFailed, description: res.error, variant: "destructive" });
+      return false;
+    }
+    setRecords(res.data.items);
+    setTotal(res.data.total);
+    if (showToast) {
+      toast({ title: TEXT.queryComplete, description: `${res.data.total} ${TEXT.recordsHit}` });
+    }
+    return true;
+  }, [queryPayload, toast]);
 
   const runAction = async (action: string, fn: () => Promise<void>) => {
     if (busyActionRef.current !== null) return;
@@ -225,6 +256,11 @@ export function A2VoicePanel({
     const startedAt = realtimeStartedAtRef.current;
     if (!startedAt) return;
 
+    setDownloadProgress({
+      label: TEXT.realtimeProgressSync,
+      value: 94,
+      detail: "\u6bcf 15 \u79d2\u81ea\u52a8\u68c0\u67e5\u4e00\u6b21",
+    });
     const windowStart = new Date(startedAt.getTime() - 30_000);
     const windowEnd = new Date(Date.now() + 60_000);
     const res = await a2VoiceAPI.queryVoice({
@@ -235,14 +271,28 @@ export function A2VoicePanel({
       pageNum: 1,
       pageSize: 200,
     });
-    if (!res.success || !res.data) return;
+    if (!res.success || !res.data) {
+      setDownloadProgress({
+        label: TEXT.realtimeProgressListening,
+        value: 90,
+        detail: res.error ?? "\u7b49\u5f85\u4e0b\u4e00\u6b21\u81ea\u52a8\u68c0\u67e5",
+      });
+      return;
+    }
 
     const realtimeItems = res.data.items.filter((record) => record.data_type === "S");
     setRecords(realtimeItems);
     setTotal(realtimeItems.length);
 
     const newRecords = realtimeItems.filter((record) => !loadedRealtimeRecordIdsRef.current.has(record.unique_id));
-    if (newRecords.length === 0) return;
+    if (newRecords.length === 0) {
+      setDownloadProgress({
+        label: TEXT.realtimeProgressListening,
+        value: 90,
+        detail: `${realtimeItems.length} ${TEXT.recordsHit}; \u7b49\u5f85\u65b0\u7247\u6bb5`,
+      });
+      return;
+    }
 
     newRecords.forEach((record) => loadedRealtimeRecordIdsRef.current.add(record.unique_id));
     let latestAlphaSuccess = true;
@@ -257,6 +307,11 @@ export function A2VoicePanel({
         description: latestAlphaSuccess ? latest.unique_id : `${latest.unique_id}; ${TEXT.alphaSyncFailed}`,
       });
     }
+    setDownloadProgress({
+      label: TEXT.realtimeProgressListening,
+      value: 90,
+      detail: `${newRecords.length} \u6761\u65b0\u7247\u6bb5\uff1a${latest.unique_id}`,
+    });
   }, [attachDownloadedRecord, queryPayload.band, queryPayload.icaoCode, toast]);
 
   useEffect(() => {
@@ -279,17 +334,11 @@ export function A2VoicePanel({
 
   const queryVoice = () =>
     runAction("query", async () => {
-      const res = await a2VoiceAPI.queryVoice(queryPayload);
-      if (!res.success || !res.data) {
-        toast({ title: TEXT.queryFailed, description: res.error, variant: "destructive" });
-        return;
-      }
-      setRecords(res.data.items);
-      setTotal(res.data.total);
-      toast({ title: TEXT.queryComplete, description: `${res.data.total} ${TEXT.recordsHit}` });
+      await refreshVoiceRecords(true);
     });
 
   const createAndStartRealtimeFromAsx = async () => {
+    setDownloadProgress({ label: TEXT.realtimeProgressCreate, value: 15, detail: queryPayload.icaoCode });
     const taskRes = await a2VoiceAPI.createRealtimeTaskFromAsx({
       taskName: `${queryPayload.icaoCode}-${queryPayload.band}-realtime`,
       icaoCode: queryPayload.icaoCode,
@@ -301,12 +350,19 @@ export function A2VoicePanel({
     });
     if (!taskRes.success || !taskRes.data) {
       toast({ title: TEXT.realtimeCreateFailed, description: taskRes.error, variant: "destructive" });
+      setDownloadProgress(null);
       return;
     }
 
+    setDownloadProgress({
+      label: TEXT.realtimeProgressStart,
+      value: 45,
+      detail: `A2 taskId: ${taskRes.data.taskId}`,
+    });
     const startRes = await a2VoiceAPI.startRealtimeReceive(taskRes.data.taskId);
     if (!startRes.success || !startRes.data) {
       toast({ title: TEXT.realtimeStartFailed, description: startRes.error, variant: "destructive" });
+      setDownloadProgress(null);
       return;
     }
     setRealtimeTaskId(taskRes.data.taskId);
@@ -314,6 +370,11 @@ export function A2VoicePanel({
     loadedRealtimeRecordIdsRef.current = new Set();
 
     const adsbTaskId = `front-${queryPayload.icaoCode.toLowerCase()}-${queryPayload.band.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}-${taskRes.data.taskId}`;
+    setDownloadProgress({
+      label: TEXT.realtimeProgressAdsb,
+      value: 72,
+      detail: adsbTaskId,
+    });
     const adsbRes = await a1RouteAPI.startRouteCrawlTask({
       taskId: adsbTaskId,
       provider: "airplanes-live",
@@ -324,6 +385,11 @@ export function A2VoicePanel({
     });
     if (adsbRes.success && adsbRes.data) {
       setAdsbRealtimeTaskId(adsbRes.data.task_id);
+      setDownloadProgress({
+        label: TEXT.realtimeProgressListening,
+        value: 90,
+        detail: `A2 taskId: ${taskRes.data.taskId}; A1 taskId: ${adsbRes.data.task_id}`,
+      });
       toast({
         title: TEXT.realtimeStarted,
         description: `A2 taskId: ${taskRes.data.taskId}; A1 taskId: ${adsbRes.data.task_id}`,
@@ -332,6 +398,11 @@ export function A2VoicePanel({
     }
 
     setAdsbRealtimeTaskId(null);
+    setDownloadProgress({
+      label: TEXT.realtimeProgressListening,
+      value: 90,
+      detail: `A2 taskId: ${taskRes.data.taskId}; ADS-B \u542f\u52a8\u5931\u8d25`,
+    });
     toast({
       title: TEXT.adsbRealtimeStartFailed,
       description: adsbRes.error ?? `A2 taskId: ${taskRes.data.taskId}`,
@@ -341,6 +412,7 @@ export function A2VoicePanel({
 
   const executeDownload = () =>
     runAction("download", async () => {
+      setDownloadProgress({ label: TEXT.progressCreateTask, value: 8 });
       const taskRes = await a2VoiceAPI.createDownloadTask({
         task_name: `${queryPayload.icaoCode}-${queryPayload.band}-${queryPayload.startTime}`,
         icao_code: queryPayload.icaoCode,
@@ -350,10 +422,16 @@ export function A2VoicePanel({
       });
       if (!taskRes.success || !taskRes.data) {
         toast({ title: TEXT.downloadCreateFailed, description: taskRes.error, variant: "destructive" });
+        setDownloadProgress(null);
         return;
       }
 
       const isLiveAtcArchive = sourceUrl.includes("liveatc.net/archive");
+      setDownloadProgress({
+        label: TEXT.progressDownload,
+        value: 28,
+        detail: isLiveAtcArchive ? liveAtcSlot.trim() : queryPayload.startTime,
+      });
       const downloadRes = isLiveAtcArchive
         ? await a2VoiceAPI.executeLiveAtcDownload({
             source_url: sourceUrl.trim(),
@@ -374,9 +452,11 @@ export function A2VoicePanel({
 
       if (!downloadRes.success || !downloadRes.data) {
         toast({ title: TEXT.downloadFailed, description: downloadRes.error, variant: "destructive" });
+        setDownloadProgress(null);
         return;
       }
 
+      setDownloadProgress({ label: TEXT.progressImport, value: 68 });
       const record = isA2VoiceRecord(downloadRes.data)
         ? downloadRes.data
         : isA2VoiceRecord(downloadRes.data.record)
@@ -384,16 +464,22 @@ export function A2VoicePanel({
           : null;
       if (!record) {
         toast({ title: TEXT.downloadComplete, description: TEXT.noRecordReturned });
-        await queryVoice();
+        setDownloadProgress({ label: TEXT.progressRefresh, value: 88 });
+        await refreshVoiceRecords(false);
+        setDownloadProgress(null);
         return;
       }
 
+      setDownloadProgress({ label: TEXT.progressSync, value: 82, detail: record.unique_id });
       const alphaRes = await attachDownloadedRecord(record);
       toast({
         title: TEXT.downloadImported,
         description: alphaRes.success ? record.unique_id : `${record.unique_id}; ${TEXT.alphaSyncFailed}`,
       });
-      await queryVoice();
+      setDownloadProgress({ label: TEXT.progressRefresh, value: 94, detail: record.unique_id });
+      await refreshVoiceRecords(false);
+      setDownloadProgress({ label: TEXT.downloadImported, value: 100, detail: record.unique_id });
+      window.setTimeout(() => setDownloadProgress(null), 800);
     });
 
   const startRealtimeDownload = () =>
@@ -404,11 +490,26 @@ export function A2VoicePanel({
   const stopRealtimeDownload = () =>
     runAction("realtime-stop", async () => {
       if (!realtimeTaskId) return;
+      setDownloadProgress({
+        label: TEXT.realtimeProgressStop,
+        value: 35,
+        detail: `A2 taskId: ${realtimeTaskId}`,
+      });
       const res = await a2VoiceAPI.stopRealtimeReceive(realtimeTaskId);
       if (!res.success) {
         toast({ title: TEXT.realtimeStopFailed, description: res.error, variant: "destructive" });
+        setDownloadProgress({
+          label: TEXT.realtimeProgressListening,
+          value: 90,
+          detail: res.error,
+        });
       }
       if (adsbRealtimeTaskId) {
+        setDownloadProgress({
+          label: TEXT.realtimeProgressStopAdsb,
+          value: 62,
+          detail: adsbRealtimeTaskId,
+        });
         const adsbRes = await a1RouteAPI.stopRouteCrawlTask(adsbRealtimeTaskId);
         if (!adsbRes.success) {
           toast({ title: TEXT.adsbRealtimeStopFailed, description: adsbRes.error, variant: "destructive" });
@@ -416,9 +517,12 @@ export function A2VoicePanel({
         setAdsbRealtimeTaskId(null);
       }
       if (!res.success) return;
+      setDownloadProgress({ label: TEXT.realtimeProgressSync, value: 84 });
       await syncRealtimeRecords(true);
       setRealtimeTaskId(null);
       onRefreshRecordings?.();
+      setDownloadProgress({ label: TEXT.realtimeStopped, value: 100 });
+      window.setTimeout(() => setDownloadProgress(null), 800);
       toast({ title: TEXT.realtimeStopped });
     });
 
@@ -536,7 +640,8 @@ export function A2VoicePanel({
             <Search className="h-3.5 w-3.5" /> {TEXT.query}
           </Button>
           <Button size="sm" className="h-8 px-2 text-xs" variant="secondary" onClick={executeDownload} disabled={busyAction !== null || !sourceUrl.trim()}>
-            <Download className="h-3.5 w-3.5" /> {TEXT.downloadAndImport}
+            {busyAction === "download" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            {busyAction === "download" ? TEXT.progressDownload : TEXT.downloadAndImport}
           </Button>
           <Button
             size="sm"
@@ -545,13 +650,46 @@ export function A2VoicePanel({
             onClick={realtimeTaskId ? stopRealtimeDownload : startRealtimeDownload}
             disabled={busyAction !== null || !sourceUrl.trim()}
           >
-            {realtimeTaskId ? <Square className="h-3.5 w-3.5" /> : <Radio className="h-3.5 w-3.5" />}
-            {realtimeTaskId ? TEXT.stopRealtime : TEXT.realtime}
+            {busyAction === "realtime-start" || busyAction === "realtime-stop" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : realtimeTaskId ? (
+              <Square className="h-3.5 w-3.5" />
+            ) : (
+              <Radio className="h-3.5 w-3.5" />
+            )}
+            {busyAction === "realtime-start"
+              ? TEXT.realtimeStarting
+              : busyAction === "realtime-stop"
+                ? TEXT.realtimeStopping
+                : realtimeTaskId
+                  ? TEXT.stopRealtime
+                  : TEXT.realtime}
           </Button>
           <Button size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => importInputRef.current?.click()} disabled={busyAction !== null}>
             <Upload className="h-3.5 w-3.5" /> {TEXT.fileImport}
           </Button>
         </div>
+
+        {downloadProgress && (
+          <div className="rounded-lg border border-border/60 bg-background/25 px-2.5 py-2 text-xs">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-1.5">
+                {downloadProgress.value < 100 && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />}
+                <span className="truncate font-medium">{downloadProgress.label}</span>
+              </div>
+              <span className="shrink-0 font-mono text-muted-foreground">{downloadProgress.value}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300"
+                style={{ width: `${downloadProgress.value}%` }}
+              />
+            </div>
+            {downloadProgress.detail && (
+              <div className="mt-1.5 truncate text-[11px] text-muted-foreground">{downloadProgress.detail}</div>
+            )}
+          </div>
+        )}
 
         {records.length > 0 && (
           <div className="max-h-28 space-y-1.5 overflow-auto pr-1 text-xs">

@@ -132,7 +132,7 @@ class IntegrationService:
             stmt = stmt.where(VoiceInfo.original_time >= start_time)
         if end_time := _clean_str(end_time):
             stmt = stmt.where(VoiceInfo.original_time <= end_time)
-        return _paginate(self.db, stmt, VoiceInfo.unique_id, page, page_size)
+        return _paginate(self.db, stmt, VoiceInfo.created_at, page, page_size, desc=True)
 
     def list_asr(self, result_id: str | None, unique_id: str | None, engine: str | None, page: int, page_size: int):
         page, page_size = _normalize_pagination(page, page_size)

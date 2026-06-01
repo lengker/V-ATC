@@ -75,6 +75,12 @@ function createPendingAsrTimestamp(audioData: AudioData): VoiceTimestamp[] {
   ];
 }
 
+type AsrStatus = "idle" | "running" | "failed" | "done";
+
+function hasRecognizedText(list: VoiceTimestamp[]): boolean {
+  return list.some((item) => item.text.trim().length > 0);
+}
+
 export function AnnotationPage({
   audioData,
   adsbData,
@@ -392,6 +398,14 @@ function AnnotationPageInner({
   const fullSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestFullDraftRef = useRef<VoiceTimestamp[] | null>(null);
   const asrRequestedForRef = useRef<string | null>(null);
+  const [asrStatus, setAsrStatus] = useState<AsrStatus>(() =>
+    hasRecognizedText([...timestamps, ...audioData.timestamps]) ? "done" : "idle"
+  );
+
+  useEffect(() => {
+    setAsrStatus(hasRecognizedText([...timestamps, ...audioData.timestamps]) ? "done" : "idle");
+    asrRequestedForRef.current = null;
+  }, [audioData.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -548,12 +562,16 @@ function AnnotationPageInner({
   // 从音频数据中提取所有唯一的飞机 ICAO24
   useEffect(() => {
     if (!audioData.url) return;
-    const hasRecognizedText = [...timestamps, ...audioData.timestamps].some((item) => item.text.trim().length > 0);
-    if (hasRecognizedText) return;
+    const hasText = hasRecognizedText([...timestamps, ...audioData.timestamps]);
+    if (hasText) {
+      setAsrStatus("done");
+      return;
+    }
     if (asrRequestedForRef.current === audioData.id) return;
 
     let cancelled = false;
     asrRequestedForRef.current = audioData.id;
+    setAsrStatus("running");
     toast({
       title: "ASR 识别中",
       description: audioData.id,
@@ -563,6 +581,7 @@ function AnnotationPageInner({
       if (cancelled) return;
       if (!result.success || !result.data) {
         asrRequestedForRef.current = null;
+        setAsrStatus("failed");
         toast({
           title: "ASR 识别失败",
           description: result.error ?? "后端没有返回识别结果",
@@ -574,6 +593,7 @@ function AnnotationPageInner({
       const next = result.data.length > 0 ? result.data : createPendingAsrTimestamp(audioData);
       handleSetTimestamps(next);
       setSelectedTimestamp(next[0] ?? null);
+      setAsrStatus(hasRecognizedText(next) ? "done" : "idle");
       toast({
         title: "ASR 识别完成",
         description: "识别结果已加载到语音剪辑",
@@ -593,11 +613,30 @@ function AnnotationPageInner({
     setVisibleAircraftSet(new Set(aircraftList));
   }, [audioData.id]); // 切录音后重置
 
+  const findTimestampAtTime = useCallback(
+    (time: number) => timestamps.find((ts) => time >= ts.startTime && time <= ts.endTime) ?? null,
+    [timestamps]
+  );
+
+  const seekToTime = useCallback(
+    (time: number, timestamp?: VoiceTimestamp | null) => {
+      const target = Math.max(0, Math.min(time, timelineMax || Math.max(audioData.duration || 0, time)));
+      const active = timestamp ?? findTimestampAtTime(target);
+      setSelectedTimestamp(active);
+      const waveform = audioWaveformRef.current;
+      if (waveform) {
+        waveform.seekTo(target);
+      } else {
+        setCurrentTime(target, "ui");
+      }
+    },
+    [audioData.duration, findTimestampAtTime, setCurrentTime, timelineMax]
+  );
+
   // 处理时间戳点击
   const handleTimestampClick = useCallback((timestamp: VoiceTimestamp) => {
-    setSelectedTimestamp(timestamp);
-    setCurrentTime(timestamp.startTime, "ui");
-  }, [setCurrentTime]);
+    seekToTime(timestamp.startTime, timestamp);
+  }, [seekToTime]);
 
   // 保存时间戳编辑
   const handleSaveTimestamp = useCallback(
@@ -697,7 +736,11 @@ function AnnotationPageInner({
   // 处理音频时间更新
   const handleTimeUpdate = useCallback((time: number) => {
     setCurrentTime(time, "waveform");
-  }, [setCurrentTime]);
+    setSelectedTimestamp((current) => {
+      if (current && time >= current.startTime && time <= current.endTime) return current;
+      return findTimestampAtTime(time);
+    });
+  }, [findTimestampAtTime, setCurrentTime]);
 
   // 处理飞机选择
   const handleAircraftSelect = useCallback((icao24: string) => {
@@ -824,6 +867,7 @@ function AnnotationPageInner({
                   ref={audioWaveformRef}
                   audioUrl={audioData.url}
                   timestamps={timestamps}
+                  asrStatus={asrStatus}
                   currentTime={currentTime}
                   onTimeUpdate={handleTimeUpdate}
                   onTimestampClick={handleTimestampClick}
@@ -835,7 +879,7 @@ function AnnotationPageInner({
                     value={timestamps}
                     currentTime={currentTime}
                     timelineMax={timelineMax || 60}
-                    onSeek={(t) => setCurrentTime(t)}
+                    onSeek={seekToTime}
                     onChange={(next) => {
                       handleSetTimestamps(next);
                       const active =
@@ -868,7 +912,7 @@ function AnnotationPageInner({
             className="rounded-lg p-2"
             value={currentTime}
             max={timelineMax || 60}
-            onChange={(t) => setCurrentTime(t, "ui")}
+            onChange={seekToTime}
             onTogglePlayPause={() => audioWaveformRef.current?.togglePlayPause()}
           />
           <InstrumentPanel
@@ -892,7 +936,7 @@ function AnnotationPageInner({
             value={timestamps}
             currentTime={currentTime}
             timelineMax={timelineMax || 60}
-            onSeek={(t) => setCurrentTime(t)}
+            onSeek={seekToTime}
             onChange={(next) => {
               handleSetTimestamps(next);
               // 同步右侧智能体上下文：优先选中“当前播放指针所在段”

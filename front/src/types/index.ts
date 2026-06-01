@@ -34,6 +34,8 @@ export interface AudioData {
     startAt?: string;
     endAt?: string;
     frequency?: string;
+    fileName?: string;
+    asrUrl?: string;
   };
 }
 

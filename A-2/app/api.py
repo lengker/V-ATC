@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -467,6 +469,59 @@ def get_voice_file(unique_id: str) -> FileResponse:
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="voice file missing on disk")
     return FileResponse(path=file_path, filename=row["file_name"])
+
+
+@app.get("/api/a2/voice/file/{unique_id}/playable")
+def get_playable_voice_file(unique_id: str) -> FileResponse:
+    """Return a browser-friendly WAV for one stored voice record.
+
+    Realtime MP3 stream chunks are valid enough for ffmpeg but can be fragile in
+    browser decoders. This endpoint remuxes/resamples the single DB record
+    instead of exporting every overlapping segment in the same time range.
+    """
+
+    row = query_service.repository.get_voice_by_unique_id(unique_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="file not found")
+
+    source_path = Path(row["file_path"])
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="voice file missing on disk")
+
+    cache_dir = settings.temp_root / "playable"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    output_path = cache_dir / f"{unique_id}.wav"
+    if output_path.exists() and output_path.stat().st_mtime >= source_path.stat().st_mtime:
+        return FileResponse(path=output_path, filename=f"{unique_id}.wav", media_type="audio/wav")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        if source_path.suffix.lower() == ".wav":
+            return FileResponse(path=source_path, filename=row["file_name"], media_type="audio/wav")
+        raise HTTPException(status_code=400, detail="ffmpeg is required to prepare playable realtime audio")
+
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(source_path),
+                "-ac",
+                "1",
+                "-ar",
+                str(settings.audio_sample_rate),
+                str(output_path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode("utf-8", errors="ignore").strip()
+        raise HTTPException(status_code=400, detail=f"failed to prepare playable audio: {stderr}") from exc
+
+    return FileResponse(path=output_path, filename=f"{unique_id}.wav", media_type="audio/wav")
 
 
 @app.post("/api/a2/sync/run")

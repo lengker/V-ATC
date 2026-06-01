@@ -21,6 +21,7 @@ export type VirtualListProps<T> = {
   overscan?: number;
   /** A good estimate improves scroll feel before measurement kicks in. */
   estimateSizePx?: number | ((index: number) => number);
+  scrollToIndex?: number | null;
   getKey?: (item: T, index: number) => React.Key;
   renderItem: (item: T, index: number) => React.ReactNode;
   empty?: React.ReactNode;
@@ -45,6 +46,7 @@ export function VirtualList<T>({
   gapPx = 0,
   overscan = 8,
   estimateSizePx,
+  scrollToIndex,
   getKey,
   renderItem,
   empty,
@@ -64,6 +66,11 @@ export function VirtualList<T>({
   });
 
   const virtualItems = rowVirtualizer.getVirtualItems();
+
+  React.useEffect(() => {
+    if (scrollToIndex == null || scrollToIndex < 0 || scrollToIndex >= items.length) return;
+    rowVirtualizer.scrollToIndex(scrollToIndex, { align: "center" });
+  }, [items.length, rowVirtualizer, scrollToIndex]);
 
   return (
     <ScrollAreaPrimitive.Root className={cn("relative overflow-hidden", className)}>

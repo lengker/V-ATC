@@ -7,6 +7,9 @@ import type { ADSBData, AudioData } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
+const DEFAULT_AUDIO_ID = "VHHH_20260601085535221_9b3e8a";
+const HIDDEN_AUDIO_IDS = new Set(["VHHH_20260526000000000_59_7122aa"]);
+
 function HomeContent() {
   const router = useRouter();
   const params = useSearchParams();
@@ -51,9 +54,22 @@ function HomeContent() {
         return;
       }
 
-      const recordings = listRes.data;
+      const recordings = listRes.data.filter((item) => !HIDDEN_AUDIO_IDS.has(item.id));
+      if (recordings.length === 0) {
+        setBackendError({
+          title: "无法加载音频列表",
+          description: "过滤后没有可用录音，请确认数据源中存在有效录音。",
+        });
+        setBackendRecordings(null);
+        setBackendActive(null);
+        setBackendAdsb(null);
+        setBackendLoading(false);
+        return;
+      }
       setBackendRecordings(recordings);
-      const chosenId = (audioId && recordings.find((x) => x.id === audioId)?.id) ?? recordings[0].id;
+      const preferredId = audioId && recordings.find((x) => x.id === audioId)?.id;
+      const defaultId = recordings.find((x) => x.id === DEFAULT_AUDIO_ID)?.id;
+      const chosenId = preferredId ?? defaultId ?? recordings[0].id;
 
       const audioRes = await audioAPI.getAudio(chosenId);
       if (cancelled) return;

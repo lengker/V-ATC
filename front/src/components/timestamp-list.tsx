@@ -55,6 +55,14 @@ export function TimestampList({
     );
   };
 
+  const activeIndex = useMemo(
+    () =>
+      deferredTimestamps.findIndex(
+        (timestamp) => effectiveCurrentTime >= timestamp.startTime && effectiveCurrentTime <= timestamp.endTime
+      ),
+    [deferredTimestamps, effectiveCurrentTime]
+  );
+
   return (
     <Card className={cn("dashboard-card flex h-full min-h-0 flex-col overflow-hidden border-border/70 efb-panel efb-glow", className)}>
       <CardHeader className="shrink-0 px-2 py-2">
@@ -78,6 +86,7 @@ export function TimestampList({
             gapPx={6}
             overscan={10}
             estimateSizePx={80}
+            scrollToIndex={activeIndex}
             getKey={(t) => t.id}
             empty={
               <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
@@ -97,8 +106,11 @@ export function TimestampList({
                     !active && !selected && "hover:bg-accent"
                   )}
                   onClick={() => {
-                    playback?.setCurrentTime(timestamp.startTime, "ui");
-                    onTimestampClick?.(timestamp);
+                    if (onTimestampClick) {
+                      onTimestampClick(timestamp);
+                    } else {
+                      playback?.setCurrentTime(timestamp.startTime, "ui");
+                    }
                   }}
                 >
                   <div className="flex items-start justify-between gap-2">

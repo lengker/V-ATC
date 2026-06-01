@@ -2,8 +2,10 @@ import { ADSBData, Annotation, ApiResponse, AudioData, VoiceTimestamp } from "@/
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 const A2_API_BASE_URL = process.env.NEXT_PUBLIC_A2_API_BASE_URL || API_BASE_URL;
-const A1_API_BASE_URL = process.env.NEXT_PUBLIC_A1_API_BASE_URL || "http://127.0.0.1:3001";
+const A1_API_BASE_URL = process.env.NEXT_PUBLIC_A1_API_BASE_URL || API_BASE_URL;
 const API_PREFIX = "/api/v1";
+const AUDIO_FETCH_TIMEOUT_MS = 20_000;
+const ASR_REQUEST_TIMEOUT_MS = 180_000;
 const ACCESS_TOKEN_KEY = "alpha.auth.accessToken";
 const REFRESH_TOKEN_KEY = "alpha.auth.refreshToken";
 
@@ -45,6 +47,7 @@ type VoiceInfo = {
   original_time?: string | null;
   file_path?: string | null;
   file_name?: string | null;
+  data_type?: string | null;
   start_at?: string | null;
   end_at?: string | null;
   downloadUrl?: string | null;
@@ -352,6 +355,70 @@ function toErrorResponse<T>(error: unknown): ApiResponse<T> {
   };
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  options: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string
+) {
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+async function fetchAlphaWithTimeout<T>(
+  endpoint: string,
+  options: RequestInit & { auth?: boolean },
+  timeoutMs: number,
+  timeoutMessage: string
+) {
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchAlpha<T>(endpoint, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(timeoutMessage);
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
+}
+
+function inferAudioExtension(url: string, contentType?: string | null) {
+  const loweredType = (contentType ?? "").toLowerCase();
+  if (loweredType.includes("wav") || loweredType.includes("wave")) return "wav";
+  if (loweredType.includes("mpeg") || loweredType.includes("mp3")) return "mp3";
+  if (loweredType.includes("aac")) return "aac";
+  if (loweredType.includes("ogg")) return "ogg";
+  try {
+    const base = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+    const suffix = new URL(url, base).pathname.split(".").pop();
+    if (suffix && suffix.length <= 5) return suffix;
+  } catch {
+    // ignore
+  }
+  return "wav";
+}
+
+function normalizeAsrError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("Not Found") || message.includes('"detail"')) {
+    return new Error("Alpha ASR 接口未启用：请重启 Alpha 服务，确认 /api/v1/recognize 已加载。");
+  }
+  return error;
+}
+
 async function fetchAlpha<T>(
   endpoint: string,
   options: RequestInit & { auth?: boolean } = {}
@@ -471,6 +538,10 @@ function buildA2VoiceFileUrl(uniqueId: string) {
   return `${A2_API_BASE_URL}/api/a2/voice/file/${encodeURIComponent(uniqueId)}`;
 }
 
+function buildA2VoicePlayableUrl(uniqueId: string) {
+  return `${buildA2VoiceFileUrl(uniqueId)}/playable`;
+}
+
 function buildA2VoiceExportUrl(payload: {
   startTime: string;
   endTime: string;
@@ -491,6 +562,10 @@ function resolveA2Url(url?: string | null) {
   if (!url) return "";
   if (/^https?:\/\//i.test(url)) return url;
   return `${A2_API_BASE_URL}${url.startsWith("/") ? url : `/${url}`}`;
+}
+
+function isA2VoiceUrl(url?: string | null) {
+  return Boolean(url && /\/api\/a2\/voice\//.test(url));
 }
 
 function parseSeconds(value?: string | null): number | undefined {
@@ -634,6 +709,10 @@ function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): Au
     : item.file_path && /^https?:\/\//i.test(item.file_path)
       ? resolveA2Url(item.file_path)
       : buildA2VoiceFileUrl(item.unique_id);
+  const asrUrl =
+    isA2VoiceUrl(item.downloadUrl) || isA2VoiceUrl(item.file_path)
+      ? buildA2VoiceFileUrl(item.unique_id)
+      : undefined;
   return {
     id: item.unique_id,
     url: downloadUrl,
@@ -645,6 +724,8 @@ function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): Au
       startAt: item.start_at || item.original_time || undefined,
       endAt: item.end_at || undefined,
       frequency: item.band || undefined,
+      fileName: item.file_name || undefined,
+      asrUrl,
     },
   };
 }
@@ -736,21 +817,37 @@ export const audioAPI = {
   recognizeAudio: async (audio: AudioData): Promise<ApiResponse<VoiceTimestamp[]>> => {
     try {
       if (!audio.url) throw new Error("audio url is empty");
-      const audioResponse = await fetch(audio.url);
+      const audioUrl = audio.metadata?.asrUrl || audio.url;
+      const audioResponse = await fetchWithTimeout(
+        audioUrl,
+        {},
+        AUDIO_FETCH_TIMEOUT_MS,
+        "获取待识别音频超时，请确认 A-2 实时片段已经落盘。"
+      );
       if (!audioResponse.ok) {
         throw new Error(`audio fetch failed: ${audioResponse.status} ${audioResponse.statusText}`);
       }
       const blob = await audioResponse.blob();
+      const fileName =
+        audio.metadata?.fileName?.trim() ||
+        `${audio.id}.${inferAudioExtension(audioUrl, audioResponse.headers.get("Content-Type"))}`;
       const formData = new FormData();
-      formData.append("file", blob, `${audio.id}.wav`);
+      formData.append("file", blob, fileName);
       formData.append("unique_id", audio.id);
       if (audio.metadata?.date) {
         formData.append("recording_start_time", audio.metadata.date);
       }
-      const result = await fetchAlpha<AlphaAsrRecognizeResult>("/recognize", {
-        method: "POST",
-        body: formData,
-        auth: true,
+      const result = await fetchAlphaWithTimeout<AlphaAsrRecognizeResult>(
+        "/recognize",
+        {
+          method: "POST",
+          body: formData,
+          auth: true,
+        },
+        ASR_REQUEST_TIMEOUT_MS,
+        "ASR 识别超时：首个片段加载模型可能较慢，请稍后重试或查看 Alpha 终端日志。"
+      ).catch((error) => {
+        throw normalizeAsrError(error);
       });
       const segmentTimestamps =
         result.vad_segments
@@ -829,13 +926,7 @@ export const audioAPI = {
 
   saveA2AudioMetadata: async (record: A2VoiceRecord): Promise<ApiResponse<{ unique_id: string; version: string }>> => {
     try {
-      const playableWavUrl = buildA2VoiceExportUrl({
-        startTime: record.start_at,
-        endTime: record.end_at,
-        icaoCode: record.icao_code,
-        band: record.band,
-        outputFormat: "wav",
-      });
+      const playableWavUrl = buildA2VoicePlayableUrl(record.unique_id);
       const data = await fetchAlpha<{ unique_id: string; version: string }>("/audio/metadata", {
         method: "POST",
         body: JSON.stringify({
@@ -846,7 +937,7 @@ export const audioAPI = {
           original_time: record.original_time ?? record.start_at,
           process_time: record.process_time,
           file_path: playableWavUrl,
-          file_name: record.file_name?.replace(/\.[^.]+$/, ".wav") ?? `${record.unique_id}.wav`,
+          file_name: record.file_name ?? `${record.unique_id}.mp3`,
           file_size: record.file_size,
           data_type: record.data_type,
           start_at: record.start_at,
@@ -1073,6 +1164,8 @@ export const a2VoiceAPI = {
   exportVoiceUrl: buildA2VoiceExportUrl,
 
   fileUrl: buildA2VoiceFileUrl,
+
+  playableFileUrl: buildA2VoicePlayableUrl,
 };
 
 export const a1RouteAPI = {

@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
   async rewrites() {
     const backendUrl = process.env.ALPHA_BACKEND_URL || "http://127.0.0.1:8000";
     const a2BackendUrl = process.env.A2_BACKEND_URL || "http://127.0.0.1:8001";
+    const a1BackendUrl = process.env.A1_BACKEND_URL || "http://127.0.0.1:3001";
     return [
       {
         source: "/api/v1/:path*",
@@ -15,6 +16,10 @@ const nextConfig: NextConfig = {
       {
         source: "/api/a2/:path*",
         destination: `${a2BackendUrl}/api/a2/:path*`,
+      },
+      {
+        source: "/api/adsb/:path*",
+        destination: `${a1BackendUrl}/api/adsb/:path*`,
       },
       {
         source: "/health",

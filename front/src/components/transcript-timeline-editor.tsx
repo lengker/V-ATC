@@ -360,6 +360,8 @@ export function TranscriptTimelineEditor({
               return (
                 <div
                   key={t.id}
+                  data-transcript-segment-id={t.id}
+                  data-transcript-active={isActive ? "true" : undefined}
                   className={cn(
                     "rounded-2xl border p-3 transition-colors duration-150",
                     selected ? "border-primary/80 bg-primary/10" : "border-border/60 bg-background/10",
