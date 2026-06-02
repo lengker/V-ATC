@@ -80,7 +80,10 @@ SKIP_FILE_NAMES = {
     ".env.production",
     ".DS_Store",
     "code.zip",
-    "package-lock.json",
+    "pack_week4.py",
+    "package_code.py",
+    "package_ai_code.py",
+    "assets",
     "yarn.lock",
     "pnpm-lock.yaml",
     "tsconfig.tsbuildinfo",
@@ -132,47 +135,71 @@ def patch_module_paths(integration_dir: Path) -> None:
 
 
 def write_readme(target: Path) -> None:
-    content = """# Alpha · ATC Voice Annotation Platform
+    content = """# Yellow组 —— ATC系统安装手册
 
-可视化 ATC 地空通话语音标注系统（A-4 前端 + A5 数据服务 + 全链路联调脚本）。
+**项目名称：** Alpha · ATC 地空通话语音标注系统  
+**适用对象：** 教师验收、组员复现、答辩演示  
+**更新日期：** 2026 年 6 月
 
-本压缩包仅含**源码与配置模板**，不含运行环境（`node_modules`、Python 虚拟环境、ASR 模型、数据库文件等）。解压后按下列步骤安装依赖并启动。
+本压缩包仅含**源码与配置模板**，不含 `node_modules`、Python 虚拟环境、ASR 模型权重、SQLite 数据库、`.env` 密钥等。解压后按下列步骤安装。
 
 ## 目录结构
 
 ```text
 code/
-├── readme.md          # 本说明（唯一文档）
-├── front/             # A4 前端（Next.js 15 + TypeScript）
-├── backend/           # A5 数据服务（FastAPI + SQLite）
-└── integration/     # 联调脚本与子模块（A1/A2/A3）
-    ├── start-all.ps1
-    ├── health-check.ps1
-    ├── sync_all_to_a5.py
-    ├── ATC-VA-A2/           # A2 音频采集（:8001）
-    ├── a3_speech_processing_6/  # A3 语音识别（:9002，需自行下载模型）
-    └── ATC-ADSB-Receiver/   # A1 说明与采集辅助
+├── readme.md          # 本说明
+├── front/             # A4 前端（Next.js）
+├── backend/           # A5 数据服务（FastAPI）
+└── integration/       # 联调脚本与子模块（A1/A2/A3）
 ```
 
-## 环境要求
+下文以解压后的 `code` 目录为工作根目录，记为 `<CODE>`。
 
-| 组件 | 版本 |
+---
+
+## 1. 安装前准备
+
+### 1.1 硬件与系统
+
+| 项目 | 要求 |
 |------|------|
-| Node.js | 20.x |
-| Python | 3.10+ |
-| 操作系统 | Windows 10/11（联调脚本为 PowerShell） |
-| 浏览器 | Chrome 122+ |
+| 操作系统 | Windows 10 / 11（64 位） |
+| 内存 | 建议 ≥ 8 GB |
+| 磁盘 | 解压后约 500 MB；含依赖后约 2 GB |
+| 网络 | 首次安装需联网（npm install、可选 ASR 模型下载） |
+| 浏览器 | Chrome 122+（推荐） |
 
-## 快速开始（推荐）
+### 1.2 软件环境
 
-### 1. 安装前端依赖
+| 软件 | 版本 | 用途 |
+|------|------|------|
+| Node.js | 20.x | 前端 Next.js |
+| npm | 随 Node 安装 | 前端依赖 |
+| Python | 3.10+ | A5 / A2 / A3 后端与联调脚本 |
+| pip | 随 Python 安装 | Python 依赖 |
+| PowerShell | 5.1+ | 一键启动与健康检查 |
+
+版本检查：
 
 ```powershell
-cd front
+node -v
+npm -v
+python --version
+pip --version
+```
+
+---
+
+## 2. 安装步骤（推荐顺序）
+
+### 2.1 安装前端依赖
+
+```powershell
+cd <CODE>\\front
 npm install
 ```
 
-在 `front/` 下创建 `.env.local`：
+在 `front` 目录新建 `.env.local`：
 
 ```env
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
@@ -184,155 +211,125 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 QIANWEN_API_KEY=你的通义千问_API_Key
 ```
 
-### 2.1 安装 A2 / A3 依赖（全链路演示建议）
-
-```powershell
-cd integration/ATC-VA-A2
-pip install -r requirements.txt
-
-cd ../a3_speech_processing_6
-pip install -r requirements.txt
-```
+> 密钥不会随源码包分发，需自行在阿里云 DashScope 控制台申请。
 
 ### 2.2 安装 A5 后端依赖
 
 ```powershell
-cd backend
+cd <CODE>\\backend
 pip install -r requirements.txt
 ```
 
-### 3. 一键启动全链路（Windows）
+首次启动 A5 时会自动创建 SQLite 表结构（`backend/data.sqlite3`）。
+
+### 2.3 安装 A2 / A3 依赖（全链路演示建议）
 
 ```powershell
-cd integration
+cd <CODE>\\integration\\ATC-VA-A2
+pip install -r requirements.txt
+
+cd <CODE>\\integration\\a3_speech_processing_6
+pip install -r requirements.txt
+```
+
+A2 首次启动若无 `.env`，可从 `.env.example` 复制（LiveATC 真实下载为可选项，演示可跳过）。
+
+### 2.4 一键启动全部服务
+
+```powershell
+cd <CODE>\\integration
 .\\start-all.ps1
 ```
 
-等待约 15 秒后健康检查：
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| A5 数据库 API | 8000 | 前端唯一数据源 |
+| A2 音频服务 | 8001 | 录音文件与媒体 URL |
+| A3 语音识别 | 9002 | ASR（首次可能较慢） |
+| A1 航迹采集 | — | OpenSky 实时采集（可选） |
+| 前端 | 3000 | 标注工作台 |
+
+等待约 15～30 秒（前端冷编译可能需 15～25 秒）。
+
+### 2.5 健康检查
 
 ```powershell
+cd <CODE>\\integration
 .\\health-check.ps1
 ```
 
-浏览器打开：<http://localhost:3000>
+预期四项均为 `[OK]`：A5 :8000、A2 :8001、A3 :9002、Front :3000。
 
-### 4. 演示数据准备
+---
 
-**方式 A（推荐，空库快速演示）** — A5 已启动后：
+## 3. 演示数据准备
+
+源码包不含历史数据库。首次演示任选其一：
+
+**方式 A：快速种子数据（推荐，约 1 分钟）** — A5 已启动后：
 
 ```powershell
-cd integration
+cd <CODE>\\integration
 python seed_a1_tracks_to_a5.py
 python seed_demo_annotations_to_a5.py
 ```
 
-**方式 B（全链路同步，需 A1/A2/A3 源库已存在）：**
+可选：创建后台管理员账号：
 
 ```powershell
-cd integration
+python seed_admin_user.py
+```
+
+默认：`admin` / `123456`，登录后访问 `/admin`。
+
+**方式 B：全链路同步**（需本机已有 A1/A2/A3 源库）：
+
+```powershell
+cd <CODE>\\integration
 python sync_all_to_a5.py
 ```
 
-**方式 C：** 登录前端后点击左侧 **「实时更新」**，自动从 A2 拉取新录音并触发 ASR（需 A2 :8001 运行）。
+**方式 C：仅前端演示** — A5 不可用时，前端回退内置演示数据（部分保存不可用）。
 
-然后刷新浏览器 `http://localhost:3000`。
+然后刷新浏览器 http://localhost:3000 。
 
-## 服务端口
+---
 
-| 服务 | 目录 | 端口 |
-|------|------|------|
-| A5 数据库 API | `backend/` | 8000 |
-| A2 音频服务 | `integration/ATC-VA-A2/` | 8001 |
-| A3 语音识别 | `integration/a3_speech_processing_6/` | 9002 |
-| 前端 | `front/` | 3000 |
+## 4. 验证安装成功
 
-## 单独启动（调试用）
+| 序号 | 检查项 | 预期 |
+|------|--------|------|
+| 1 | http://127.0.0.1:8000/health | `{"ok":true}` |
+| 2 | http://localhost:3000 | 登录页或主界面 |
+| 3 | health-check.ps1 | 四项 [OK] |
+| 4 | 登录后首页 | 录音列表或演示数据 |
+| 5 | 点击录音 | 波形、地图、转写区有响应 |
 
-**A5：**
+---
 
-```powershell
-cd backend
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
+## 5. 常见问题
 
-**前端：**
-
-```powershell
-cd front
-npm run dev
-```
-
-**A2：**
-
-```powershell
-cd integration/ATC-VA-A2
-pip install -r requirements.txt
-python run.py
-```
-
-**A3：** 首次使用需安装依赖；ASR 模型（如 faster-whisper `tiny`）在首次识别时自动下载。
-
-```powershell
-cd integration/a3_speech_processing_6
-pip install -r requirements.txt
-python -m uvicorn app.main:app --host 127.0.0.1 --port 9002
-```
-
-## 数据流
-
-```text
-A1 航迹 → sync → LNG_TRACKS (A5) → 前端地图
-A2 录音 → sync → LNG_AUDIO_RECORDS (A5) → 列表/波形
-A3 ASR  → sync → LNG_ANNOTATIONS (A5) → 转写时间轴
-```
-
-前端**只读 A5**（`NEXT_PUBLIC_API_BASE_URL`），不直连 A2/A3 数据库。
-
-## 常用联调脚本
-
-| 脚本 | 说明 |
+| 现象 | 处理 |
 |------|------|
-| `integration/start-all.ps1` | 启动 A5、A2、A3、前端、A1 采集 |
-| `integration/health-check.ps1` | 检查四服务 HTTP 可达 |
-| `integration/sync_all_to_a5.py` | 一键同步 A1/A2/A3 → A5 |
-| `integration/sync_a2_to_a5.py` | 仅同步 A2 音频 |
-| `integration/purge_recordings_without_transcript.py` | 清理无转写录音 |
-| `integration/seed_a1_tracks_to_a5.py` | 写入示例航迹 |
-| `integration/seed_demo_annotations_to_a5.py` | 写入演示转写 |
+| 端口 8000/3000 被占用 | 关闭占用进程后重跑 start-all.ps1 |
+| 前端 ChunkLoadError | 删除 front\\.next 后重新 npm run dev |
+| npm install 失败 | 检查 Node 20.x；可换国内 npm 镜像 |
+| A2/A3 缺模块 | 补执行 §2.3 的 pip install |
+| 登录后列表为空 | 执行 §3 种子脚本，或确认 A5 已启动 |
+| 千问 Missing QIANWEN_API_KEY | 在 front/.env.local 配置并重启前端 |
+| CORS / Failed to fetch | 确认 NEXT_PUBLIC_API_BASE_URL 为 http://127.0.0.1:8000 |
 
-## 登录与验收
+---
 
-1. 访问 `http://127.0.0.1:8000/health` 应返回 `{"ok":true}`
-2. 前端注册/登录（角色 `annotator` 或 `viewer`）
-3. 同步数据后首页应出现录音列表、航迹与标注
-4. 可播放波形、编辑转写、查看地图、导出 JSON/CSV
-
-后端不可用时，可使用离线演示账号（若前端已启用）：`offline@alpha.local` / `offline123`
-
-## 生产构建（可选）
-
-```powershell
-cd front
-npm run build
-npm start
-```
-
-## 未包含内容（需自行准备）
-
-- `node_modules`、`.next`、Python `venv`
-- SQLite 数据库文件（`*.sqlite3`、`*.db`），运行 sync 脚本生成
-- A3 大型 ASR 模型权重（首次运行按环境变量下载）
-- `.env` / `.env.local`（含密钥，请本地创建）
-
-## 主要源码入口
+## 服务与源码入口
 
 | 模块 | 路径 |
 |------|------|
 | 前端主页 | `front/src/app/page.tsx` |
+| 后台管理 | `front/src/app/admin/` |
 | 后端 API | `backend/app/main.py` |
 | 前端数据层 | `front/src/lib/backend-api.ts` |
-| 登录鉴权 | `front/src/context/AuthContext.tsx` |
-| 联调路径配置 | `integration/module_paths.py` |
+| 联调路径 | `integration/module_paths.py` |
 
 ---
 

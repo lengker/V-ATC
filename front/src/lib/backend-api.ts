@@ -91,7 +91,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** 标注相对时间（秒）；过滤误写入的 Unix 时间戳或毫秒 */
-function normalizeRelativeSeconds(raw: unknown, durationSec: number): number {
+export function normalizeRelativeSeconds(raw: unknown, durationSec: number): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return 0;
   if (n > 1e9) return 0;

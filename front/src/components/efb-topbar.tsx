@@ -14,6 +14,7 @@ import {
 import { downloadBlob } from "@/lib/exporters";
 import { clearTimestampOverrides, exportTimestampOverrides } from "@/lib/local-annotation-store";
 import { LayerToggles, type LayerTogglesState } from "@/components/layer-toggles";
+import Link from "next/link";
 import {
   Activity,
   Map as MapIcon,
@@ -25,6 +26,7 @@ import {
   LogOut,
   User,
   FileText,
+  Shield,
 } from "lucide-react";
 
 export type EfbTopbarProps = {
@@ -243,6 +245,17 @@ export function EfbTopbar({
                 <Download className="h-4 w-4 mr-2" />
                 导出 CSV
               </DropdownMenuItem>
+              {user?.role === "admin" ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link href="/admin" className="flex items-center cursor-pointer">
+                      <Shield className="h-4 w-4 mr-2" />
+                      后台管理
+                    </Link>
+                  </DropdownMenuItem>
+                </>
+              ) : null}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onSelect={(e) => {

@@ -135,4 +135,16 @@
   .audio-control-cluster {
     @apply flex flex-wrap items-center gap-x-2 gap-y-2 rounded-2xl border border-border/50 bg-background/30 px-2 py-2 backdrop-blur-sm;
   }
+
+  /* 后台管理：强制高对比，不沿用标注台 muted */
+  .admin-console-scope {
+    --foreground: 210 40% 98%;
+    --muted-foreground: 215 20% 88%;
+    --card-foreground: 210 40% 98%;
+    color: #f8fafc;
+  }
+
+  .admin-console-scope .text-muted-foreground {
+    color: #cbd5e1 !important;
+  }
 }

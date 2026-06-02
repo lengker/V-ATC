@@ -380,7 +380,7 @@ export function recordingTrackSummary(audio: AudioData, adsb: ADSBData[]): strin
     }
     return `时段 ${n} 架`;
   }
-  return "时段内无 ADS-B";
+  return "";
 }
 
 export type BuildAlignedAdsbOptions = {
