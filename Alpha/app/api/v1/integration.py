@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import get_current_user, require_admin
 from app.common.response import success_response
 from app.db.session import get_db
 from app.schemas.integration import (
@@ -62,7 +62,7 @@ def list_audio(
     end_time: str | None = None,
     page: int = 1,
     page_size: int = 20,
-    _admin=Depends(require_admin),
+    _user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     data = IntegrationService(db).list_audio(unique_id, icao_code, band, start_time, end_time, page, page_size)
@@ -77,7 +77,7 @@ def list_asr(
     engine: str | None = None,
     page: int = 1,
     page_size: int = 20,
-    _admin=Depends(require_admin),
+    _user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     data = IntegrationService(db).list_asr(result_id, unique_id, engine, page, page_size)

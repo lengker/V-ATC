@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_admin
+from app.api.deps import get_current_user
 from app.common.response import error_response, success_response
 from app.db.session import get_db
 from app.services.asr_service import AsrService, AsrServiceError
@@ -14,7 +14,7 @@ def recognize(
     file: UploadFile | None = File(None),
     unique_id: str | None = Form(None),
     recording_start_time: str | None = Form(None),
-    _admin=Depends(require_admin),
+    _user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if file is None:

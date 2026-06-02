@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { AudioWaveform, type AudioWaveformHandle } from "@/components/audio-waveform";
 import { TimestampList } from "@/components/timestamp-list";
 import { TranscriptTimelineEditor } from "@/components/transcript-timeline-editor";
+import { TextEditor } from "@/components/text-editor";
 import { AuxiliaryInfo } from "@/components/auxiliary-info";
 import { EfbTopbar } from "@/components/efb-topbar";
 import { EfbBottomNav } from "@/components/efb-bottom-nav";
@@ -369,6 +370,7 @@ function AnnotationPageInner({
 }: AnnotationPageInnerProps) {
   const { currentTime, setCurrentTime } = usePlayback();
   const [selectedTimestamp, setSelectedTimestamp] = useState<VoiceTimestamp | null>(null);
+  const [editingTimestamp, setEditingTimestamp] = useState<VoiceTimestamp | null>(null);
   const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
   const { toast } = useToast();
   const [layerToggles, setLayerToggles] = useState<LayerTogglesState>({
@@ -638,6 +640,11 @@ function AnnotationPageInner({
     seekToTime(timestamp.startTime, timestamp);
   }, [seekToTime]);
 
+  const handleTimestampEdit = useCallback((timestamp: VoiceTimestamp) => {
+    seekToTime(timestamp.startTime, timestamp);
+    setEditingTimestamp(timestamp);
+  }, [seekToTime]);
+
   // 保存时间戳编辑
   const handleSaveTimestamp = useCallback(
     async (updatedTimestamp: VoiceTimestamp) => {
@@ -719,6 +726,14 @@ function AnnotationPageInner({
       }
     },
     [audioData.id, audioData.url, timestamps, toast]
+  );
+
+  const handleSaveEditingTimestamp = useCallback(
+    async (updatedTimestamp: VoiceTimestamp) => {
+      await handleSaveTimestamp(updatedTimestamp);
+      setEditingTimestamp(null);
+    },
+    [handleSaveTimestamp]
   );
 
   // 把智能体 suggestedText 直接应用到当前选中的时间戳，并走原有保存逻辑
@@ -836,7 +851,7 @@ function AnnotationPageInner({
                 currentTime={currentTime}
                 selectedTimestampId={selectedTimestamp?.id}
                 onTimestampClick={handleTimestampClick}
-                onTimestampEdit={handleTimestampClick}
+                onTimestampEdit={handleTimestampEdit}
               />
             </div>
           </div>
@@ -945,6 +960,18 @@ function AnnotationPageInner({
               setSelectedTimestamp(active);
             }}
           />
+        )}
+        {editingTimestamp && (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/55 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-xl">
+              <TextEditor
+                timestamp={editingTimestamp}
+                onSave={(timestamp) => void handleSaveEditingTimestamp(timestamp)}
+                onCancel={() => setEditingTimestamp(null)}
+                onPlay={(startTime) => seekToTime(startTime, editingTimestamp)}
+              />
+            </div>
+          </div>
         )}
       </main>
 

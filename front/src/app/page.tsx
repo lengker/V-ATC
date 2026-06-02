@@ -42,6 +42,18 @@ function HomeContent() {
     router.replace(`/?audioId=${encodeURIComponent(audio.id)}`);
   };
 
+  const handleSelectRecording = (id: string) => {
+    if (loadedA2Audio?.id !== id) {
+      setLoadedA2Audio(null);
+    }
+    const cached = backendRecordings?.find((item) => item.id === id);
+    if (cached) {
+      setBackendActive(cached);
+      setBackendAdsb([]);
+    }
+    router.replace(`/?audioId=${encodeURIComponent(id)}`);
+  };
+
   useEffect(() => {
     if (!useBackend) return;
 
@@ -183,7 +195,7 @@ function HomeContent() {
           adsbData={backendAdsb}
           recordings={visibleRecordings}
           recordingMeta={{}}
-          onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+          onSelectRecording={handleSelectRecording}
           onLoadRecording={handleLoadA2Recording}
           onRefreshRecordings={() => setReloadToken((x) => x + 1)}
         />
@@ -210,7 +222,7 @@ function HomeContent() {
         adsbData={[]}
         recordings={[loadedA2Audio]}
         recordingMeta={{}}
-        onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
+        onSelectRecording={handleSelectRecording}
         onLoadRecording={handleLoadA2Recording}
         onRefreshRecordings={() => setReloadToken((x) => x + 1)}
       />

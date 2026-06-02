@@ -195,8 +195,8 @@ export function A2VoicePanel({
         startAt: record.start_at,
         endAt: record.end_at,
         frequency: record.band,
-        fileName: record.file_name ?? undefined,
-        asrUrl: a2VoiceAPI.fileUrl(record.unique_id),
+        fileName: `${record.unique_id}.wav`,
+        asrUrl: a2VoiceAPI.playableFileUrl(record.unique_id),
       },
     };
   };
@@ -251,6 +251,33 @@ export function A2VoicePanel({
     onSelectRecording?.(record.unique_id);
     return alphaRes;
   }, [onLoadRecording, onRefreshRecordings, onSelectRecording]);
+
+  const startAdsbCrawlForDownloadedRecord = useCallback(async (record: A2VoiceRecord) => {
+    const adsbTaskId = `front-${queryPayload.icaoCode.toLowerCase()}-${queryPayload.band.toLowerCase().replace(/[^a-z0-9._-]+/g, "-")}-download-${record.unique_id}`;
+    setDownloadProgress({
+      label: TEXT.realtimeProgressAdsb,
+      value: 88,
+      detail: adsbTaskId,
+    });
+    const adsbRes = await a1RouteAPI.startRouteCrawlTask({
+      taskId: adsbTaskId,
+      provider: "airplanes-live",
+      preset: queryPayload.icaoCode.toLowerCase() === "vhhh" ? "vhhh" : "hongkong",
+      limit: 1000,
+      intervalSeconds: 30,
+      maxRoutePoints: 5000,
+    });
+    if (!adsbRes.success || !adsbRes.data) {
+      toast({
+        title: TEXT.adsbRealtimeStartFailed,
+        description: adsbRes.error ?? record.unique_id,
+        variant: "destructive",
+      });
+      return null;
+    }
+    setAdsbRealtimeTaskId(adsbRes.data.task_id);
+    return adsbRes.data.task_id;
+  }, [queryPayload.band, queryPayload.icaoCode, toast]);
 
   const syncRealtimeRecords = useCallback(async (showToast = false) => {
     const startedAt = realtimeStartedAtRef.current;
@@ -472,9 +499,13 @@ export function A2VoicePanel({
 
       setDownloadProgress({ label: TEXT.progressSync, value: 82, detail: record.unique_id });
       const alphaRes = await attachDownloadedRecord(record);
+      const adsbTaskId = await startAdsbCrawlForDownloadedRecord(record);
       toast({
         title: TEXT.downloadImported,
-        description: alphaRes.success ? record.unique_id : `${record.unique_id}; ${TEXT.alphaSyncFailed}`,
+        description: [
+          alphaRes.success ? record.unique_id : `${record.unique_id}; ${TEXT.alphaSyncFailed}`,
+          adsbTaskId ? `A1 taskId: ${adsbTaskId}` : "ADS-B 启动失败",
+        ].join("; "),
       });
       setDownloadProgress({ label: TEXT.progressRefresh, value: 94, detail: record.unique_id });
       await refreshVoiceRecords(false);

@@ -715,11 +715,15 @@ function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): Au
     ? resolveA2Url(item.downloadUrl)
     : item.file_path && /^https?:\/\//i.test(item.file_path)
       ? resolveA2Url(item.file_path)
-      : buildA2VoiceFileUrl(item.unique_id);
+      : buildA2VoicePlayableUrl(item.unique_id);
   const asrUrl =
     isA2VoiceUrl(item.downloadUrl) || isA2VoiceUrl(item.file_path)
-      ? buildA2VoiceFileUrl(item.unique_id)
+      ? buildA2VoicePlayableUrl(item.unique_id)
       : undefined;
+  const fileName =
+    asrUrl && asrUrl.endsWith("/playable")
+      ? `${item.unique_id}.wav`
+      : item.file_name || undefined;
   return {
     id: item.unique_id,
     url: downloadUrl,
@@ -731,7 +735,7 @@ function mapVoiceToAudio(item: VoiceInfo, timestamps: VoiceTimestamp[] = []): Au
       startAt: item.start_at || item.original_time || undefined,
       endAt: item.end_at || undefined,
       frequency: item.band || undefined,
-      fileName: item.file_name || undefined,
+      fileName,
       asrUrl,
     },
   };
@@ -944,7 +948,7 @@ export const audioAPI = {
           original_time: record.original_time ?? record.start_at,
           process_time: record.process_time,
           file_path: playableWavUrl,
-          file_name: record.file_name ?? `${record.unique_id}.mp3`,
+          file_name: `${record.unique_id}.wav`,
           file_size: record.file_size,
           data_type: record.data_type,
           start_at: record.start_at,
