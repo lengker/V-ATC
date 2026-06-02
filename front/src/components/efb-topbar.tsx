@@ -29,10 +29,14 @@ import {
 export function EfbTopbar({
   title,
   subtitle,
+  searchValue = "",
+  onSearchChange,
   className,
 }: {
   title: string;
   subtitle?: string;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
   className?: string;
 }) {
   const { user, logout } = useAuth();
@@ -55,6 +59,8 @@ export function EfbTopbar({
           <div className="hidden md:flex items-center gap-2 px-3 h-9 rounded-full border border-border/70 bg-background/30">
             <Search className="h-4 w-4 text-muted-foreground" />
             <input
+              value={searchValue}
+              onChange={(e) => onSearchChange?.(e.target.value)}
               className="bg-transparent outline-none text-sm w-72 placeholder:text-muted-foreground/70"
               placeholder="搜索航班 / 呼号 / 音频ID…"
             />

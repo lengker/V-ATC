@@ -16,6 +16,7 @@ interface TimestampListProps {
   selectedTimestampId?: string;
   onTimestampClick?: (timestamp: VoiceTimestamp) => void;
   onTimestampEdit?: (timestamp: VoiceTimestamp) => void;
+  searchQuery?: string;
   className?: string;
 }
 
@@ -25,6 +26,7 @@ export function TimestampList({
   selectedTimestampId,
   onTimestampClick,
   onTimestampEdit,
+  searchQuery = "",
   className,
 }: TimestampListProps) {
   const playback = usePlaybackOptional();
@@ -32,7 +34,7 @@ export function TimestampList({
 
   const [q, setQ] = useState("");
   const debouncedQuery = useDebouncedValue(q, 250);
-  const query = debouncedQuery.trim().toLowerCase();
+  const query = [debouncedQuery, searchQuery].filter(Boolean).join(" ").trim().toLowerCase();
 
   const sortedTimestamps = useMemo(
     () => [...timestamps].sort((a, b) => a.startTime - b.startTime),

@@ -13,16 +13,16 @@ const HONG_KONG_BOUNDS = L.latLngBounds(
   [21.1, 112.45],
   [23.5, 115.39]
 );
-const HONG_KONG_CENTER: L.LatLngExpression = [22.32, 114.17];
-const HONG_KONG_DEFAULT_ZOOM = 9;
+const VHHH_AIRPORT_CENTER: L.LatLngExpression = [22.308, 113.9185];
+const VHHH_DEFAULT_ZOOM = 13;
 
 function enforceHongKongViewport(map: L.Map, animate = false) {
   const minZoom = map.getBoundsZoom(HONG_KONG_BOUNDS, true);
-  const targetZoom = Math.max(minZoom, HONG_KONG_DEFAULT_ZOOM);
+  const targetZoom = Math.max(minZoom, VHHH_DEFAULT_ZOOM);
 
   map.setMinZoom(minZoom);
   map.setMaxBounds(HONG_KONG_BOUNDS);
-  map.setView(HONG_KONG_CENTER, targetZoom, { animate });
+  map.setView(VHHH_AIRPORT_CENTER, targetZoom, { animate });
 }
 
 interface ADSBMapProps {
@@ -362,6 +362,11 @@ export function ADSBMap({
         opacity: 0.95,
         weight: 2,
       })
+        .bindTooltip(point.name, {
+          direction: "top",
+          opacity: 0.95,
+          sticky: true,
+        })
         .bindPopup(popupHtml)
         .addTo(layer);
     }

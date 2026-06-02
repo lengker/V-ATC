@@ -14,12 +14,14 @@ export function TargetsPanel({
   onVisibleSetChange,
   selectedAircraft,
   onSelectAircraft,
+  searchQuery = "",
 }: {
   adsbData: ADSBData[];
   visibleSet: Set<string>;
   onVisibleSetChange: (next: Set<string>) => void;
   selectedAircraft?: string;
   onSelectAircraft: (icao24: string) => void;
+  searchQuery?: string;
 }) {
   const [q, setQ] = useState("");
   const [minAlt, setMinAlt] = useState<string>("");
@@ -34,14 +36,19 @@ export function TargetsPanel({
     const arr = Array.from(latestByAircraft.values()).sort((a, b) => a.icao24.localeCompare(b.icao24));
     const min = minAlt.trim() ? Number(minAlt) : Number.NEGATIVE_INFINITY;
     const max = maxAlt.trim() ? Number(maxAlt) : Number.POSITIVE_INFINITY;
-    const altFiltered = arr.filter((x) => x.altitude >= min && x.altitude <= max);
+    const hasAltitudeFilter = minAlt.trim() || maxAlt.trim();
+    const altFiltered = arr.filter((x) => {
+      if (!hasAltitudeFilter) return true;
+      return Number.isFinite(x.altitude) && (x.altitude ?? 0) >= min && (x.altitude ?? 0) <= max;
+    });
 
-    if (!q.trim()) return altFiltered;
-    const t = q.trim().toLowerCase();
-    return altFiltered.filter(
-      (x) => (x.callsign ?? "").toLowerCase().includes(t) || x.icao24.toLowerCase().includes(t)
-    );
-  }, [adsbData, q, minAlt, maxAlt]);
+    const queries = [q, searchQuery].map((item) => item.trim().toLowerCase()).filter(Boolean);
+    if (queries.length === 0) return altFiltered;
+    return altFiltered.filter((x) => {
+      const hay = `${x.callsign ?? ""} ${x.icao24}`.toLowerCase();
+      return queries.every((item) => hay.includes(item));
+    });
+  }, [adsbData, q, minAlt, maxAlt, searchQuery]);
 
   const toggle = (icao24: string, checked: boolean) => {
     const next = new Set(visibleSet);
@@ -121,7 +128,9 @@ export function TargetsPanel({
                     <div className="text-sm font-medium">{t.callsign || t.icao24}</div>
                     <div className="text-xs text-muted-foreground">{t.icao24}</div>
                   </button>
-                  <div className="text-xs text-muted-foreground tabular-nums">{Math.round(t.altitude)}ft</div>
+                  <div className="text-xs text-muted-foreground tabular-nums">
+                    {Number.isFinite(t.altitude) ? `${Math.round(t.altitude ?? 0)}ft` : "-- ft"}
+                  </div>
                 </div>
               </div>
             );

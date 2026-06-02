@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -45,18 +45,68 @@ const emptyVspData: VspData = {
   airlines: [],
 };
 
-function parseAirlineIcao(extraJson?: string | null) {
-  if (!extraJson) return undefined;
+function parseExtraJson(extraJson?: string | null): Record<string, unknown> {
+  if (!extraJson) return {};
   try {
-    const parsed = JSON.parse(extraJson) as { icao?: string };
-    return parsed.icao;
+    const parsed = JSON.parse(extraJson);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+function parseAirlineIcao(extraJson?: string | null) {
+  const parsed = parseExtraJson(extraJson);
+  return typeof parsed.icao === "string" ? parsed.icao : undefined;
 }
 
 function joinParts(parts: Array<string | number | null | undefined>) {
   return parts.filter((part) => part !== undefined && part !== null && part !== "").join(" · ");
+}
+
+function formatCoord(lat?: number | null, lng?: number | null) {
+  if (lat == null || lng == null) return undefined;
+  return `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+}
+
+function formatProcedureType(value?: string | null) {
+  const upper = String(value ?? "").toUpperCase();
+  if (upper === "SID") return "SID 离场";
+  if (upper === "STAR") return "STAR 进场";
+  return upper || "程序";
+}
+
+function parseWaypointSequence(value?: string | null) {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item)).filter(Boolean).join(" → ");
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+function isLandmarkWaypoint(waypoint: VspWaypoint) {
+  const type = String(waypoint.type ?? "").toLowerCase();
+  const extra = parseExtraJson(waypoint.extra_json);
+  return (
+    type.includes("landmark") ||
+    type.includes("visual") ||
+    type.includes("fix") ||
+    extra.landmark === true ||
+    extra.common === true
+  );
+}
+
+function isVspAirport(item: VspAirport | VspNavaid | VspWaypoint): item is VspAirport {
+  return "icao_code" in item && "airport_name" in item;
+}
+
+function isVspNavaid(item: VspAirport | VspNavaid | VspWaypoint): item is VspNavaid {
+  return "navaid_id" in item;
 }
 
 export function AuxiliaryInfo({
@@ -74,6 +124,7 @@ export function AuxiliaryInfo({
   const [vspLoading, setVspLoading] = useState(true);
   const [vspError, setVspError] = useState<string | null>(null);
   const query = q.trim().toLowerCase();
+  const airportIcao = audioData?.metadata?.icao || "VHHH";
 
   useEffect(() => {
     let cancelled = false;
@@ -82,7 +133,7 @@ export function AuxiliaryInfo({
       setVspLoading(true);
       setVspError(null);
       try {
-        const airports = await vspAPI.airports();
+        const airports = await vspAPI.airports(airportIcao);
         const airportId = airports[0]?.airport_id;
         const [runways, frequencies, navaids, waypointsPage, procedures, airlines] = await Promise.all([
           vspAPI.runways(airportId),
@@ -98,7 +149,7 @@ export function AuxiliaryInfo({
         }
       } catch (error) {
         if (!cancelled) {
-          setVspError(error instanceof Error ? error.message : "Failed to load VSP data");
+          setVspError(error instanceof Error ? error.message : "VSP/AIP 数据加载失败");
         }
       } finally {
         if (!cancelled) {
@@ -112,7 +163,7 @@ export function AuxiliaryInfo({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [airportIcao]);
 
   const filtered = useMemo(() => {
     const match = (...values: Array<string | number | null | undefined>) =>
@@ -143,6 +194,14 @@ export function AuxiliaryInfo({
     };
   }, [query, vspData]);
 
+  const summary = useMemo(() => {
+    const landmarkWaypoints = vspData.waypoints.filter(isLandmarkWaypoint).slice(0, 8);
+    const navaidLandmarks = vspData.navaids.slice(0, 5);
+    const procedures = vspData.procedures.slice(0, 8);
+    const airlines = vspData.airlines.slice(0, 10);
+    return { landmarkWaypoints, navaidLandmarks, procedures, airlines };
+  }, [vspData]);
+
   return (
     <Card className="dashboard-card flex h-full min-h-0 flex-col overflow-hidden border-border/70 efb-panel efb-glow">
       <CardHeader className="shrink-0 px-2 py-2">
@@ -162,9 +221,7 @@ export function AuxiliaryInfo({
                 <InfoRow label="音频编号" value={audioData.id} />
                 {audioData.metadata?.icao ? <InfoRow label="ICAO" value={audioData.metadata.icao} /> : null}
                 {audioData.metadata?.date ? <InfoRow label="日期" value={audioData.metadata.date} /> : null}
-                {audioData.metadata?.frequency ? (
-                  <InfoRow label="频率" value={audioData.metadata.frequency} />
-                ) : null}
+                {audioData.metadata?.frequency ? <InfoRow label="频率" value={audioData.metadata.frequency} /> : null}
                 <InfoRow label="时长" value={formatTime(audioData.duration)} />
                 <InfoRow label="时间戳数量" value={audioData.timestamps.length} />
               </>
@@ -182,7 +239,14 @@ export function AuxiliaryInfo({
                   label="位置"
                   value={`${currentAircraftData.latitude.toFixed(4)}, ${currentAircraftData.longitude.toFixed(4)}`}
                 />
-                <InfoRow label="高度" value={`${currentAircraftData.altitude} 英尺`} />
+                <InfoRow
+                  label="高度"
+                  value={
+                    Number.isFinite(currentAircraftData.altitude)
+                      ? `${Math.round(currentAircraftData.altitude ?? 0)} 英尺`
+                      : "暂无"
+                  }
+                />
                 <InfoRow label="速度" value={`${currentAircraftData.speed} 节`} />
                 <InfoRow label="航向" value={`${currentAircraftData.heading} 度`} />
                 {currentAircraftData.verticalRate !== undefined ? (
@@ -201,16 +265,24 @@ export function AuxiliaryInfo({
             <Input
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索 VSP：机场、跑道、频率、导航台、航司"
+              placeholder="搜索 VSP/AIP：机场、跑道、频率、地标、SID/STAR、航司"
               className="h-8 bg-background/40 border-border/60 text-xs"
             />
             <ScrollArea className="info-list h-auto min-h-0 flex-1 pr-2">
               {vspLoading ? (
-                <p className="text-sm text-muted-foreground">正在加载 VSP 数据...</p>
+                <p className="text-sm text-muted-foreground">正在加载 VSP/AIP 数据...</p>
               ) : vspError ? (
                 <p className="text-sm text-destructive">{vspError}</p>
               ) : (
                 <div className="space-y-4">
+                  <VspSummary
+                    airports={vspData.airports}
+                    landmarkWaypoints={summary.landmarkWaypoints}
+                    navaidLandmarks={summary.navaidLandmarks}
+                    procedures={summary.procedures}
+                    airlines={summary.airlines}
+                  />
+
                   <VspSection title={`机场 / 跑道（${filtered.airports.length + filtered.runways.length}）`}>
                     {filtered.airports.map((x) => (
                       <VspCard
@@ -218,8 +290,8 @@ export function AuxiliaryInfo({
                         title={x.airport_name}
                         meta={`${x.icao_code}${x.iata_code ? ` / ${x.iata_code}` : ""}`}
                         detail={joinParts([
-                          `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
-                          x.elevation_ft != null ? `${x.elevation_ft} 英尺` : null,
+                          formatCoord(x.lat, x.lng),
+                          x.elevation_ft != null ? `${x.elevation_ft} ft` : null,
                           x.city_name,
                           x.country_name,
                         ])}
@@ -232,16 +304,16 @@ export function AuxiliaryInfo({
                         meta={`${x.runway_length_m ?? "-"} x ${x.runway_width_m ?? "-"} m`}
                         detail={joinParts([
                           x.surface_type ?? "道面 -",
-                          x.bearing_deg != null ? `${x.bearing_deg} 度` : null,
+                          x.bearing_deg != null ? `${x.bearing_deg}°` : null,
                           x.threshold_lat != null && x.threshold_lng != null
-                            ? `THR ${x.threshold_lat.toFixed(5)}, ${x.threshold_lng.toFixed(5)}`
+                            ? `THR ${formatCoord(x.threshold_lat, x.threshold_lng)}`
                             : null,
                         ])}
                       />
                     ))}
                   </VspSection>
 
-                  <VspSection title={`频率 / 导航台 / 航路点（${filtered.frequencies.length + filtered.navaids.length + filtered.waypoints.length}）`}>
+                  <VspSection title={`频率 / 导航台 / 地标点（${filtered.frequencies.length + filtered.navaids.length + filtered.waypoints.length}）`}>
                     {filtered.frequencies.map((x) => (
                       <VspCard
                         key={x.frequency_id}
@@ -254,46 +326,39 @@ export function AuxiliaryInfo({
                     {filtered.navaids.map((x) => (
                       <VspCard
                         key={x.navaid_id}
-                        title={x.ident}
+                        title={`${x.ident}${x.name ? ` · ${x.name}` : ""}`}
                         meta={x.navaid_type ?? "导航台"}
-                        detail={joinParts([
-                          x.frequency ?? "频率 -",
-                          `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
-                          x.remarks,
-                        ])}
+                        detail={joinParts([x.frequency ?? "频率 -", formatCoord(x.lat, x.lng), x.remarks])}
                       />
                     ))}
                     {filtered.waypoints.map((x) => (
                       <VspCard
                         key={x.waypoint_id}
                         title={x.name}
-                        meta={x.type ?? "航路点"}
-                        detail={joinParts([
-                          x.description,
-                          `${x.lat.toFixed(5)}, ${x.lng.toFixed(5)}`,
-                        ])}
+                        meta={x.type ?? "地标/航路点"}
+                        detail={joinParts([x.description, formatCoord(x.lat, x.lng)])}
                       />
                     ))}
                   </VspSection>
 
-                  <VspSection title={`SID / STAR (${filtered.procedures.length})`}>
+                  <VspSection title={`SID / STAR 航线名称（${filtered.procedures.length}）`}>
                     {filtered.procedures.map((x) => (
                       <VspCard
                         key={x.procedure_id}
-                        title={`${x.procedure_type.toUpperCase()} ${x.procedure_name}`}
+                        title={`${formatProcedureType(x.procedure_type)} · ${x.procedure_name}`}
                         meta={x.procedure_code}
                         detail={joinParts([
                           x.runway ? `跑道 ${x.runway}` : null,
-                          x.waypoint_sequence_json,
+                          parseWaypointSequence(x.waypoint_sequence_json),
                         ])}
                       />
                     ))}
                     {filtered.procedures.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">后端未返回程序记录。</p>
+                      <p className="text-xs text-muted-foreground">后端暂未返回 SID/STAR 程序记录。</p>
                     ) : null}
                   </VspSection>
 
-                  <VspSection title={`航司 / 呼号（${filtered.airlines.length}）`}>
+                  <VspSection title={`航空公司简字 / 呼号对应（${filtered.airlines.length}）`}>
                     {filtered.airlines.map((x) => {
                       const icao = parseAirlineIcao(x.extra_json);
                       return (
@@ -301,10 +366,7 @@ export function AuxiliaryInfo({
                           key={x.airline_id}
                           title={x.airline_name}
                           meta={`${x.airline_code}${icao ? ` / ${icao}` : ""}`}
-                          detail={joinParts([
-                            `呼号：${x.airline_short_name ?? "-"}`,
-                            x.country_name,
-                          ])}
+                          detail={joinParts([`呼号 ${x.airline_short_name ?? "-"}`, x.country_name])}
                         />
                       );
                     })}
@@ -319,6 +381,98 @@ export function AuxiliaryInfo({
   );
 }
 
+function VspSummary({
+  airports,
+  landmarkWaypoints,
+  navaidLandmarks,
+  procedures,
+  airlines,
+}: {
+  airports: VspAirport[];
+  landmarkWaypoints: VspWaypoint[];
+  navaidLandmarks: VspNavaid[];
+  procedures: VspProcedure[];
+  airlines: VspAirline[];
+}) {
+  return (
+    <section className="space-y-2 rounded-lg border border-primary/25 bg-primary/5 p-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-primary">VSP/AIP 快速参考</div>
+        <div className="text-[11px] text-muted-foreground">
+          {airports[0]?.icao_code ?? "VHHH"} · 地标 / SID STAR / 航司
+        </div>
+      </div>
+
+      <SummaryBlock title="常用地标点">
+        {([...airports, ...navaidLandmarks, ...landmarkWaypoints] as Array<VspAirport | VspNavaid | VspWaypoint>).slice(0, 10).map((item) => {
+          if (isVspAirport(item)) {
+            return (
+              <MiniLine
+                key={item.airport_id}
+                label={`${item.icao_code}${item.iata_code ? `/${item.iata_code}` : ""}`}
+                value={item.airport_name}
+              />
+            );
+          }
+          if (isVspNavaid(item)) {
+            return <MiniLine key={item.navaid_id} label={item.ident} value={item.name ?? item.navaid_type ?? "导航台"} />;
+          }
+          return <MiniLine key={item.waypoint_id} label={item.name} value={item.description ?? item.type ?? "航路点"} />;
+        })}
+      </SummaryBlock>
+
+      <SummaryBlock title="SID / STAR 航线">
+        {procedures.length > 0 ? (
+          procedures.map((item) => (
+            <MiniLine
+              key={item.procedure_id}
+              label={item.procedure_code}
+              value={joinParts([formatProcedureType(item.procedure_type), item.runway ? `RWY ${item.runway}` : null])}
+            />
+          ))
+        ) : (
+          <MiniLine label="-" value="暂无程序数据" />
+        )}
+      </SummaryBlock>
+
+      <SummaryBlock title="航空公司简字 / 呼号">
+        {airlines.length > 0 ? (
+          airlines.map((item) => {
+            const icao = parseAirlineIcao(item.extra_json);
+            return (
+              <MiniLine
+                key={item.airline_id}
+                label={`${item.airline_code}${icao ? `/${icao}` : ""}`}
+                value={item.airline_short_name ?? item.airline_name}
+              />
+            );
+          })
+        ) : (
+          <MiniLine label="-" value="暂无航司数据" />
+        )}
+      </SummaryBlock>
+    </section>
+  );
+}
+
+function SummaryBlock({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[11px] font-medium text-muted-foreground">{title}</div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+function MiniLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md bg-background/35 px-2 py-1 text-xs">
+      <span className="shrink-0 font-semibold text-foreground">{label}</span>
+      <span className="truncate text-muted-foreground">{value}</span>
+    </div>
+  );
+}
+
 function InfoRow({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="space-y-1">
@@ -328,7 +482,7 @@ function InfoRow({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-function VspSection({ title, children }: { title: string; children: React.ReactNode }) {
+function VspSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="space-y-1.5">
       <div className="text-xs font-semibold text-muted-foreground">{title}</div>
@@ -351,10 +505,10 @@ function VspCard({
   return (
     <div className="rounded-lg border border-border/60 bg-background/20 p-2">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-sm font-medium truncate">{title}</div>
-        {meta ? <div className={`text-xs tabular-nums ${metaClassName}`}>{meta}</div> : null}
+        <div className="truncate text-sm font-medium">{title}</div>
+        {meta ? <div className={`shrink-0 text-xs tabular-nums ${metaClassName}`}>{meta}</div> : null}
       </div>
-      {detail ? <div className="text-xs text-muted-foreground mt-1">{detail}</div> : null}
+      {detail ? <div className="mt-1 text-xs text-muted-foreground">{detail}</div> : null}
     </div>
   );
 }

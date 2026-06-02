@@ -142,7 +142,14 @@ export function interpolateAdsbAtTime(
     ? lerpHeadingDegrees(a.heading, b.heading, t)
     : lerpIfFinite(a.heading, b.heading, t, 0);
 
-  const altitude = lerpIfFinite(a.altitude, b.altitude, t, 0);
+  const altitude =
+    isFiniteNumber(a.altitude) && isFiniteNumber(b.altitude)
+      ? lerpIfFinite(a.altitude, b.altitude, t, a.altitude)
+      : isFiniteNumber(a.altitude)
+        ? a.altitude
+        : isFiniteNumber(b.altitude)
+          ? b.altitude
+          : undefined;
   const speed = lerpIfFinite(a.speed, b.speed, t, 0);
   const verticalRate = lerpOptionalIfFinite(a.verticalRate, b.verticalRate, t);
 

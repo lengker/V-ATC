@@ -7,7 +7,7 @@ import type { ADSBData, AudioData } from "@/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
-const DEFAULT_AUDIO_ID = "VHHH_20260601085535221_9b3e8a";
+const DEFAULT_AUDIO_ID = "VHHH_20260602032418277_08fb8d";
 const HIDDEN_AUDIO_IDS = new Set(["VHHH_20260526000000000_59_7122aa"]);
 const EMPTY_AUDIO: AudioData = {
   id: "no-audio-selected",

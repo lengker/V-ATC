@@ -6,7 +6,7 @@ export interface ADSBData {
   callsign?: string;
   latitude: number;
   longitude: number;
-  altitude: number;
+  altitude?: number;
   speed: number;
   heading: number;
   verticalRate?: number;

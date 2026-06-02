@@ -20,7 +20,7 @@ export function InstrumentPanel({
 
   const heading = current?.heading ?? 0;
   const speed = current?.speed ?? 0;
-  const altitude = current?.altitude ?? 0;
+  const altitude = current?.altitude;
 
   return (
     <div className={cn("overflow-hidden rounded-lg border border-border/70 efb-panel efb-glow", className)}>
@@ -49,7 +49,9 @@ export function InstrumentPanel({
 
         <div className="rounded-lg border border-border/60 bg-background/20 p-2">
           <div className="text-[10px] text-muted-foreground">高度</div>
-          <div className="text-2xl font-semibold tabular-nums">{Math.round(altitude)}</div>
+          <div className="text-2xl font-semibold tabular-nums">
+            {Number.isFinite(altitude) ? Math.round(altitude ?? 0) : "--"}
+          </div>
           <div className="text-[10px] text-muted-foreground">英尺</div>
         </div>
       </div>

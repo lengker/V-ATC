@@ -274,11 +274,35 @@ function parseProcedureLine(pathGeojson?: string | null) {
   }
 }
 
+function parseStaticExtraJson(extraJson?: string | null): Record<string, unknown> {
+  if (!extraJson) return {};
+  try {
+    const parsed = JSON.parse(extraJson);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function isCommonLandmarkWaypoint(waypoint: VspWaypoint) {
+  const type = String(waypoint.type ?? "").toLowerCase();
+  const extra = parseStaticExtraJson(waypoint.extra_json);
+  return (
+    type.includes("landmark") ||
+    type.includes("visual") ||
+    type.includes("fix") ||
+    extra.landmark === true ||
+    extra.common === true
+  );
+}
+
 function buildVspStaticLayers(data: VspMapData): VhhhStaticLayers {
   const navaidWaypointIds = new Set(data.navaids.map((navaid) => navaid.ident.toLowerCase()));
   const nonNavaidWaypoints = data.waypoints.filter(
     (waypoint) => waypoint.type !== "navaid" && !navaidWaypointIds.has(waypoint.name.toLowerCase())
   );
+  const commonLandmarkWaypoints = nonNavaidWaypoints.filter(isCommonLandmarkWaypoint);
+  const ordinaryWaypoints = nonNavaidWaypoints.filter((waypoint) => !isCommonLandmarkWaypoint(waypoint));
 
   return {
     runways: data.runways
@@ -314,7 +338,7 @@ function buildVspStaticLayers(data: VspMapData): VhhhStaticLayers {
         lon: navaid.lng,
         note: [navaid.navaid_type, navaid.frequency].filter(Boolean).join(" · "),
       })),
-      ...nonNavaidWaypoints.map((waypoint) => ({
+      ...ordinaryWaypoints.map((waypoint) => ({
         id: waypoint.waypoint_id,
         name: waypoint.name,
         kind: "waypoint" as const,
@@ -323,14 +347,24 @@ function buildVspStaticLayers(data: VspMapData): VhhhStaticLayers {
         note: [waypoint.type, waypoint.description].filter(Boolean).join(" · "),
       })),
     ],
-    landmarks: data.airports.map((airport) => ({
-      id: airport.airport_id,
-      name: `${airport.icao_code} ${airport.airport_name}`,
-      kind: "landmark" as const,
-      lat: airport.lat,
-      lon: airport.lng,
-      note: airport.iata_code ?? undefined,
-    })),
+    landmarks: [
+      ...data.airports.map((airport) => ({
+        id: airport.airport_id,
+        name: `${airport.icao_code} ${airport.airport_name}`,
+        kind: "landmark" as const,
+        lat: airport.lat,
+        lon: airport.lng,
+        note: airport.iata_code ?? undefined,
+      })),
+      ...commonLandmarkWaypoints.map((waypoint) => ({
+        id: waypoint.waypoint_id,
+        name: waypoint.name,
+        kind: "landmark" as const,
+        lat: waypoint.lat,
+        lon: waypoint.lng,
+        note: [waypoint.type, waypoint.description].filter(Boolean).join(" · "),
+      })),
+    ],
     procedures: data.procedures.map((procedure) => ({
       id: procedure.procedure_id,
       type: procedure.procedure_type.toUpperCase() === "SID" ? ("SID" as const) : ("STAR" as const),
@@ -372,6 +406,7 @@ function AnnotationPageInner({
   const [selectedTimestamp, setSelectedTimestamp] = useState<VoiceTimestamp | null>(null);
   const [editingTimestamp, setEditingTimestamp] = useState<VoiceTimestamp | null>(null);
   const [selectedAircraft, setSelectedAircraft] = useState<string | undefined>();
+  const [globalSearch, setGlobalSearch] = useState("");
   const { toast } = useToast();
   const [layerToggles, setLayerToggles] = useState<LayerTogglesState>({
     runways: true,
@@ -610,6 +645,26 @@ function AnnotationPageInner({
   const aircraftList = Array.from(
     new Set(adsbData.map((d) => d.icao24))
   );
+  const globalSearchQuery = globalSearch.trim().toLowerCase();
+  const matchingAircraftSet = useMemo(() => {
+    if (!globalSearchQuery) return null;
+    const matched = new Set<string>();
+    for (const point of adsbData) {
+      const hay = `${point.icao24} ${point.callsign ?? ""}`.toLowerCase();
+      if (hay.includes(globalSearchQuery)) {
+        matched.add(point.icao24);
+      }
+    }
+    return matched;
+  }, [adsbData, globalSearchQuery]);
+  const effectiveVisibleAircraftSet = useMemo(() => {
+    if (!matchingAircraftSet) return visibleAircraftSet;
+    return new Set([...visibleAircraftSet].filter((icao24) => matchingAircraftSet.has(icao24)));
+  }, [matchingAircraftSet, visibleAircraftSet]);
+  const searchedAdsbData = useMemo(() => {
+    if (!matchingAircraftSet) return adsbData;
+    return adsbData.filter((point) => matchingAircraftSet.has(point.icao24));
+  }, [adsbData, matchingAircraftSet]);
 
   useEffect(() => {
     setVisibleAircraftSet(new Set(aircraftList));
@@ -818,6 +873,8 @@ function AnnotationPageInner({
         className="dashboard-header"
         title="ATC 转写与播放"
         subtitle={`音频：${audioData.id} · 目标：${aircraftList.length}`}
+        searchValue={globalSearch}
+        onSearchChange={setGlobalSearch}
       />
 
       {/* 主内容区 */}
@@ -835,6 +892,7 @@ function AnnotationPageInner({
               activeId={audioData.id}
               onSelect={(id) => onSelectRecording?.(id)}
               recordingMeta={recordingMeta}
+              searchQuery={globalSearch}
             />
           </div>
           <div className="dashboard-left-lower">
@@ -850,6 +908,7 @@ function AnnotationPageInner({
                 timestamps={timestamps}
                 currentTime={currentTime}
                 selectedTimestampId={selectedTimestamp?.id}
+                searchQuery={globalSearch}
                 onTimestampClick={handleTimestampClick}
                 onTimestampEdit={handleTimestampEdit}
               />
@@ -864,7 +923,7 @@ function AnnotationPageInner({
               <div className="map-container flex-1">
                 <ADSBMap
                   adsbData={adsbData}
-                  visibleAircraftSet={visibleAircraftSet}
+                  visibleAircraftSet={effectiveVisibleAircraftSet}
                   staticLayers={vspStaticLayers}
                   toggles={layerToggles}
                   currentTime={currentTime}
@@ -934,12 +993,12 @@ function AnnotationPageInner({
             className="rounded-lg"
             currentTime={currentTime}
             selectedAircraft={selectedAircraft}
-            adsbData={adsbData}
+            adsbData={searchedAdsbData}
           />
           <div className="min-h-0 overflow-hidden">
             <AuxiliaryInfo
               audioData={audioData}
-              adsbData={adsbData}
+              adsbData={searchedAdsbData}
               currentTime={currentTime}
               selectedAircraft={selectedAircraft}
             />

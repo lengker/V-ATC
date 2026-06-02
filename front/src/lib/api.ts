@@ -632,6 +632,12 @@ function toFiniteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function toOptionalFiniteNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 function mapA1Track(track: A1Track): ADSBData {
   const callsign = (track.callsign || "").trim();
   return {
@@ -641,7 +647,7 @@ function mapA1Track(track: A1Track): ADSBData {
     callsign: callsign || undefined,
     latitude: toFiniteNumber(track.latitude),
     longitude: toFiniteNumber(track.longitude),
-    altitude: toFiniteNumber(track.altitude),
+    altitude: toOptionalFiniteNumber(track.altitude),
     speed: toFiniteNumber(track.ground_speed),
     heading: toFiniteNumber(track.heading),
   };

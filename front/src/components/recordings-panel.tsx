@@ -12,12 +12,14 @@ export function RecordingsPanel({
   activeId,
   onSelect,
   recordingMeta = {},
+  searchQuery = "",
   className,
 }: {
   recordings: AudioData[];
   activeId: string;
   onSelect: (id: string) => void;
   recordingMeta?: Record<string, RecordingMeta>;
+  searchQuery?: string;
   className?: string;
 }) {
   const [tab, setTab] = useState<"Radio" | "Cabin" | "Starred" | "Mine">("Radio");
@@ -70,8 +72,25 @@ export function RecordingsPanel({
     } else if (tab === "Mine") {
       list = list.filter((r) => recordingMeta[r.id]?.mine);
     }
+    const query = searchQuery.trim().toLowerCase();
+    if (query) {
+      list = list.filter((r) => {
+        const hay = [
+          r.id,
+          r.metadata?.icao,
+          r.metadata?.frequency,
+          r.metadata?.date,
+          r.metadata?.fileName,
+          recordingMeta[r.id]?.channel,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(query);
+      });
+    }
     return [...list].sort((a, b) => (recentMap[b.id] ?? 0) - (recentMap[a.id] ?? 0));
-  }, [recordings, tab, recordingMeta, starredSet, recentMap]);
+  }, [recordings, tab, recordingMeta, starredSet, recentMap, searchQuery]);
 
   const toggleStar = (id: string) => {
     const next = new Set(starredSet);
