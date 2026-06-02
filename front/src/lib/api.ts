@@ -1,7 +1,7 @@
 import { ADSBData, Annotation, ApiResponse, AudioData, VoiceTimestamp } from "@/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
-const A2_API_BASE_URL = process.env.NEXT_PUBLIC_A2_API_BASE_URL || API_BASE_URL;
+const A2_API_BASE_URL = process.env.NEXT_PUBLIC_A2_API_BASE_URL || "http://127.0.0.1:8001";
 const A1_API_BASE_URL = process.env.NEXT_PUBLIC_A1_API_BASE_URL || API_BASE_URL;
 const API_PREFIX = "/api/v1";
 const AUDIO_FETCH_TIMEOUT_MS = 20_000;
@@ -175,6 +175,7 @@ type A2Response<T> = {
   code: number;
   msg?: string;
   message?: string;
+  detail?: string;
   data: T;
   count?: number;
 };
@@ -487,7 +488,13 @@ async function fetchA2<T>(endpoint: string, options: RequestInit = {}): Promise<
     : null;
 
   if (!response.ok || !payload || payload.code !== 200) {
-    throw new Error(payload?.msg || payload?.message || responseText || `璇煶鏈嶅姟閿欒: ${response.status}`);
+    throw new Error(
+      payload?.msg ||
+        payload?.message ||
+        payload?.detail ||
+        responseText ||
+        `璇煶鏈嶅姟閿欒: ${response.status}`
+    );
   }
 
   return payload;

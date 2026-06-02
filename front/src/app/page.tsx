@@ -9,6 +9,16 @@ import { Suspense, useEffect, useState } from "react";
 
 const DEFAULT_AUDIO_ID = "VHHH_20260601085535221_9b3e8a";
 const HIDDEN_AUDIO_IDS = new Set(["VHHH_20260526000000000_59_7122aa"]);
+const EMPTY_AUDIO: AudioData = {
+  id: "no-audio-selected",
+  url: "",
+  duration: 0,
+  timestamps: [],
+  metadata: {
+    icao: "VHHH",
+    frequency: "string",
+  },
+};
 
 function HomeContent() {
   const router = useRouter();
@@ -42,7 +52,7 @@ function HomeContent() {
 
       const listRes = await audioAPI.getAudioList();
       if (cancelled) return;
-      if (!listRes.success || !listRes.data || listRes.data.length === 0) {
+      if (!listRes.success || !listRes.data) {
         setBackendError({
           title: "无法加载音频列表",
           description: listRes.error || "请检查后端是否启动，以及 NEXT_PUBLIC_API_BASE_URL 配置。",
@@ -56,13 +66,9 @@ function HomeContent() {
 
       const recordings = listRes.data.filter((item) => !HIDDEN_AUDIO_IDS.has(item.id));
       if (recordings.length === 0) {
-        setBackendError({
-          title: "无法加载音频列表",
-          description: "过滤后没有可用录音，请确认数据源中存在有效录音。",
-        });
-        setBackendRecordings(null);
-        setBackendActive(null);
-        setBackendAdsb(null);
+        setBackendRecordings([]);
+        setBackendActive(EMPTY_AUDIO);
+        setBackendAdsb([]);
         setBackendLoading(false);
         return;
       }
@@ -165,11 +171,17 @@ function HomeContent() {
         : effectiveBackendRecordings;
 
     if (effectiveBackendActive && backendAdsb && effectiveRecordings) {
+      const visibleRecordings =
+        effectiveRecordings.length > 0
+          ? effectiveRecordings
+          : effectiveBackendActive.id === EMPTY_AUDIO.id
+            ? []
+            : [effectiveBackendActive];
       return (
         <AnnotationPage
           audioData={effectiveBackendActive}
           adsbData={backendAdsb}
-          recordings={effectiveRecordings}
+          recordings={visibleRecordings}
           recordingMeta={{}}
           onSelectRecording={(id) => router.replace(`/?audioId=${encodeURIComponent(id)}`)}
           onLoadRecording={handleLoadA2Recording}

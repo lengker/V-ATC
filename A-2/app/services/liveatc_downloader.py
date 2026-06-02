@@ -20,15 +20,148 @@ from app.services.exception import (
     ATCTimeoutError,
 )
 
+CF_CHALLENGE_IFRAME_SELECTOR = (
+    'iframe[src*="challenges.cloudflare.com"], '
+    'iframe[title*="Cloudflare"], '
+    'iframe[title*="cloudflare"]'
+)
+
 
 @wait("fails to bypass cloudflare")
 def _check_bypass_cloudflare(sb: BaseCase) -> bool:
     wait_time = random.uniform(1, 7)
     tm.sleep(wait_time)
     sb.solve_captcha()
+    if _is_cloudflare_challenge_present(sb):
+        _click_cloudflare_turnstile_if_present(sb)
+        return not _is_cloudflare_challenge_present(sb)
     if "ATC" in sb.get_title():
         return True
     return sb.is_element_present("#player2_html5") or sb.is_element_present("#container")
+
+
+def _click_cloudflare_turnstile_if_present(sb: BaseCase) -> bool:
+    if not _is_cloudflare_challenge_present(sb):
+        return False
+    clicked = _click_cloudflare_turnstile_checkbox(sb)
+    if clicked:
+        tm.sleep(random.uniform(6.0, 10.0))
+    return clicked
+
+
+def _is_cloudflare_challenge_present(sb: BaseCase) -> bool:
+    try:
+        return bool(
+            sb.execute_script(
+                f"""
+                (() => Array.from(document.querySelectorAll({CF_CHALLENGE_IFRAME_SELECTOR!r}))
+                  .some((frame) => {{
+                    const rect = frame.getBoundingClientRect();
+                    const style = window.getComputedStyle(frame);
+                    return rect.width > 0 && rect.height > 0 &&
+                      style.display !== 'none' &&
+                      style.visibility !== 'hidden';
+                  }}))()
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+def _click_cloudflare_turnstile_checkbox(sb: BaseCase) -> bool:
+    """Click the visible Cloudflare Turnstile checkbox inside its iframe."""
+
+    try:
+        from selenium.common.exceptions import NoSuchElementException, WebDriverException
+        from selenium.webdriver.common.by import By
+    except Exception:
+        return False
+
+    try:
+        frames = sb.driver.find_elements(By.CSS_SELECTOR, CF_CHALLENGE_IFRAME_SELECTOR)
+    except WebDriverException:
+        return False
+
+    for frame in frames:
+        try:
+            if not frame.is_displayed():
+                continue
+            sb.driver.switch_to.frame(frame)
+            try:
+                checkbox = sb.driver.find_element(By.CSS_SELECTOR, 'input[type="checkbox"]')
+                if checkbox.is_displayed() and checkbox.is_enabled():
+                    try:
+                        sb.click('input[type="checkbox"]', timeout=3)
+                    except Exception:
+                        checkbox.click()
+                    return True
+            except NoSuchElementException:
+                label = sb.driver.find_element(By.CSS_SELECTOR, "label")
+                if label.is_displayed():
+                    try:
+                        sb.click("label", timeout=3)
+                    except Exception:
+                        label.click()
+                    return True
+        except WebDriverException:
+            continue
+        finally:
+            try:
+                sb.driver.switch_to.default_content()
+            except WebDriverException:
+                pass
+    return False
+
+
+@wait("fails to pass cloudflare checkbox")
+def _check_cloudflare_turnstile_passed(sb: BaseCase) -> bool:
+    try:
+        from selenium.common.exceptions import NoSuchElementException, WebDriverException
+        from selenium.webdriver.common.by import By
+    except Exception:
+        return not _is_cloudflare_challenge_present(sb)
+
+    clicked = _click_cloudflare_turnstile_checkbox(sb)
+    if clicked:
+        tm.sleep(random.uniform(2.0, 3.5))
+
+    try:
+        frames = sb.driver.find_elements(By.CSS_SELECTOR, CF_CHALLENGE_IFRAME_SELECTOR)
+    except WebDriverException:
+        return True
+
+    visible_frames = [frame for frame in frames if frame.is_displayed()]
+    if not visible_frames:
+        return True
+
+    for frame in visible_frames:
+        try:
+            sb.driver.switch_to.frame(frame)
+            success = sb.driver.find_elements(By.CSS_SELECTOR, "#success, [id='success']")
+            if any(item.is_displayed() for item in success):
+                return True
+            try:
+                verifying = sb.driver.find_element(By.CSS_SELECTOR, "#verifying, [id='verifying']")
+                if verifying.is_displayed():
+                    return False
+            except NoSuchElementException:
+                pass
+            try:
+                checkbox = sb.driver.find_element(By.CSS_SELECTOR, 'input[type="checkbox"]')
+                if checkbox.is_selected():
+                    return True
+            except NoSuchElementException:
+                pass
+        except WebDriverException:
+            continue
+        finally:
+            try:
+                sb.driver.switch_to.default_content()
+            except WebDriverException:
+                pass
+
+    return clicked
 
 
 @wait("fails to load '#archiveDate'")
@@ -59,6 +192,41 @@ def _check_archive_results_loaded(sb: BaseCase) -> bool:
     return bool(html.strip())
 
 
+@wait("fails to receive archive audio result")
+def _check_archive_result_ready(sb: BaseCase) -> bool:
+    if not sb.is_element_present("#archiveResults"):
+        return False
+    result_text = (sb.get_text("#archiveResults") or "").strip()
+    if "Error retrieving archive" in result_text or "HTTP 403" in result_text:
+        return True
+    return (
+        sb.is_element_present("source")
+        or sb.is_element_present('#archiveResults a[href*=".mp3"]')
+        or sb.is_element_present('#archiveResults a[href]')
+        or sb.is_element_present('#archiveResults font[color="blue"]')
+    )
+
+
+@wait("fails to load archive audio player")
+def _check_archive_audio_ready(sb: BaseCase) -> bool:
+    audio_url = sb.execute_script(
+        """
+        (() => Array.from(document.querySelectorAll('audio, source, a[href]'))
+          .map((el) => el.currentSrc || el.src || el.href || '')
+          .find((url) => /^https?:/i.test(url) && url.includes('.mp3')))()
+        """
+    )
+    return bool(audio_url)
+
+
+def _raise_for_archive_result_error(sb: BaseCase) -> None:
+    if not sb.is_element_present("#archiveResults"):
+        return
+    result_text = (sb.get_text("#archiveResults") or "").strip()
+    if "Error retrieving archive" in result_text or "HTTP 403" in result_text:
+        raise ATCDownloadError(result_text)
+
+
 @wait("fails to load 'source'")
 def _check_source_present(sb: BaseCase) -> bool:
     return sb.is_element_present("source")
@@ -82,8 +250,8 @@ def _extract_archive_audio_url(sb: BaseCase) -> str:
     audio_url = sb.execute_script(
         """
         (() => Array.from(document.querySelectorAll('audio, source, a[href]'))
-          .map((el) => el.src || el.href || '')
-          .find((url) => url && url.includes('.mp3')))()
+          .map((el) => el.currentSrc || el.src || el.href || '')
+          .find((url) => /^https?:/i.test(url) && url.includes('.mp3')))()
         """
     )
     if not audio_url:
@@ -300,11 +468,18 @@ class ArchiveDownloader:
                 _check_time_selectable(sb)
                 sb.select_option_by_text('[name="time"]', self.time_slot)
                 _check_archive_submit_present(sb)
-                sb.click("#archiveSubmit")
+                if _click_cloudflare_turnstile_if_present(sb):
+                    tm.sleep(random.uniform(15.0, 20.0))
+                else:
+                    tm.sleep(random.uniform(3.0, 5.0))
+                sb.click("#archiveSubmit",timeout=999)
                 _check_archive_results_present(sb)
-                _check_archive_results_loaded(sb)
+                _check_archive_result_ready(sb)
+                _raise_for_archive_result_error(sb)
                 if not sb.is_element_present("source") and not sb.is_element_present('#archiveResults a[href*=".mp3"]'):
                     _click_archive_audio_link(sb)
+                    _check_archive_audio_ready(sb)
+                    _raise_for_archive_result_error(sb)
                 audio_url = _extract_archive_audio_url(sb)
                 cookies_dict = sb.get_cookies()
                 cookies = {c["name"]: c["value"] for c in cookies_dict}

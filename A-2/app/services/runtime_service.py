@@ -239,23 +239,14 @@ class RealtimeConnectionManager:
                 parsed = urlparse(str(task["source_url"]))
                 netloc = (parsed.netloc or "").lower()
                 is_liveatc = "liveatc.net" in netloc
-                is_liveatc_web = netloc in ("www.liveatc.net", "liveatc.net")
 
                 headers: dict[str, str] = {"User-Agent": "ATC-A2/1.0"}
                 cookies: dict[str, str] = {}
-                if is_liveatc and not is_liveatc_web:
+                if is_liveatc:
                     headers["Referer"] = "https://www.liveatc.net/"
                     headers["Icy-MetaData"] = "1"
 
-                if is_liveatc_web:
-                    from app.services.liveatc_downloader import StreamDownloader
-
-                    sd = StreamDownloader(str(task["source_url"]), Path("."))
-                    stream_url, headers, cookies = sd.resolve_stream_url()
-                    self._receive_state[task_id]["streamUrl"] = stream_url
-                    self._record_stream(task, stream_url, stop_event, headers, cookies, stream_downloader=sd)
-                else:
-                    self._record_stream(task, stream_url, stop_event, headers, cookies)
+                self._record_stream(task, stream_url, stop_event, headers, cookies)
 
                 if stop_event.is_set():
                     break
@@ -290,13 +281,10 @@ class RealtimeConnectionManager:
         stop_event: threading.Event,
         headers: dict[str, str],
         cookies: dict[str, str],
-        stream_downloader: "StreamDownloader | None" = None,
     ) -> None:
         """持续读取流内容，按固定秒数切成多个语音片段。
 
-        LiveATC 流通过 StreamDownloader.stream_chunks() 读取，
-        复用其 SeleniumBase 获取的会话 Cookie 和请求头，兼容 ICY 协议；
-        普通 HTTP 流则直接用 requests 库读取。
+        实时接收只按任务里的直连流地址用 requests 读取，不启动浏览器。
         """
 
         segment_seconds = int(task.get("segment_seconds") or 60)
@@ -308,28 +296,24 @@ class RealtimeConnectionManager:
             declared_format=task.get("stream_format"),
         )
 
-        if stream_downloader is not None:
-            stream_downloader.stop_event = stop_event
-            chunk_iter = stream_downloader.stream_chunks(stream_url, headers, cookies)
-        else:
-            connect_timeout = int(task.get("timeout") or 30)
-            read_timeout = max(connect_timeout, 300)
-            response = requests.get(
-                stream_url,
-                headers=headers,
-                cookies=cookies,
-                stream=True,
-                timeout=(connect_timeout, read_timeout),
+        connect_timeout = int(task.get("timeout") or 30)
+        read_timeout = max(connect_timeout, 300)
+        response = requests.get(
+            stream_url,
+            headers=headers,
+            cookies=cookies,
+            stream=True,
+            timeout=(connect_timeout, read_timeout),
+        )
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type")
+        if content_type:
+            extension = self._guess_extension(
+                stream_url=stream_url,
+                content_type=content_type,
+                declared_format=task.get("stream_format"),
             )
-            response.raise_for_status()
-            content_type = response.headers.get("Content-Type")
-            if content_type:
-                extension = self._guess_extension(
-                    stream_url=stream_url,
-                    content_type=content_type,
-                    declared_format=task.get("stream_format"),
-                )
-            chunk_iter = response.iter_content(chunk_size=4096)
+        chunk_iter = response.iter_content(chunk_size=4096)
 
         for chunk in chunk_iter:
             if stop_event.is_set():
