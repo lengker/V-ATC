@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.db.models import VoiceFile
 from app.db.session import SessionLocal
 from app.services.ingestion_service import LiveATCIngestionService
 from app.services.liveatc_client import HistoricalAudioLink, LiveATCHTTPClient
@@ -164,6 +166,234 @@ class LiveATCScheduler:
                     pass
             self._realtime_task = None
             self._historical_task = None
+
+    async def _download_historical_link_item(
+        self,
+        client: httpx.AsyncClient,
+        svc: LiveATCIngestionService,
+        item: HistoricalAudioLink,
+        headers: dict[str, str],
+        icao_code: str,
+    ) -> VoiceFile | None:
+        fresh_item = await self._refresh_historical_link(client, item, icao_code)
+        if getattr(fresh_item, "browser_body", None):
+            row = await svc.register_historical_download(
+                file_name=fresh_item.file_name,
+                source_url=fresh_item.url,
+                byte_iter=self._validated_memory_byte_iter(fresh_item.browser_body or b""),
+            )
+            if row is not None:
+                return row
+
+        download_urls = [fresh_item.url]
+        for alt_url in self.client.build_archive_urls(fresh_item.file_name):
+            if alt_url not in download_urls:
+                download_urls.append(alt_url)
+
+        for download_url in download_urls:
+            download_headers = {**headers, **self._historical_download_headers()}
+            if getattr(fresh_item, "referer_url", None):
+                download_headers["Referer"] = fresh_item.referer_url
+            try:
+                async with client.stream(
+                    "GET", download_url, follow_redirects=True, headers=download_headers
+                ) as resp:
+                    if resp.status_code >= 400:
+                        request_status, request_body, _ = self.client._browser_request_get(
+                            download_url,
+                            referer=download_headers.get("Referer"),
+                        )
+                        if request_status < 400 and request_body:
+                            row = await svc.register_historical_download(
+                                file_name=fresh_item.file_name,
+                                source_url=fresh_item.url,
+                                byte_iter=self._validated_memory_byte_iter(request_body),
+                            )
+                            if row is not None:
+                                return row
+                        browser_status, browser_body = self.client._browser_fetch_bytes(
+                            download_url, referer=download_headers.get("Referer")
+                        )
+                        if browser_status < 400 and browser_body:
+                            row = await svc.register_historical_download(
+                                file_name=fresh_item.file_name,
+                                source_url=fresh_item.url,
+                                byte_iter=self._validated_memory_byte_iter(browser_body),
+                            )
+                            if row is not None:
+                                return row
+                        continue
+                    row = await svc.register_historical_download(
+                        file_name=fresh_item.file_name,
+                        source_url=fresh_item.url,
+                        byte_iter=self._validated_audio_byte_iter(resp),
+                    )
+                    if row is not None:
+                        return row
+            except HistoricalAudioDownloadError:
+                continue
+            except httpx.HTTPError:
+                request_status, request_body, _ = self.client._browser_request_get(
+                    download_url,
+                    referer=download_headers.get("Referer"),
+                )
+                if request_status < 400 and request_body:
+                    row = await svc.register_historical_download(
+                        file_name=fresh_item.file_name,
+                        source_url=fresh_item.url,
+                        byte_iter=self._validated_memory_byte_iter(request_body),
+                    )
+                    if row is not None:
+                        return row
+                browser_status, browser_body = self.client._browser_fetch_bytes(
+                    download_url, referer=download_headers.get("Referer")
+                )
+                if browser_status < 400 and browser_body:
+                    row = await svc.register_historical_download(
+                        file_name=fresh_item.file_name,
+                        source_url=fresh_item.url,
+                        byte_iter=self._validated_memory_byte_iter(browser_body),
+                    )
+                    if row is not None:
+                        return row
+        return None
+
+    async def _download_historical_via_selenium(
+        self, slot: datetime, link: HistoricalAudioLink
+    ) -> dict[str, object] | None:
+        from app.services.liveatc_selenium_archive import (
+            LiveATCSeleniumDownloadError,
+            archive_time_label,
+            download_archive_slot,
+        )
+
+        dest_dir = Path(settings.a2_audio_storage) / "historical" / slot.strftime("%Y%m%d")
+        try:
+            file_path: Path = await asyncio.to_thread(download_archive_slot, slot, output_dir=dest_dir)
+        except LiveATCSeleniumDownloadError as exc:
+            self._last_error = str(exc)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = self._format_exc("selenium archive", exc)
+            return None
+
+        if not file_path.is_file() or file_path.stat().st_size < 1024:
+            self._last_error = "Selenium archive download produced an empty file"
+            return None
+
+        async with SessionLocal() as db:
+            svc = LiveATCIngestionService(db)
+            extracted = svc.extract_utc_range_from_filename(file_path.name)
+            start_time = extracted[0] if extracted else slot
+            end_time = extracted[1] if extracted else slot
+            try:
+                rel_path = file_path.resolve().relative_to(Path.cwd().resolve())
+                stored_path = rel_path.as_posix()
+            except ValueError:
+                stored_path = str(file_path)
+
+            row = await svc.register_historical_capture(
+                file_name=file_path.name,
+                source_url=link.url,
+                start_time_utc=start_time,
+                end_time_utc=end_time,
+                file_path=stored_path,
+                file_size=file_path.stat().st_size,
+            )
+
+        self._last_error = None
+        return {
+            "ok": True,
+            "already_exists": False,
+            "file_name": file_path.name,
+            "source_url": link.url,
+            "slot_utc": slot.isoformat(),
+            "voice_file_id": row.id,
+            "via": "selenium_archive",
+            "time_slot": archive_time_label(slot),
+        }
+
+    async def download_historical_at(self, target_utc: datetime) -> dict[str, object]:
+        """下载指定 UTC 时刻对应 30 分钟档的历史录音（单条）。"""
+        slot = self.client.floor_to_archive_slot(target_utc)
+        link = self.client.build_historical_link_for_slot(slot)
+        if link is None:
+            return {"ok": False, "error": "无法构造 LiveATC 归档链接，请检查 A2 配置"}
+
+        async with SessionLocal() as db:
+            storage = StorageManagerService(db)
+            if not await storage.ensure_capacity_for_new_download():
+                return {"ok": False, "error": "A2 存储空间不足，无法下载"}
+            svc = LiveATCIngestionService(db)
+            if await svc.has_source_url(link.url):
+                existing = (
+                    await db.execute(select(VoiceFile).where(VoiceFile.source_url == link.url).limit(1))
+                ).scalar_one_or_none()
+                return {
+                    "ok": True,
+                    "already_exists": True,
+                    "file_name": link.file_name,
+                    "source_url": link.url,
+                    "slot_utc": slot.isoformat(),
+                    "voice_file_id": existing.id if existing else None,
+                }
+
+        if settings.a2_liveatc_selenium_archive_enabled:
+            selenium_result = await self._download_historical_via_selenium(slot, link)
+            if selenium_result is not None:
+                return selenium_result
+            return {
+                "ok": False,
+                "error": self._last_error or "Selenium 归档下载失败（请安装 seleniumbase 并重启 A2）",
+                "file_name": link.file_name,
+                "slot_utc": slot.isoformat(),
+                "via": "selenium_archive",
+            }
+
+        headers = self._default_headers()
+        max_retries = max(settings.a2_http_max_retries, 1)
+        last_error: str | None = None
+
+        for attempt in range(max_retries):
+            picked_proxy = await proxy_provider.get_proxy()
+            try:
+                client_kwargs = {"timeout": self._http_timeout(), "headers": headers}
+                if picked_proxy:
+                    client_kwargs["proxy"] = picked_proxy
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    self._last_cookie_warmup_ok = await self.client.ensure_public_session_cookie(
+                        client, settings.a2_icao_code
+                    )
+                    self._last_cookie_count = self.client.cookie_count(client)
+                    async with SessionLocal() as db:
+                        svc = LiveATCIngestionService(db)
+                        row = await self._download_historical_link_item(
+                            client, svc, link, headers, settings.a2_icao_code
+                        )
+                    if row is not None:
+                        proxy_provider.report_result(picked_proxy, True)
+                        self._last_error = None
+                        return {
+                            "ok": True,
+                            "already_exists": False,
+                            "file_name": row.file_name,
+                            "source_url": row.source_url or link.url,
+                            "slot_utc": slot.isoformat(),
+                            "voice_file_id": row.id,
+                        }
+                    last_error = "LiveATC 归档不存在或下载被拒绝（请换时段或检查 Cookie）"
+            except Exception as exc:  # noqa: BLE001
+                last_error = self._format_exc("historical download", exc)
+                proxy_provider.report_result(picked_proxy, False)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(self._backoff_delay(attempt))
+
+        return {
+            "ok": False,
+            "error": last_error or "下载失败",
+            "file_name": link.file_name,
+            "slot_utc": slot.isoformat(),
+        }
 
     async def trigger_historical_once(self) -> int:
         try:

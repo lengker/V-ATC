@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from "
 import {
   AUTH_TOKEN_KEY,
   getCurrentUser,
+  formatClientFetchError,
   loginWithBackend,
   normalizeUser,
   registerWithBackend,
@@ -127,12 +128,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           writeUserToStorage(u);
           return { ok: true };
         } catch (err) {
-          lastError = err instanceof Error ? err.message : "登录失败";
+          lastError = formatClientFetchError(err);
         }
       }
       return { ok: false, error: lastError };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : "网络异常，请稍后重试" };
+      return { ok: false, error: formatClientFetchError(err) };
     }
   };
 

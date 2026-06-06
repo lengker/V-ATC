@@ -93,7 +93,10 @@ function RecordingsPanelSlot({
     syncing,
     pendingTranscriptCount,
     onUpdateOneRecording,
+    onDownloadHistorical,
+    onMergeUtcRangeLoad,
     onTranscribeSelected,
+    onCorrectTimestamp,
     onDeleteRecording,
     deletingRecordingId,
     onBatchExport,
@@ -110,7 +113,10 @@ function RecordingsPanelSlot({
       syncing={syncing}
       pendingTranscriptCount={pendingTranscriptCount}
       onUpdateOneRecording={onUpdateOneRecording}
+      onDownloadHistorical={onDownloadHistorical}
+      onMergeUtcRangeLoad={onMergeUtcRangeLoad}
       onTranscribeSelected={onTranscribeSelected}
+      onCorrectTimestamp={onCorrectTimestamp}
       onDeleteRecording={onDeleteRecording}
       deletingRecordingId={deletingRecordingId}
       onBatchExport={onBatchExport}
@@ -979,6 +985,8 @@ function AnnotationPageInner({
                 className="flex min-h-0 flex-1 flex-col p-4 sm:p-5"
                 ref={audioWaveformRef}
                 audioUrl={audioData.url}
+                captureStartUtc={audioData.metadata?.startTimeUtc}
+                captureEndUtc={audioData.metadata?.endTimeUtc}
                 timestamps={timestamps}
                 currentTime={currentTime}
                 onTimeUpdate={handleTimeUpdate}

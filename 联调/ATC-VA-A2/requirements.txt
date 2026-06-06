@@ -13,6 +13,7 @@ requests
 beautifulsoup4
 cloudscraper
 cloakbrowser
+seleniumbase>=4.33.0
 numpy
 pydub
 noisereduce

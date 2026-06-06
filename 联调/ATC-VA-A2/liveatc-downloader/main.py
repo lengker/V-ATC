@@ -60,6 +60,10 @@ def export_cookie(args):
     output_path=args.output,
     headless=args.headless,
     timeout_seconds=args.timeout,
+    browser_channel=args.browser,
+    auto_wait=not args.no_auto_wait,
+    wait_timeout_seconds=args.wait_timeout,
+    native_edge=not args.playwright_launch,
   )
   print(f"已保存 Cookie 到: {args.output}")
   print(f"Cookie 预览(截断): {cookie[:80]}{'...' if len(cookie) > 80 else ''}")

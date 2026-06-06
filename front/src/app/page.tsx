@@ -23,7 +23,12 @@ import {
   isRecordingTimelineAligned,
   rebuildRecordingTimelineFromLive,
   refreshRecordingsFromA2,
+  correctRecordingTimestampOnServer,
+  audioDataFromUtcMergeLoad,
+  downloadHistoricalRecordingAt,
   ensureRecordingCaptureUtc,
+  fetchUtcRangeMergeLoad,
+  queryRecordingsByUtcRange,
   triggerA1LiveCollectOnce,
   triggerAsrForRecording,
   type AnnotationBundle,
@@ -391,6 +396,96 @@ function HomeContent() {
     }
   }, [applyListOnly, finishAsrForTarget, loading, toast]);
 
+  const runDownloadHistorical = useCallback(
+    async (utcIso: string, options: { a3Asr: boolean }) => {
+      if (refreshBusyRef.current || loading) return;
+      refreshBusyRef.current = true;
+      setSyncingRecordings(true);
+      try {
+        const result = await downloadHistoricalRecordingAt(utcIso, { a3Asr: options.a3Asr });
+        const ok = result.ok === true || result.ok === 1;
+        if (!ok) {
+          const a2Err =
+            typeof result.a2 === "object" && result.a2 && "error" in result.a2
+              ? String((result.a2 as { error?: string }).error)
+              : "";
+          const rawErr = String(result.error || a2Err || "").trim();
+          const detail = result.cookie_required && !/selenium|seleniumbase/i.test(rawErr)
+            ? "未配置 LiveATC Cookie。在 PowerShell 执行：cd 联调 → .\\setup_a2_liveatc_cookie.ps1 → 重启 A2 后再试。"
+            : rawErr ||
+              "请确认 A2(:8001) 已启动；若用浏览器下载需安装 seleniumbase 并重启 A2。时段选 1～6 小时前。";
+          toast({
+            title: "历史下载失败",
+            description: detail,
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const remote = await fetchAnnotationBundle({ noCache: true });
+        applyListOnly(remote, undefined, { fromPoll: true });
+
+        const audioId = result.audio_id != null ? String(result.audio_id) : null;
+        const fileName = result.file_name || (result.a2 as { file_name?: string })?.file_name;
+        let target =
+          audioId != null
+            ? remote.recordings.find((r) => r.id === audioId) ??
+              (await fetchRecordingByAudioId(audioId))
+            : fileName
+              ? remote.recordings.find(
+                  (r) =>
+                    String(r.metadata?.fileName || "") === String(fileName) ||
+                    getRecordingDisplayName(r) === fileName
+                )
+              : null;
+
+        if (target && options.a3Asr && (target.timestamps?.length ?? 0) === 0) {
+          await finishAsrForTarget(target, remote, {
+            loadingMessage: `正在转写历史录音 #${target.id}…`,
+          });
+        } else if (target) {
+          setSelectedAudioId(target.id);
+          setWorkspace((prev) => ({
+            audio: target!,
+            adsb: adsbForRecording(target!, remote.adsbByRecordingId, remote.adsbData),
+          }));
+        }
+
+        if (!audioId && !target) {
+          toast({
+            title: "下载完成，列表未更新",
+            description:
+              String(result.sync_warning || "").trim() ||
+              "请确认 A5(:8000) 已启动，并在录音列表点「同步」；管理台需手动点刷新。",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        toast({
+          title: result.already_exists ? "该时段录音已存在" : "历史录音已下载",
+          description: [
+            fileName,
+            result.slot_utc ? `档位 ${String(result.slot_utc).replace(".000Z", "Z")}` : null,
+            audioId ? `已同步 #${audioId}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        });
+      } catch (error) {
+        toast({
+          title: "历史下载失败",
+          description: error instanceof Error ? error.message : "unknown",
+          variant: "destructive",
+        });
+      } finally {
+        refreshBusyRef.current = false;
+        setSyncingRecordings(false);
+      }
+    },
+    [applyListOnly, finishAsrForTarget, loading, toast]
+  );
+
   // 首次进入：只加载 A5 当前列表，不自动拉 A2
   useEffect(() => {
     let active = true;
@@ -654,6 +749,169 @@ function HomeContent() {
     ]
   );
 
+  const handleCorrectTimestamp = useCallback(async () => {
+    const sid = selectedAudioIdRef.current;
+    if (!sid || !isBackendRecordingId(sid)) {
+      toast({
+        title: "无法修正时间",
+        description: "请先选中一条已同步到 A5 的录音",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (refreshBusyRef.current) return;
+    refreshBusyRef.current = true;
+    setSyncingRecordings(true);
+    try {
+      const target =
+        recordingsListRef.current.find((r) => r.id === sid) ??
+        (await fetchRecordingByAudioId(sid));
+      if (!target) {
+        toast({ title: "未找到录音", variant: "destructive" });
+        return;
+      }
+
+      const shiftAnnotations = (target.timestamps?.length ?? 0) > 0;
+      const result = await correctRecordingTimestampOnServer(sid, {
+        apply: true,
+        shiftAnnotations,
+      });
+
+      const startUtc = result.start_time_utc;
+      const endUtc = result.end_time_utc;
+      const patchMeta = (r: AudioData): AudioData =>
+        r.id === sid
+          ? {
+              ...r,
+              metadata: {
+                ...r.metadata,
+                startTimeUtc: startUtc,
+                endTimeUtc: endUtc,
+              },
+            }
+          : r;
+
+      setRecordingsList((prev) => prev.map(patchMeta));
+      recordingsListRef.current = recordingsListRef.current.map(patchMeta);
+
+      const patched = patchMeta(target);
+      setWorkspace((prev) => ({
+        audio: prev.audio.id === sid ? patched : prev.audio,
+        adsb: prev.audio.id === sid ? resolveWorkspaceAdsb(patched) : prev.adsb,
+      }));
+      setLastSyncAt(Date.now());
+
+      const methodLabel =
+        result.method === "filename"
+          ? "文件名档位"
+          : result.method === "unchanged"
+            ? "已与库内一致"
+            : "航迹融合";
+      toast({
+        title: result.method === "unchanged" ? "时间戳已较准" : "UTC 时间戳已修正",
+        description: `${methodLabel} · 置信 ${(result.confidence * 100).toFixed(0)}% · ${result.details}`,
+      });
+    } catch (error) {
+      toast({
+        title: "时间戳修正失败",
+        description: error instanceof Error ? error.message : "unknown",
+        variant: "destructive",
+      });
+    } finally {
+      refreshBusyRef.current = false;
+      setSyncingRecordings(false);
+    }
+  }, [resolveWorkspaceAdsb, toast]);
+
+  const handleMergeUtcRangeLoad = useCallback(
+    async (opts: {
+      startUtc: string;
+      endUtc: string;
+      strategy: "concat" | "single_longest";
+      runAsrOnMissing: boolean;
+    }) => {
+      if (refreshBusyRef.current) return;
+      refreshBusyRef.current = true;
+      setSyncingRecordings(true);
+      try {
+        if (opts.runAsrOnMissing) {
+          const q = await queryRecordingsByUtcRange(opts.startUtc, opts.endUtc);
+          for (const row of q.rows) {
+            const id = String(row.audio_id);
+            const existing = recordingsListRef.current.find((r) => r.id === id);
+            const hasTs = (existing?.timestamps?.length ?? 0) > 0;
+            if (!isBackendRecordingId(id) || hasTs) continue;
+            setTranscriptLoading({
+              audioId: id,
+              message: `正在转写 #${id}（合并前）…`,
+            });
+            await triggerAsrForRecording(id);
+          }
+          setTranscriptLoading(null);
+        }
+
+        const payload = await fetchUtcRangeMergeLoad(
+          opts.startUtc,
+          opts.endUtc,
+          opts.strategy
+        );
+        if (payload.count === 0) {
+          toast({ title: "本时段无录音", variant: "destructive" });
+          return;
+        }
+
+        const merged = audioDataFromUtcMergeLoad(payload);
+        if (!merged.url) {
+          toast({
+            title: "已合并转写，但无音频文件",
+            description: "请安装 ffmpeg 并加入 PATH，或改用「单条最长重叠」策略",
+            variant: "destructive",
+          });
+        }
+
+        const remote = await fetchAnnotationBundle({ noCache: true });
+        applyBundleToRefs(remote);
+
+        setRecordingsList((prev) => {
+          const rest = prev.filter((r) => r.id !== merged.id);
+          return [merged, ...rest];
+        });
+        recordingsListRef.current = [merged, ...recordingsListRef.current.filter((r) => r.id !== merged.id)];
+        setRecordingMeta((prev) => ({
+          ...prev,
+          [merged.id]: { channel: "Radio", mine: false },
+        }));
+        setSelectedAudioId(merged.id);
+        selectedAudioIdRef.current = merged.id;
+        setWorkspace({
+          audio: merged,
+          adsb: adsbForRecording(merged, remote.adsbByRecordingId, remote.adsbData),
+        });
+        setLastSyncAt(Date.now());
+        setTranscriptLoading(null);
+
+        toast({
+          title: "已加载合并录音",
+          description: [
+            `${payload.count} 段`,
+            `${merged.timestamps.length} 条转写`,
+            merged.url ? "波形可播放" : "仅文本",
+          ].join(" · "),
+        });
+      } catch (error) {
+        toast({
+          title: "合并加载失败",
+          description: error instanceof Error ? error.message : "unknown",
+          variant: "destructive",
+        });
+      } finally {
+        refreshBusyRef.current = false;
+        setSyncingRecordings(false);
+      }
+    },
+    [applyBundleToRefs, toast]
+  );
+
   const handleSelectRecording = useCallback(
     (id: string) => {
       setSelectedAudioId(id);
@@ -791,6 +1049,9 @@ function HomeContent() {
       syncing: syncingRecordings,
       pendingTranscriptCount,
       onUpdateOneRecording: () => void runUpdateOneRecording(),
+      onDownloadHistorical: runDownloadHistorical,
+      onMergeUtcRangeLoad: handleMergeUtcRangeLoad,
+      onCorrectTimestamp: () => void handleCorrectTimestamp(),
       onTranscribeSelected: () => void runTranscribeSelected(),
       onDeleteRecording: (id: string) => void handleDeleteRecording(id),
       deletingRecordingId,
@@ -807,6 +1068,9 @@ function HomeContent() {
       syncingRecordings,
       pendingTranscriptCount,
       runUpdateOneRecording,
+      runDownloadHistorical,
+      handleMergeUtcRangeLoad,
+      handleCorrectTimestamp,
       runTranscribeSelected,
       handleDeleteRecording,
       deletingRecordingId,

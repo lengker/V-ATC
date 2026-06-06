@@ -578,8 +578,16 @@ export function Component() {
               </Button>
 
               {errorText ? (
-                <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-red-700 text-sm">{errorText}</div>
+                <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-red-700 text-sm whitespace-pre-wrap">
+                  {errorText}
+                </div>
               ) : null}
+
+              <p className="text-sm text-zinc-500 leading-relaxed">
+                默认管理员：<span className="font-mono">admin</span> / <span className="font-mono">123456</span>
+                （需先启动 A5 :8000）。后端不可用时可用离线账号{" "}
+                <span className="font-mono">offline@alpha.local</span> / <span className="font-mono">offline123</span>
+              </p>
 
               <div className="text-center text-lg text-zinc-600">
                 没有账号？{" "}

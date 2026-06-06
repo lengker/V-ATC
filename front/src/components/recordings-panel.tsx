@@ -4,12 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { AudioData } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn, formatTime } from "@/lib/utils";
-import { Star, Radio, RefreshCw, Trash2, Download, CheckSquare, Square } from "lucide-react";
+import { Star, Radio, RefreshCw, Trash2, Download, CheckSquare, Square, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { RecordingMeta } from "@/mock/demo-data";
 import { VirtualList } from "@/components/ui/virtual-list";
 import { getRecordingDisplayName } from "@/lib/recording-display";
 import { isRecordingTimelineAligned } from "@/lib/recording-adsb-alignment";
+import { HistoricalDownloadPanel } from "@/components/historical-download-panel";
+import { RecordingUtcRangePanel } from "@/components/recording-utc-range-panel";
 
 export function RecordingsPanel({
   recordings,
@@ -19,6 +21,9 @@ export function RecordingsPanel({
   updatedAt = null,
   syncing = false,
   onUpdateOneRecording,
+  onDownloadHistorical,
+  onMergeUtcRangeLoad,
+  onCorrectTimestamp,
   onTranscribeSelected,
   pendingTranscriptCount = 0,
   onDeleteRecording,
@@ -34,7 +39,15 @@ export function RecordingsPanel({
   updatedAt?: number | null;
   syncing?: boolean;
   onUpdateOneRecording?: () => void;
+  onDownloadHistorical?: (utcIso: string, options: { a3Asr: boolean }) => void | Promise<void>;
+  onMergeUtcRangeLoad?: (options: {
+    startUtc: string;
+    endUtc: string;
+    strategy: "concat" | "single_longest";
+    runAsrOnMissing: boolean;
+  }) => void | Promise<void>;
   onTranscribeSelected?: () => void;
+  onCorrectTimestamp?: () => void;
   pendingTranscriptCount?: number;
   onDeleteRecording?: (id: string) => void | Promise<void>;
   deletingRecordingId?: string | null;
@@ -241,6 +254,18 @@ export function RecordingsPanel({
               variant="outline"
               className="h-7 gap-1 rounded-full px-2.5 text-[11px]"
               disabled={syncing}
+              onClick={() => onCorrectTimestamp?.()}
+              title="按文件名、航迹、转写呼号融合修正 UTC 时间戳"
+            >
+              <Clock className={cn("h-3.5 w-3.5", syncing && "animate-spin")} />
+              修正时间
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 rounded-full px-2.5 text-[11px]"
+              disabled={syncing}
               onClick={() => onTranscribeSelected?.()}
               title="对当前选中的录音做 ASR 转写"
             >
@@ -260,6 +285,15 @@ export function RecordingsPanel({
               {syncing ? "更新中…" : "更新"}
             </Button>
           </div>
+          {onDownloadHistorical ? (
+            <HistoricalDownloadPanel busy={syncing} onDownload={onDownloadHistorical} />
+          ) : null}
+          <RecordingUtcRangePanel
+            busy={syncing}
+            activeId={activeId}
+            onSelectRecording={onSelect}
+            onMergeAndLoad={onMergeUtcRangeLoad}
+          />
         </div>
       </CardHeader>
       <CardContent className="pt-3">

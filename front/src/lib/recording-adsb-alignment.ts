@@ -197,7 +197,7 @@ const HKT_UTC_SHIFT_SEC = 8 * 3600;
 const CALLSIGN_IN_TEXT =
   /\b([A-Z]{3}\d{1,4}[A-Z]?|CCA\d+|CPA\d+|CSN\d+|CRK\d+|HKE\d+|HXA\d+|AHK\d+|CDC\d+|CHC[A-Z0-9]+)\b/gi;
 
-function extractCallsignsFromTimestamps(timestamps: { text?: string }[]): string[] {
+export function extractCallsignsFromTimestamps(timestamps: { text?: string }[]): string[] {
   const out = new Set<string>();
   for (const ts of timestamps) {
     const text = String(ts.text ?? "").toUpperCase();
@@ -487,7 +487,7 @@ export function filterWallClockPoolForRecordingPlayback(
   return out;
 }
 
-function scorePlaybackUtcWindow(
+export function scorePlaybackUtcWindow(
   livePoints: ADSBData[],
   window: { startSec: number; endSec: number },
   bufferSec: number,

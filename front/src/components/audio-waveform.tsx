@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   useCallback,
+  useMemo,
   memo,
   useDeferredValue,
   forwardRef,
@@ -32,6 +33,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { formatUtcInstantChinese, formatUtcRangeChinese } from "@/lib/recording-utc-time";
 import { cn, formatTime } from "@/lib/utils";
 import { createMockWavBlob } from "@/lib/mock-audio";
 import { VoiceTimestamp } from "@/types";
@@ -56,6 +58,9 @@ export type AudioWaveformHandle = {
 
 interface AudioWaveformProps {
   audioUrl: string;
+  /** 录音采集起点 UTC（ISO），用于显示墙钟而非 00:00 */
+  captureStartUtc?: string;
+  captureEndUtc?: string;
   timestamps?: VoiceTimestamp[];
   currentTime?: number;
   onTimeUpdate?: (time: number) => void;
@@ -380,6 +385,8 @@ export const AudioWaveform = memo(
   forwardRef<AudioWaveformHandle, AudioWaveformProps>(function AudioWaveform(
     {
       audioUrl,
+      captureStartUtc,
+      captureEndUtc,
       timestamps = [],
       currentTime = 0,
       onTimeUpdate,
@@ -994,6 +1001,31 @@ export const AudioWaveform = memo(
     ]
   );
 
+  const useWallClock = Boolean(captureStartUtc?.trim());
+  const playheadLabel = useMemo(() => {
+    if (useWallClock) return formatUtcInstantChinese(captureStartUtc, uiPlayheadSec);
+    return formatTime(uiPlayheadSec);
+  }, [useWallClock, captureStartUtc, uiPlayheadSec]);
+  const endLabel = useMemo(() => {
+    if (!useWallClock) return formatTime(duration);
+    if (captureEndUtc) return formatUtcInstantChinese(captureEndUtc, 0);
+    return formatUtcInstantChinese(captureStartUtc, duration);
+  }, [useWallClock, captureStartUtc, captureEndUtc, duration]);
+  const rangeCaption = useMemo(() => {
+    if (!useWallClock) return null;
+    const endIso =
+      captureEndUtc ||
+      (captureStartUtc && duration > 0
+        ? new Date(
+            (Date.parse(
+              captureStartUtc.includes("T") ? captureStartUtc : captureStartUtc.replace(" ", "T")
+            ) || 0) +
+              duration * 1000
+          ).toISOString()
+        : undefined);
+    return formatUtcRangeChinese(captureStartUtc, endIso);
+  }, [useWallClock, captureStartUtc, captureEndUtc, duration]);
+
   return (
     <div ref={containerRef} className={cn("space-y-4", className)}>
       {/* 标题与状态 */}
@@ -1005,7 +1037,7 @@ export const AudioWaveform = memo(
           <div className="min-w-0">
             <h3 className="text-sm font-semibold tracking-tight text-foreground">波形与播放</h3>
             <p className="text-xs text-muted-foreground">
-              按住拖拽波形可连续移动播放头；单击选中段；拖 VAD 左右沿裁剪边界
+              {rangeCaption ?? "按住拖拽波形可连续移动播放头；单击选中段；拖 VAD 左右沿裁剪边界"}
             </p>
           </div>
         </div>
@@ -1123,20 +1155,39 @@ export const AudioWaveform = memo(
 
         <div className="hidden h-8 w-px bg-border/70 sm:block" aria-hidden />
 
-        <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-          <span className="w-[4.25rem] shrink-0 font-mono tabular-nums text-xs text-muted-foreground">
-            {formatTime(uiPlayheadSec)}
-          </span>
-          <Slider
-            value={[uiPlayheadSec]}
-            max={duration || 1}
-            step={0.1}
-            onValueChange={([value]) => handleSeek(value)}
-            className="flex-1 py-1"
-          />
-          <span className="w-[4.25rem] shrink-0 text-right font-mono tabular-nums text-xs text-muted-foreground">
-            {formatTime(duration)}
-          </span>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+            <span
+              className={cn(
+                "shrink-0 font-mono tabular-nums text-[10px] leading-snug text-muted-foreground",
+                useWallClock ? "max-w-[11rem] sm:max-w-[14rem]" : "w-[4.25rem] text-xs"
+              )}
+              title={playheadLabel}
+            >
+              {playheadLabel}
+            </span>
+            <Slider
+              value={[uiPlayheadSec]}
+              max={duration || 1}
+              step={0.1}
+              onValueChange={([value]) => handleSeek(value)}
+              className="flex-1 py-1"
+            />
+            <span
+              className={cn(
+                "shrink-0 text-right font-mono tabular-nums text-[10px] leading-snug text-muted-foreground",
+                useWallClock ? "max-w-[11rem] sm:max-w-[14rem]" : "w-[4.25rem] text-xs"
+              )}
+              title={endLabel}
+            >
+              {endLabel}
+            </span>
+          </div>
+          {useWallClock ? (
+            <p className="text-center text-[10px] text-muted-foreground/80 tabular-nums">
+              相对 {formatTime(uiPlayheadSec)} / {formatTime(duration)}
+            </p>
+          ) : null}
         </div>
 
         <div className="hidden h-8 w-px bg-border/70 md:block" aria-hidden />

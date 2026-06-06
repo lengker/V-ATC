@@ -1,0 +1,18 @@
+{
+  "date_input": [
+    1977,
+    1173
+  ],
+  "time_dropdown": [
+    1943,
+    1227
+  ],
+  "submit_button": [
+    1962,
+    1159
+  ],
+  "delay_seconds": 0.35,
+  "download_wait_seconds": 20,
+  "countdown_seconds": 8,
+  "time_dropdown_opens_down": true
+}

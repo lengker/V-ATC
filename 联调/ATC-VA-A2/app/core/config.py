@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # Playwright profile/storage state with a human-completed verification.
     a2_liveatc_browser_archive_flow_enabled: bool = False
     a2_liveatc_browser_flow_timeout_seconds: float = 90.0
+    # SeleniumBase 表单归档下载（推荐，不依赖手工导出 Cookie）
+    a2_liveatc_selenium_archive_enabled: bool = True
+    a2_liveatc_selenium_archive_url: str = ""
+    a2_liveatc_selenium_download_timeout: int = 300
     # Max concurrent downloads to avoid triggering server-side rate limits (0 = unlimited)
     a2_max_concurrent_downloads: int = 1
 

@@ -255,6 +255,23 @@ def register_user(payload: RegisterRequest) -> dict[str, object]:
     return _api_success(_public_user(user))
 
 
+def ensure_default_admin_user(conn: sqlite3.Connection) -> None:
+    """库内无用户时创建默认管理员（与 联调/seed_admin_user.py 一致）。"""
+    row = conn.execute("SELECT COUNT(*) AS c FROM LNG_USERS").fetchone()
+    if row and int(row["c"]) > 0:
+        return
+    username = "admin"
+    password_hash = _hash_password("123456")
+    conn.execute(
+        """
+        INSERT INTO LNG_USERS (username, password_hash, role, email)
+        VALUES (?, ?, ?, ?)
+        """,
+        (username, password_hash, "admin", "admin@alpha.local"),
+    )
+    conn.commit()
+
+
 @router.post("/login")
 def login_user(payload: LoginRequest) -> dict[str, object]:
     username = _ensure_non_empty_text(payload.username, "username")

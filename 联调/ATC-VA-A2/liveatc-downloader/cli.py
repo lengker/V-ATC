@@ -97,6 +97,28 @@ parser_cookie.add_argument(
   default=120,
   help='页面加载超时时间（秒），默认 120'
 )
+parser_cookie.add_argument(
+  '--browser',
+  choices=['msedge', 'chrome', 'chromium'],
+  default='msedge',
+  help='浏览器通道，默认 msedge（本机 Edge）'
+)
+parser_cookie.add_argument(
+  '--no-auto-wait',
+  action='store_true',
+  help='关闭自动检测 cf_clearance，改为按 Enter 手动确认'
+)
+parser_cookie.add_argument(
+  '--wait-timeout',
+  type=int,
+  default=600,
+  help='自动等待 cf_clearance 的最长时间（秒），默认 600'
+)
+parser_cookie.add_argument(
+  '--playwright-launch',
+  action='store_true',
+  help='使用 Playwright 启动浏览器（易被 Cloudflare 识别，不推荐）'
+)
 
 
 def get_args():

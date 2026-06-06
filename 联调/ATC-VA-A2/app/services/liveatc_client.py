@@ -533,6 +533,42 @@ class LiveATCHTTPClient:
         end = slot + timedelta(minutes=30)
         return f"{slot.strftime('%H%M')}-{end.strftime('%H%M')}Z"
 
+    @staticmethod
+    def floor_to_archive_slot(value: datetime) -> datetime:
+        """LiveATC 历史档按 30 分钟一档（UTC）。"""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        floored_minute = (value.minute // 30) * 30
+        return value.replace(minute=floored_minute, second=0, microsecond=0)
+
+    def build_historical_link_for_slot(
+        self,
+        slot_utc: datetime,
+        *,
+        station: str | None = None,
+        archive_identifier: str | None = None,
+    ) -> HistoricalAudioLink | None:
+        """根据任意 UTC 时刻构造对应 30 分钟档的 LiveATC 归档 URL。"""
+        slot = self.floor_to_archive_slot(slot_utc)
+        station_key = (station or (self.mount_ids[0] if self.mount_ids else settings.a2_icao_code.lower())).strip()
+        identifier = (
+            archive_identifier
+            or (self.archive_file_prefixes[0] if self.archive_file_prefixes else None)
+            or station_key
+        )
+        if not identifier:
+            return None
+        archive_dir = self._infer_archive_dir(station=station_key, archive_identifier=identifier)
+        file_name = f"{identifier}-{slot.strftime('%b-%d-%Y-%H%MZ')}.mp3"
+        encoded_name = quote(file_name, safe="-_.()")
+        return HistoricalAudioLink(
+            url=f"{self.archive_base_urls[0]}/{archive_dir}/{encoded_name}",
+            file_name=file_name,
+            referer_url=f"{self.base_url}/archive.php?m={station_key}",
+        )
+
     def _recent_archive_candidates(
         self, *, station: str, archive_identifier: str, now: datetime | None = None
     ) -> list[HistoricalAudioLink]:

@@ -1,0 +1,9 @@
+{
+  "date_input": [320, 280],
+  "time_dropdown": [320, 360],
+  "submit_button": [200, 450],
+  "delay_seconds": 0.35,
+  "download_wait_seconds": 20,
+  "countdown_seconds": 8,
+  "time_dropdown_opens_down": true
+}

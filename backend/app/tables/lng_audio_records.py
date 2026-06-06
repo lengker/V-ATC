@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+UTC = timezone.utc
 
 from app.tables.common import create_row, delete_row, get_row, list_rows, update_row
 
@@ -342,6 +345,58 @@ def search_chains_one(
     if not chains:
         return []
     return chains[0]
+
+
+def _parse_utc_text(value: str | None) -> datetime | None:
+    if not value or not str(value).strip():
+        return None
+    s = str(value).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}", s) and not re.search(
+        r"[zZ]$|[+-]\d{2}:?\d{2}$", s
+    ):
+        s = s.replace(" ", "T") + ("Z" if "T" in s else "Z")
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def list_by_utc_range(
+    conn: sqlite3.Connection,
+    start_utc: str,
+    end_utc: str,
+    *,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """返回与 [start_utc, end_utc) 有交集的录音，按 start_time_utc 升序。"""
+    start = _parse_utc_text(start_utc)
+    end = _parse_utc_text(end_utc)
+    if start is None or end is None:
+        raise ValueError("start_utc / end_utc 格式无效，请使用 ISO8601 UTC")
+    if end <= start:
+        raise ValueError("end_utc 必须晚于 start_utc")
+
+    rows = conn.execute(
+        f"SELECT * FROM {TABLE_NAME} ORDER BY start_time_utc ASC"
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        r = dict(row)
+        rs = _parse_utc_text(str(r.get("start_time_utc") or ""))
+        re_ = _parse_utc_text(str(r.get("end_time_utc") or ""))
+        if rs is None:
+            continue
+        if re_ is None:
+            dur_ms = int(r.get("duration_ms") or 0) or 60_000
+            re_ = rs + timedelta(milliseconds=dur_ms)
+        if rs < end and re_ > start:
+            out.append(r)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def update_item_chain_only(

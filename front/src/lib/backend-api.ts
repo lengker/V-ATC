@@ -62,6 +62,52 @@ function readToken(): string | null {
   }
 }
 
+function formatApiErrorPayload(data: unknown, fallback: string): string {
+  if (!data || typeof data !== "object") return fallback;
+  const root = data as Record<string, unknown>;
+  const detail = root.detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const parts = detail
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const row = item as Record<string, unknown>;
+        const loc = Array.isArray(row.loc) ? row.loc.join(".") : "";
+        const msg = typeof row.msg === "string" ? row.msg : "";
+        if (!msg) return null;
+        return loc ? `${loc}: ${msg}` : msg;
+      })
+      .filter((s): s is string => Boolean(s));
+    if (parts.length) return parts.join("；");
+  }
+  if (detail && typeof detail === "object" && detail !== null) {
+    const msg = (detail as Record<string, unknown>).message;
+    if (typeof msg === "string" && msg.trim()) return msg;
+  }
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (typeof root.message === "string" && root.message.trim()) return root.message;
+  return fallback;
+}
+
+function safeApiNumber(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** 将 fetch 网络错误转为可操作提示 */
+export function formatClientFetchError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("failed to fetch") ||
+    lower.includes("networkerror") ||
+    lower.includes("load failed") ||
+    lower.includes("network request failed")
+  ) {
+    return `无法连接后端 ${API_BASE_URL}，请先启动 A5（联调目录运行 .\\start-all.ps1 或单独启动 backend :8000）`;
+  }
+  return raw || "网络异常，请稍后重试";
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const token = readToken();
   const headers = new Headers(init?.headers || {});
@@ -70,22 +116,34 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (hasBody && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers,
+    });
+  } catch (err) {
+    throw new Error(formatClientFetchError(err));
+  }
 
   const rawText = await response.text();
-  const data = rawText ? JSON.parse(rawText) : null;
+  let data: unknown = null;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    if (!response.ok) {
+      throw new Error(rawText || `HTTP ${response.status}`);
+    }
+    throw new Error("服务器返回了无法解析的响应");
+  }
   if (!response.ok) {
-    const msg =
-      data?.detail?.message ||
-      data?.detail?.[0]?.msg ||
-      data?.detail ||
-      data?.message ||
-      response.statusText ||
-      `HTTP ${response.status}`;
-    throw new Error(String(msg));
+    throw new Error(formatApiErrorPayload(data, response.statusText || `HTTP ${response.status}`));
+  }
+  if (data && typeof data === "object" && "code" in data) {
+    const code = Number((data as { code?: unknown }).code);
+    if (Number.isFinite(code) && code !== 0) {
+      throw new Error(formatApiErrorPayload(data, `业务错误 code=${code}`));
+    }
   }
   return data as T;
 }
@@ -210,6 +268,174 @@ export async function listAllTableItems<T>(
   return all;
 }
 
+export type UtcRangeQueryResult = {
+  ok: boolean;
+  count: number;
+  start_utc: string;
+  end_utc: string;
+  rows: BackendAudioRecord[];
+};
+
+export type UtcRangeTranscriptResult = {
+  ok: boolean;
+  count: number;
+  start_utc: string;
+  end_utc: string;
+  transcript: string;
+  has_recordings: boolean;
+};
+
+/** 查询与 UTC 区间有交集的录音（A5 LNG_AUDIO_RECORDS） */
+export async function queryRecordingsByUtcRange(
+  startUtc: string,
+  endUtc: string
+): Promise<UtcRangeQueryResult> {
+  const params = new URLSearchParams({ start_utc: startUtc, end_utc: endUtc });
+  return requestJson<UtcRangeQueryResult>(`/export/audio-by-utc-range?${params.toString()}`);
+}
+
+/** 可视化转写文本（不下载 ZIP） */
+export async function fetchUtcRangeTranscript(
+  startUtc: string,
+  endUtc: string
+): Promise<UtcRangeTranscriptResult> {
+  const params = new URLSearchParams({ start_utc: startUtc, end_utc: endUtc });
+  return requestJson<UtcRangeTranscriptResult>(
+    `/export/audio-by-utc-range/transcript?${params.toString()}`
+  );
+}
+
+/** ZIP：合并音频（可空）+ transcript-visual.txt + segments/ */
+export type UtcRangeMergeLoadResult = {
+  ok: boolean;
+  count: number;
+  start_utc: string;
+  end_utc: string;
+  strategy: string;
+  source_audio_ids: number[];
+  timestamps: VoiceTimestamp[];
+  transcript: string;
+  has_audio: boolean;
+  audio_url: string | null;
+  duration_sec: number;
+  merge_id: string | null;
+  title?: string;
+};
+
+/** 合并时段录音并返回波形加载载荷 */
+export async function fetchUtcRangeMergeLoad(
+  startUtc: string,
+  endUtc: string,
+  strategy: "concat" | "single_longest" = "concat"
+): Promise<UtcRangeMergeLoadResult> {
+  const params = new URLSearchParams({
+    start_utc: startUtc,
+    end_utc: endUtc,
+    strategy,
+  });
+  return requestJson<UtcRangeMergeLoadResult>(
+    `/export/audio-by-utc-range/load?${params.toString()}`,
+    { method: "POST" }
+  );
+}
+
+export function audioDataFromUtcMergeLoad(payload: UtcRangeMergeLoadResult): AudioData {
+  const id = payload.merge_id || `utc-merge-${Date.now()}`;
+  const duration = Math.max(1, Number(payload.duration_sec) || 1);
+  return {
+    id,
+    url: payload.audio_url ? resolveBrowserAudioUrl(payload.audio_url) : "",
+    duration,
+    timestamps: (payload.timestamps || []).map((t) => ({
+      id: String(t.id),
+      startTime: Number(t.startTime) || 0,
+      endTime: Number(t.endTime) || 0,
+      text: String(t.text || ""),
+      confidence: t.confidence,
+      speaker: t.speaker,
+    })),
+    metadata: {
+      title: payload.title,
+      startTimeUtc: payload.start_utc,
+      endTimeUtc: payload.end_utc,
+      fileName: `utc-range-merge-${payload.count}segments.mp3`,
+    },
+  };
+}
+
+export async function downloadUtcRangeExportPackage(
+  startUtc: string,
+  endUtc: string,
+  strategy: "concat" | "single_longest" = "concat"
+): Promise<{ blob: Blob; count: number; hasAudio: boolean }> {
+  const params = new URLSearchParams({
+    start_utc: startUtc,
+    end_utc: endUtc,
+    strategy,
+  });
+  const res = await fetch(
+    `${API_BASE_URL}/export/audio-by-utc-range/package?${params.toString()}`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(String((err as { detail?: string }).detail || `导出失败 ${res.status}`));
+  }
+  const count = Number(res.headers.get("X-Export-Count") || "0");
+  const hasAudio = res.headers.get("X-Export-Has-Audio") === "1";
+  return { blob: await res.blob(), count, hasAudio };
+}
+
+export function mapAudioRowToAudioData(row: BackendAudioRecord): AudioData {
+  const id = String(row.audio_id);
+  const fileName = String(row.file_name || "").trim();
+  const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
+  let startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+  let endTimeUtc = row.end_time_utc ? String(row.end_time_utc) : undefined;
+  if (fileName && (!startTimeUtc || !endTimeUtc)) {
+    const parsed = parseRecordingUtcRangeFromFileName(fileName, durationSec);
+    if (parsed) {
+      startTimeUtc = startTimeUtc || parsed.startTimeUtc;
+      endTimeUtc = endTimeUtc || parsed.endTimeUtc;
+    }
+  }
+  return {
+    id,
+    url: resolveBrowserAudioUrl(row.source_url),
+    duration: durationSec,
+    timestamps: [],
+    metadata: {
+      title:
+        formatRecordingCaptureTimeLocal(startTimeUtc) ||
+        formatRecordingFileName(fileName) ||
+        undefined,
+      fileName: fileName || undefined,
+      startTimeUtc,
+      endTimeUtc,
+      trackId:
+        Number.isFinite(Number(row.track_id)) && Number(row.track_id) > 0
+          ? Number(row.track_id)
+          : undefined,
+    },
+  };
+}
+
+export type HistoricalDownloadResult = {
+  ok?: number | boolean;
+  error?: string;
+  file_name?: string;
+  source_url?: string;
+  slot_utc?: string;
+  voice_file_id?: number;
+  audio_id?: number;
+  already_exists?: boolean;
+  sync_warning?: string;
+  a5_synced?: number;
+  a2?: Record<string, unknown>;
+  sync?: Record<string, unknown>;
+  a3_asr?: Record<string, unknown>;
+};
+
 export type RefreshRecordingsResult = {
   ok: number;
   synced?: number;
@@ -224,6 +450,30 @@ export type RefreshRecordingsResult = {
   a2_trigger?: Record<string, unknown>;
   via?: string;
 };
+
+/** 按 UTC 时刻下载 LiveATC 历史 30 分钟档 → 同步 A5 */
+export async function downloadHistoricalRecordingAt(
+  utcIso: string,
+  options?: { a3Asr?: boolean }
+): Promise<HistoricalDownloadResult> {
+  const params = new URLSearchParams({ utc: utcIso });
+  if (options?.a3Asr) params.set("a3_asr", "true");
+  try {
+    return await requestJson<HistoricalDownloadResult>(
+      `/sync/a2-historical-download?${params.toString()}`,
+      { method: "POST", body: "{}" }
+    );
+  } catch (e) {
+    const res = await fetch("/api/historical-download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ utc: utcIso, a3_asr: options?.a3Asr ?? false }),
+    });
+    const data = (await res.json()) as HistoricalDownloadResult;
+    if (!res.ok) throw new Error(String(data.error || `historical download failed ${res.status}`));
+    return data;
+  }
+}
 
 /** 联调：触发 A2 下载 + 同步 A5（优先 A5，失败则走 Next 本地脚本） */
 /** 对无转写的录音跑 A3/Whisper ASR（写入 A5 annotations） */
@@ -688,6 +938,64 @@ export const audioRecordsExtApi = {
     }),
 };
 
+export type TimestampCorrectionApiResult = {
+  ok: boolean;
+  method: string;
+  confidence: number;
+  start_time_utc: string;
+  end_time_utc: string;
+  shift_sec: number;
+  annotation_shift_sec: number;
+  sources: Array<{ name: string; start_time_utc: string; end_time_utc: string; score: number }>;
+  details: string;
+  applied?: boolean;
+};
+
+/** 服务端多源融合修正 UTC（写回 A5） */
+export async function correctRecordingTimestampOnServer(
+  audioId: string,
+  options?: { apply?: boolean; shiftAnnotations?: boolean }
+): Promise<TimestampCorrectionApiResult> {
+  const params = new URLSearchParams({
+    audio_id: audioId,
+    apply: options?.apply !== false ? "true" : "false",
+    shift_annotations: options?.shiftAnnotations ? "true" : "false",
+  });
+  return requestJson<TimestampCorrectionApiResult>(
+    `/sync/correct-audio-timestamp?${params.toString()}`,
+    { method: "POST" }
+  );
+}
+
+/** 应用前端估算结果到 A5 */
+export async function applyRecordingTimestampCorrection(
+  audioId: string,
+  correction: {
+    startTimeUtc: string;
+    endTimeUtc: string;
+    annotationShiftSec?: number;
+    shiftAnnotations?: boolean;
+  }
+) {
+  const id = Number.parseInt(String(audioId).trim(), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    throw new Error(`无效的录音 ID：${audioId}`);
+  }
+  const params = new URLSearchParams({ audio_id: String(id) });
+  return requestJson<{ ok: boolean; annotations_updated: number }>(
+    `/sync/correct-audio-timestamp/apply?${params.toString()}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        start_time_utc: correction.startTimeUtc,
+        end_time_utc: correction.endTimeUtc,
+        annotation_shift_sec: safeApiNumber(correction.annotationShiftSec, 0),
+        shift_annotations: Boolean(correction.shiftAnnotations),
+      }),
+    }
+  );
+}
+
 /** 仅在 A5 尚无 start_time_utc 时写入；优先从文件名解析，避免覆盖历史采集时刻 */
 export async function ensureRecordingCaptureUtc(
   audioId: string,
@@ -784,28 +1092,7 @@ export async function fetchRecordingByAudioId(
 ): Promise<AudioData | null> {
   try {
     const row = await getTableItem<BackendAudioRecord>("audio_records", audioId);
-    const id = String(row.audio_id);
-    const fileName = String(row.file_name || "").trim();
-    const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
-    const endTimeUtc = row.end_time_utc ? String(row.end_time_utc) : undefined;
-    const trackIdNum = Number(row.track_id);
-    const durationSec = Math.max(1, Math.round((Number(row.duration_ms) || 0) / 1000));
-    return {
-      id,
-      url: resolveBrowserAudioUrl(row.source_url),
-      duration: durationSec,
-      timestamps: [],
-      metadata: {
-        title:
-          formatRecordingCaptureTimeLocal(startTimeUtc) ||
-          formatRecordingFileName(fileName) ||
-          undefined,
-        fileName: fileName || undefined,
-        startTimeUtc,
-        endTimeUtc,
-        trackId: Number.isFinite(trackIdNum) && trackIdNum > 0 ? trackIdNum : undefined,
-      },
-    };
+    return mapAudioRowToAudioData(row);
   } catch {
     return null;
   }
@@ -862,8 +1149,15 @@ function buildAudioMetadataFromRow(
   durationSec: number
 ): NonNullable<AudioData["metadata"]> {
   const fileName = String(row.file_name || "").trim();
-  const startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
-  const endTimeUtc = row.end_time_utc ? String(row.end_time_utc) : undefined;
+  let startTimeUtc = row.start_time_utc ? String(row.start_time_utc) : undefined;
+  let endTimeUtc = row.end_time_utc ? String(row.end_time_utc) : undefined;
+  if (fileName && (!startTimeUtc || !endTimeUtc)) {
+    const parsed = parseRecordingUtcRangeFromFileName(fileName, durationSec);
+    if (parsed) {
+      startTimeUtc = startTimeUtc || parsed.startTimeUtc;
+      endTimeUtc = endTimeUtc || parsed.endTimeUtc;
+    }
+  }
   const trackIdNum = Number(row.track_id);
   const flight = track?.flight_id ? String(track.flight_id).trim() : undefined;
   const linkTrackMeta = Number.isFinite(trackIdNum) && trackIdNum > 1;
@@ -961,8 +1255,8 @@ export async function fetchAnnotationBundle(options?: {
   }
   const allTracksForAlignment: MapTrackRow[] = [...tracksById.values()];
 
+  // 含尚无转写的录音（与后台管理台一致）；列表项可播放，转写需点「更新」或下载时勾选 ASR
   const recordings: AudioData[] = audioRows
-    .filter((row) => (annotationsByAudioId.get(Number(row.audio_id))?.length ?? 0) > 0)
     .map((row) => {
       const id = String(row.audio_id);
       const track = tracksById.get(Number(row.track_id));
@@ -978,7 +1272,8 @@ export async function fetchAnnotationBundle(options?: {
         })),
         metadata: buildAudioMetadataFromRow(row, track, durationSec),
       };
-    });
+    })
+    .sort((a, b) => Number(b.id) - Number(a.id));
 
   const adsbByRecordingId: Record<string, ADSBData[]> = {};
   for (const row of audioRows) {

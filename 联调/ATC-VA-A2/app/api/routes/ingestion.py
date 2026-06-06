@@ -26,6 +26,13 @@ class HistoricalRegisterRequest(BaseModel):
     source_url: str
     start_time_utc: datetime
     end_time_utc: datetime
+    file_path: str | None = None
+    file_size: int | None = None
+
+
+class HistoricalDownloadAtRequest(BaseModel):
+    """UTC 时刻；将自动对齐到 LiveATC 30 分钟档。"""
+    utc_datetime: datetime
 
 
 class SchedulerActionResponse(BaseModel):
@@ -56,6 +63,8 @@ async def register_historical_file(payload: HistoricalRegisterRequest, db: Async
         source_url=payload.source_url,
         start_time_utc=payload.start_time_utc,
         end_time_utc=payload.end_time_utc,
+        file_path=payload.file_path,
+        file_size=payload.file_size,
     )
     return {"voice_file_id": row.id}
 
@@ -84,6 +93,12 @@ async def trigger_realtime_once() -> dict[str, bool | str | None]:
     after = liveatc_scheduler.status().get("last_error")
     error = after if after != before else None
     return {"ok": ok, "error": error}
+
+
+@router.post("/historical/download-at")
+async def download_historical_at(payload: HistoricalDownloadAtRequest) -> dict[str, object]:
+    """按指定 UTC 时刻下载一条 LiveATC 历史录音（30 分钟档）。"""
+    return await liveatc_scheduler.download_historical_at(payload.utc_datetime)
 
 
 @router.post("/scheduler/trigger/historical")

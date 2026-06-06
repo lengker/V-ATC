@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.dev import router as dev_router
 from app.api.auth import router as auth_router
+from app.api.export_range import router as export_range_router
+from app.api.timestamp_correction import router as timestamp_correction_router
 from app.api.query import router as query_router
 from app.api.tables import router as tables_router
 from app.db.bootstrap import initialize_database
@@ -20,6 +22,9 @@ from app.db.connection import get_connection
 async def lifespan(_: FastAPI):
     with get_connection() as conn:
         initialize_database(conn)
+        from app.api.auth import ensure_default_admin_user  # noqa: WPS433
+
+        ensure_default_admin_user(conn)
     try:
         import sys
         from pathlib import Path
@@ -47,6 +52,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(tables_router)
+app.include_router(export_range_router)
+app.include_router(timestamp_correction_router)
 app.include_router(query_router)
 app.include_router(auth_router)
 app.include_router(dev_router)
@@ -68,6 +75,23 @@ def root() -> RedirectResponse:
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {"ok": True}
+
+
+@app.post("/sync/a2-historical-download")
+def sync_a2_historical_download(
+    utc: str = Query(..., description="UTC ISO8601，如 2026-06-02T12:00:00Z"),
+    a3_asr: bool = Query(False),
+) -> dict[str, object]:
+    """按指定 UTC 时刻从 LiveATC 下载历史 30 分钟档 → 同步 A5。"""
+    import sys
+    from pathlib import Path
+
+    lian_diao = Path(__file__).resolve().parents[2] / "联调"
+    if str(lian_diao) not in sys.path:
+        sys.path.insert(0, str(lian_diao))
+    from refresh_recordings_pipeline import download_historical_at  # noqa: WPS433
+
+    return download_historical_at(utc, sync_a5=True, a3_asr=a3_asr)
 
 
 @app.post("/sync/a2-to-a5")
